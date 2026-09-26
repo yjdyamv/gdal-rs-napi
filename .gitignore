@@ -1,0 +1,10 @@
+/target
+/node_modules
+/assets
+/npm
+/dist
+/.commandcode
+
+*.node
+binding.js
+binding.d.ts

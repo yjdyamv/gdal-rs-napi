@@ -1,0 +1,4 @@
+# Normalise every text file to LF, in the repository and on checkout. Without
+# this, a Windows checkout gets CRLF and `cargo fmt --check` starts failing on
+# files nobody edited.
+* text=auto eol=lf

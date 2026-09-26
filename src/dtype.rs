@@ -1,0 +1,123 @@
+//! The GDAL sample types, mapped to the string literals JS sees.
+
+use gdal::raster::GdalDataType;
+use napi_derive::napi;
+
+/// Sample type of a raster band, as `band.dataType`.
+///
+/// GDAL has no complex-number sample types in 0.19's enum, so this list is the
+/// complete set.
+#[napi(string_enum)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DataType {
+    Unknown,
+    Uint8,
+    Int8,
+    Uint16,
+    Int16,
+    Uint32,
+    Int32,
+    Uint64,
+    Int64,
+    Float32,
+    Float64,
+}
+
+impl DataType {
+    pub fn from_gdal(value: GdalDataType) -> Self {
+        match value {
+            GdalDataType::UInt8 => Self::Uint8,
+            GdalDataType::Int8 => Self::Int8,
+            GdalDataType::UInt16 => Self::Uint16,
+            GdalDataType::Int16 => Self::Int16,
+            GdalDataType::UInt32 => Self::Uint32,
+            GdalDataType::Int32 => Self::Int32,
+            GdalDataType::UInt64 => Self::Uint64,
+            GdalDataType::Int64 => Self::Int64,
+            GdalDataType::Float32 => Self::Float32,
+            GdalDataType::Float64 => Self::Float64,
+            _ => Self::Unknown,
+        }
+    }
+
+    /// `None` for [`DataType::Unknown`], which cannot be requested explicitly.
+    pub fn to_gdal(self) -> Option<GdalDataType> {
+        Some(match self {
+            Self::Uint8 => GdalDataType::UInt8,
+            Self::Int8 => GdalDataType::Int8,
+            Self::Uint16 => GdalDataType::UInt16,
+            Self::Int16 => GdalDataType::Int16,
+            Self::Uint32 => GdalDataType::UInt32,
+            Self::Int32 => GdalDataType::Int32,
+            Self::Uint64 => GdalDataType::UInt64,
+            Self::Int64 => GdalDataType::Int64,
+            Self::Float32 => GdalDataType::Float32,
+            Self::Float64 => GdalDataType::Float64,
+            Self::Unknown => return None,
+        })
+    }
+
+    pub const fn size(self) -> usize {
+        match self {
+            Self::Uint8 | Self::Int8 | Self::Unknown => 1,
+            Self::Uint16 | Self::Int16 => 2,
+            Self::Uint32 | Self::Int32 | Self::Float32 => 4,
+            Self::Uint64 | Self::Int64 | Self::Float64 => 8,
+        }
+    }
+}
+
+/// Bytes per sample. Handy for turning the raw buffer returned by `readPixels`
+/// into a typed array: `new Float32Array(buf.buffer, buf.byteOffset, buf.length / gdal.bytesPerSample(t))`.
+#[napi]
+pub fn bytes_per_sample(data_type: DataType) -> u32 {
+    data_type.size() as u32
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const KNOWN: [DataType; 10] = [
+        DataType::Uint8,
+        DataType::Int8,
+        DataType::Uint16,
+        DataType::Int16,
+        DataType::Uint32,
+        DataType::Int32,
+        DataType::Uint64,
+        DataType::Int64,
+        DataType::Float32,
+        DataType::Float64,
+    ];
+
+    #[test]
+    fn every_known_type_survives_a_gdal_round_trip() {
+        for data_type in KNOWN {
+            let gdal_type = data_type.to_gdal().expect("known types map to GDAL");
+            assert_eq!(DataType::from_gdal(gdal_type), data_type);
+        }
+    }
+
+    #[test]
+    fn unknown_is_not_requestable_but_is_representable() {
+        assert!(DataType::Unknown.to_gdal().is_none());
+        assert_eq!(
+            DataType::from_gdal(GdalDataType::Unknown),
+            DataType::Unknown
+        );
+    }
+
+    #[test]
+    fn sample_sizes_match_the_rust_types() {
+        for data_type in KNOWN {
+            let rust_size = match data_type {
+                DataType::Uint8 | DataType::Int8 => 1,
+                DataType::Uint16 | DataType::Int16 => 2,
+                DataType::Uint32 | DataType::Int32 | DataType::Float32 => 4,
+                _ => 8,
+            };
+            assert_eq!(data_type.size(), rust_size, "{data_type:?}");
+        }
+    }
+}

@@ -1,0 +1,316 @@
+# gdal-rs-napi
+
+基于 Rust 的 [`gdal`](https://crates.io/crates/gdal) / [`gdal-sys`](https://crates.io/crates/gdal-sys)
+crate、通过 [napi-rs](https://napi.rs) 暴露给 Node.js 的 GDAL 原生插件。
+
+GDAL 与 PROJ 被**静态编译**进插件，PROJ/GDAL 的数据文件随 npm 包一起分发，
+因此安装后的包**不依赖宿主机的 GDAL**。
+
+> 英文文档见 [README.md](./README.md)（更完整），本文件覆盖同样的要点。
+> 变更记录见 [CHANGELOG.md](./CHANGELOG.md)。
+
+## 安装与使用
+
+```js
+const gdal = require('gdal-rs-napi')
+
+gdal.version()          // { gdal: 'GDAL 3.12.1 "Chicoutimi", …', proj: '9.6.2' }
+gdal.drivers().length   // 131
+
+// 出问题时先跑这个：它会告诉你 CRS 数据库有没有被找到、PROJ 被指到了哪里
+gdal.diagnostics()
+// { epsg4326Resolves: true, crsDatabaseFound: true, projDataEnv: '.../assets/proj', … }
+```
+
+`index.js` 会自动调用 `configureDataPaths()`，把 PROJ/GDAL 指向包内的
+`assets/proj` 与 `assets/gdal`。环境里已有的 `PROJ_DATA` / `GDAL_DATA` **永远优先**，
+不会被覆盖。
+
+## 光栅
+
+```js
+const dataset = gdal.openSync('dem.tif')
+dataset.driver          // 'GTiff'
+dataset.width, dataset.height, dataset.bandCount
+dataset.geoTransform    // [x0, dx, rx, y0, ry, dy] 或 null
+dataset.projection      // WKT 或 null
+
+const band = dataset.band(0)   // 0-based（GDAL 内部是 1-based）
+band.dataType           // 'Float32'
+band.noDataValue        // -9999 或 null
+band.size               // [宽, 高]
+band.blockSize          // 驱动原生分块
+
+// 按波段自身类型读原始字节（零拷贝 Buffer），不做转换
+band.readPixelsSync({ x: 0, y: 0, width: 256, height: 256 })
+// 或让 GDAL 在读的时候转换
+band.readAsSync('Uint8')
+// 降采样：resampling 取 nearest/bilinear/cubic/cubicspline/lanczos/average/mode/gauss
+band.readPixelsSync({ outWidth: 128, outHeight: 128, resampling: 'average' })
+
+// 每个读取方法都有异步孪生版，跑在 libuv 线程池上
+await band.readPixels()
+
+dataset.close()
+```
+
+读取返回的是**原始字节**，因为一个返回类型不可能同时是 `Float32Array` 和
+`Uint16Array`。要看成分类型数组：
+
+```js
+const bytes = band.readPixelsSync()
+const copy = Uint8Array.from(bytes)   // 复制一下，对齐问题就不存在了
+const values = new Float32Array(copy.buffer, 0, copy.length / gdal.bytesPerSample('Float32'))
+```
+
+写入、创建、地理参考：
+
+```js
+const out = gdal.createSync('dem.tif', {
+  driver: 'GTiff', width: 64, height: 64, bandCount: 1, dataType: 'Float32',
+  // 驱动创建选项，原样透传给 GDAL
+  options: { TILED: true, BLOCKXSIZE: 32, BLOCKYSIZE: 32, COMPRESS: 'DEFLATE' },
+})
+out.setGeoTransform([500000, 30, 0, 4600000, 0, -30])
+out.setProjection(gdal.epsgToWkt(32633))
+out.band(0).writePixelsSync(Buffer.from(new Float32Array(64 * 64).buffer))
+out.close()
+```
+
+创建选项的名字是 **GDAL 自己的**，各驱动不同：GTiff 分块用 `BLOCKXSIZE`/`BLOCKYSIZE`，
+而 COG 用 `BLOCKSIZE`。GDAL 对不认识的选项只会打一条 warning 然后忽略。
+
+有些驱动实现了 `CreateCopy` 但**没有** `Create`（COG 就是典型），无法从零创建，
+只能拷贝已有数据集：
+
+```js
+const source = gdal.openSync('dem.tif')
+const cog = await source.createCopy('dem-cog.tif', 'COG', { COMPRESS: 'DEFLATE', BLOCKSIZE: 512 })
+cog.close(); source.close()
+// 用它自己的元数据验证：{ INTERLEAVE: 'BAND', COMPRESSION: 'DEFLATE', LAYOUT: 'COG' }
+```
+
+两个容易踩的点：`width`/`height` 是 GDAL 原样返回的，**只对栅格数据集有意义**
+（矢量 GPKG 也会返回一个数字），用之前先看 `bandCount`；`IMAGE_STRUCTURE`
+元数据挂在 **dataset** 上而不是 band 上。
+
+## 矢量
+
+```js
+const dataset = gdal.openSync('roads.gpkg')
+dataset.layerCount
+const layer = dataset.layer(0)          // 也是 0-based
+layer.name, layer.geometryType          // 'LineString' / 'MultiPolygon' / …
+layer.featureCount                      // 数字，或 null（驱动无法在不全表扫描时回答）
+layer.fields                            // [{ name, fieldType, width, precision }]
+layer.extent                            // [minX, minY, maxX, maxY] 或 null
+layer.spatialRefWkt
+
+layer.featuresSync()                    // 整层物化成普通对象
+layer.feature(3)                        // 按 fid 取一个，或 null
+layer.setAttributeFilter('population > 1000')   // OGR SQL 的 WHERE；传 null 清除
+layer.setSpatialFilterRect(minX, minY, maxX, maxY)
+layer.clearSpatialFilter()
+```
+
+`featuresSync()` 返回的是**普通 JS 对象**，不是 GDAL 包装器：
+
+```js
+const [first] = layer.featuresSync()
+first.fid          // 0，驱动没有 fid 时为 null
+first.properties   // { name: 'alpha', population: 120 }；SQL NULL 就是 null
+first.geometry     // { type: 'Point', coordinates: [10, 20] }，没有几何时 null
+```
+
+因为要素是**拷贝出来**的而不是包装的，即使之后关掉 layer 或 dataset 这些值依然有效。
+
+几何工具函数收发 GeoJSON 对象：
+
+```js
+gdal.geometryTypeOf({ type: 'Point', coordinates: [10, 20] })  // 'Point'
+gdal.geometryToWkt(point)                                      // 'POINT (10 20)'
+gdal.geometryToWkb(point)                                      // Buffer
+gdal.geometryFromWkt('POINT (10 20)')                          // GeoJSON 对象
+```
+
+写入：
+
+```js
+const dataset = gdal.createVectorSync('out.gpkg', 'GPKG')
+const layer = dataset.createLayer({ name: 'places', geometryType: 'Point', epsg: 4326 })
+
+layer.createFeature({ type: 'Point', coordinates: [10, 20] },
+                    { name: 'alpha', population: 120, tags: ['a', 'b'] })
+layer.createFeature(null, { name: 'gamma', population: null })  // 无几何，且写入一个 NULL
+
+dataset.flushSync()
+dataset.close()
+```
+
+`createFeature` 会为属性里出现的、尚不存在的字段自动建列，类型从值推断：
+字符串 → `String`，整数 → `Integer64`，小数 → `Real`，布尔 → `Integer`。两个刻意的取舍：
+
+- **`null` 和嵌套对象不建字段** —— 为无法表示的值凭空造一列，比忽略它更糟。
+- **数组写成逗号连接的 `String`，不建列表字段**。因为不支持列表列的驱动（GPKG）
+  会**接受**列表字段请求、把列建成标量，然后仍在 layer 定义里报告列表类型，
+  于是列表 setter 会把 GDAL 内部的 `(2:a,b)` 形式写进去。已经存在列表类型的字段
+  （比如从 GeoJSON 读回来的）依然按真正的列表写入。
+
+值用**字段声明类型**对应的 setter 写入，而不是 JS 值的类型，所以 `Date` 字段收日期字符串、
+`String` 字段收连接后的文本、数组写进整数列会明确报错而不是静默出错。
+
+`updateFeature(fid, geometry, properties)` 只改你点名的字段，遇到不存在的属性会报错
+（而不是加列），`geometry` 传 `null` 表示保持原样。
+
+## 异步语义（用之前请读）
+
+触碰 GDAL 的每个操作都会拿一把**进程级锁**：GDAL 的 last-error 是进程全局状态，
+`gdal` crate 每次 FFI 后立刻读取并重置它，并发调用会互相串错错误信息。
+
+所以异步 API 让 **event loop** 不被阻塞，但**不会**让 GDAL 工作并行。
+十个并发 `readPixels()` 和顺序执行十个耗时一样。
+
+### 错误码
+
+同步失败会把 `err.code` 设成稳定的记号（`GDAL_CPL_FAILURE`、`GDAL_BAD_ARGUMENT`、
+`GDAL_MISSING_PROJ_DATA` 等），并把 GDAL 自己的 class/number 放进消息：`[CPLErr=3 #4] …`。
+
+`napi::Task` 把错误类型写死成 `napi::Error<Status>`，所以**异步**方法设不了这个 code，
+改为把同一个记号放在消息开头：`[GDAL_CPL_FAILURE] …`。需要按 `err.code` 分支时请用同步版。
+
+## 示例
+
+`examples/` 下有三个可直接运行的脚本（在仓库根目录运行，通过 `..` 加载包）：
+
+```sh
+node examples/gdalinfo.mjs path/to/anything.tif   # 迷你 gdalinfo，栅格/矢量都能看
+node examples/to-cog.mjs in.tif out.tif COMPRESS=ZSTD
+node examples/convert-vector.mjs roads.geojson roads.gpkg roads
+```
+
+## 预编译产物
+
+CI 为每个平台构建一个自包含 tarball，推 `v*` tag 时挂到 GitHub Release 上。
+**完全不发布到 npm**，直接装 release 资产：
+
+```sh
+npm install https://github.com/your-org/gdal-rs-napi/releases/download/v0.1.0/gdal-rs-napi-0.1.0-darwin-arm64.tgz
+```
+
+每个 tarball 内含加载器、打包好的 GDAL/PROJ 数据和它自己的 `.node`，并声明了
+`os`/`cpu`/`libc`，装到不匹配的机器上 npm 会直接拒绝。
+
+| Rust target | 运行器 | 平台子包名 |
+|---|---|---|
+| `x86_64-pc-windows-msvc` | `windows-latest` | `win32-x64-msvc` |
+| `aarch64-apple-darwin` | `macos-latest` (arm64) | `darwin-arm64` |
+| `x86_64-unknown-linux-gnu` | `ubuntu-latest` | `linux-x64-gnu` |
+| `aarch64-unknown-linux-gnu` | `ubuntu-24.04-arm` | `linux-arm64-gnu` |
+| `x86_64-unknown-linux-musl` | `ubuntu-latest` | `linux-x64-musl` |
+| `aarch64-unknown-linux-musl` | `ubuntu-24.04-arm` | `linux-arm64-musl` |
+
+glibc/Windows/macOS 各条腿都跑在**对应架构的原生运行器**上（交叉编译静态 GDAL 不值得）。
+两个 musl 目标标记为 `experimental`（`continue-on-error`）：它们通过 napi 的 zig
+工具链交叉链接静态 C++ GDAL，是整条链路里最不确定的一环。Intel macOS 未构建。
+
+## 从源码构建
+
+### 前置依赖
+
+| 需要 | 说明 |
+|---|---|
+| Rust | ≥ 1.98（见 `Cargo.toml` 的 MSRV） |
+| Node.js | ≥ 20.17 |
+| CMake | ≥ 3.12；4.x 需要 `CMAKE_POLICY_VERSION_MINIMUM=3.5`，已写进 `.cargo/config.toml` |
+| Ninja | **必需** |
+| `sqlite3` 命令行工具 | **必需** —— PROJ 会调用它生成 `proj.db` |
+| C/C++ 工具链 | MSVC（VS 2022+），macOS/Linux 用 clang/gcc |
+
+```sh
+# Windows
+winget install SQLite.SQLite      # 或 choco install sqlite
+winget install Ninja-build.Ninja
+# macOS
+brew install sqlite ninja cmake
+# Debian/Ubuntu
+sudo apt-get install sqlite3 ninja-build cmake g++
+```
+
+然后：
+
+```sh
+npm install          # 若设了 NODE_ENV=production 需加 --include=dev
+npm run build        # release 构建 + 落盘数据文件
+node -e "console.log(require('.').version())"
+```
+
+### 三个一定会踩的坑
+
+**1. 必须把 MSYS2 / Cygwin / MinGW 从 `PATH` 里剔除。**
+
+CMake 会从 `PATH` 推导候选前缀，于是发现 MSYS2 的 `ArrowConfig.cmake` —— 它
+**改写了 `CMAKE_MODULE_PATH` 却不还原**，导致 GDAL 自己的 `include(GdalDriverHelper)`
+找不到文件，整个 configure 直接失败：
+
+```
+CMake Error at frmts/zlib/contrib/infback9/CMakeLists.txt:13 (include):
+  include could not find requested file: GdalDriverHelper
+```
+
+`scripts/build.mjs` 会自动剔除并打印剔掉了哪些目录。注意：进 VS Developer Shell
+**修不了**这个问题 —— 它只是往 `PATH` 前面插 VS 路径，MSYS2 仍在里面。
+
+这也是 `sqlite3` 必须来自 MSYS2 之外的原因：那个前缀必须离开 `PATH`，
+而 MSYS2 的 `sqlite3.exe` 恰好住在里面（它还依赖同目录的 `libsqlite3-0.dll`）。
+
+**2. 生成器必须是 Ninja**（已写在 `.cargo/config.toml`）。
+
+`cmake-rs` 会传 `--parallel N`，但在 Visual Studio 生成器下这只等价于 MSBuild 的
+`/m:N`，而 `/m` 只在**项目之间**并行。PROJ 和 GDAL 各自是**一个巨型 vcxproj**
+（GDAL 侧 `proj.vcxproj` 一个文件里就有 217 个 `ClCompile`），生成的工程里没有 `/MP`，
+于是 cl 一次只编译一个翻译单元 —— 实测 16 线程机器上**只有 1 个 cl.exe**。
+Ninja 是按翻译单元并行的。
+
+**3. 只用 `--release`，并且不要裸跑 `cargo`。**
+
+- debug 是另一套 `target/` 目录，一次误操作就是重新编译整个 PROJ + GDAL。
+- `napi build --platform` 会传 `--target <主机三元组>`，产物在
+  `target/<triple>/release`，**不是** `target/release`。想单独类型检查/跑单测就带上同样的
+  `--target`：
+
+  ```sh
+  cargo check --release --target x86_64-pc-windows-msvc
+  cargo test  --release --target x86_64-pc-windows-msvc --lib
+  ```
+
+- `rust-analyzer` 会跑 `cargo check`，而它也会触发 gdal-src 的构建脚本 ——
+  等于第三份完整 PROJ/GDAL 编译。等第一次构建跑完再信编辑器的报错。
+
+### 实际编译了什么
+
+| 组件 | 设置 |
+|---|---|
+| GDAL | 3.12.1，静态，`GDAL_USE_INTERNAL_LIBS=ON`，`GDAL_USE_EXTERNAL_LIBS=OFF` |
+| PROJ | 9.6.x，`bundled_proj`，静态 |
+| 驱动 | `internal_drivers` + `driver_sqlite` + `driver_gpkg` + `driver_vfk` |
+| GEOS | **不链接** —— LGPL，静态链接会让整个产物变成 LGPL |
+
+因为 `gdal-src` 不点名就关闭所有驱动，Cargo 的 `bundled` feature 列表**就是**发布的驱动集合。
+
+共注册 **131 个驱动**，`drivers()` 是权威列表。其中包含 GTiff、COG、PNG、JPEG、
+GIF、BMP、VRT、MEM、MRF、HFA、GRIB、XYZ、AAIGrid、DTED、ESRI Shapefile、GeoJSON、
+GeoJSONSeq、TopoJSON、FlatGeobuf、GPKG、SQLite、OpenFileGDB、MapInfo File、DXF、
+DGN、S57、VFK、CSV、GTFS、KMLSUPEROVERLAY、STACIT/STACTA、PGDUMP 等。
+
+**不含**：KML、GML、GPX（需要 libexpat）、LIBKML、HDF5、NetCDF、PostgreSQL，
+以及网络驱动（WMS/WMTS/OGCAPI，需要 curl）。要加就得改 `bundled` feature 列表并重新构建。
+
+## 已知缺口
+
+暂无 `gdalwarp`/`gdal_translate` 封装；没有 `SpatialRef` 类（构造 CRS 只能用
+`epsgToWkt`）；没有 `statistics()` 与 `buildOverviews()`；读图层是整层物化，
+没有流式或异步迭代；Intel macOS 与 32 位目标未构建。
+
+## 许可证
+
+MIT。GDAL 与 PROJ 均为 MIT/X11；详见 [LICENSE](./LICENSE)。

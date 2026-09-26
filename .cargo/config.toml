@@ -1,0 +1,16 @@
+[env]
+# CMake 4.x refuses the `cmake_minimum_required(VERSION 3.x)` found in the
+# vendored GDAL / PROJ sources unless the old policy floor is opted back into.
+CMAKE_POLICY_VERSION_MINIMUM = "3.5"
+
+# Force the Ninja generator.
+#
+# The Visual Studio generator only parallelises *across* projects, and both
+# `libproj` and `libgdal` are each a single huge .vcxproj, so cl ends up
+# compiling thousands of translation units strictly one at a time (observed:
+# exactly one cl.exe process on a 16 thread CPU). Ninja parallelises per
+# translation unit via `-j $NUM_JOBS`, which cmake-rs passes through.
+#
+# cmake-rs forwards the cc-crate-detected MSVC environment to the cmake process,
+# so cl.exe is still found without a VS developer prompt.
+CMAKE_GENERATOR = "Ninja"

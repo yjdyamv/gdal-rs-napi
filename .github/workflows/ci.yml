@@ -1,0 +1,165 @@
+name: CI
+
+# Builds and tests the addon on every platform we ship, and packs one
+# self-contained tarball per platform. Nothing here touches npm: prebuilt
+# binaries are published as GitHub Release assets on a `v*` tag.
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.runs-on }}
+    # A cold run compiles PROJ and GDAL from source. On a 4-core runner that is
+    # far slower than on a 16-core workstation, hence the generous ceiling.
+    timeout-minutes: 180
+    # The musl targets are cross-linked through napi's zig-based toolchain and
+    # are the least settled part of the matrix. They are allowed to fail without
+    # turning the whole run red while that is shaken out.
+    continue-on-error: ${{ matrix.experimental || false }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-pc-windows-msvc
+            runs-on: windows-latest
+          - target: aarch64-apple-darwin
+            runs-on: macos-latest # must be an arm64 image (macos-14 and newer)
+          - target: x86_64-unknown-linux-gnu
+            runs-on: ubuntu-latest
+          - target: aarch64-unknown-linux-gnu
+            runs-on: ubuntu-24.04-arm
+          - target: x86_64-unknown-linux-musl
+            runs-on: ubuntu-latest
+            cross: true
+            experimental: true
+          - target: aarch64-unknown-linux-musl
+            runs-on: ubuntu-24.04-arm
+            cross: true
+            experimental: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+          # rustfmt and clippy run inside the linux-x64-gnu job so that the style
+          # gate does not need a second full PROJ/GDAL build of its own.
+          components: ${{ matrix.target == 'x86_64-unknown-linux-gnu' && 'rustfmt,clippy' || '' }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      # PROJ's configure shells out to the `sqlite3` command line tool to build
+      # proj.db; CMake drives the C/C++ build. See the README for why the msys2
+      # copy of sqlite3 cannot be the one used on Windows.
+      - name: Install prerequisites (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build sqlite3 g++
+          sqlite3 --version
+
+      - name: Install prerequisites (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          brew install ninja
+          cmake --version
+          sqlite3 --version
+
+      - name: Install prerequisites (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          choco install sqlite -y --no-progress
+          echo "C:\ProgramData\chocolatey\lib\SQLite\tools" >> $env:GITHUB_PATH
+          & "C:\ProgramData\chocolatey\lib\SQLite\tools\sqlite3.exe" --version
+          cmake --version
+          ninja --version
+
+      # napi's cross toolchain is LLVM/zig based. If this action has been
+      # superseded, any zig-on-PATH provision works; the flag below is the part
+      # that matters.
+      - name: Install zig (musl cross builds)
+        if: matrix.cross
+        uses: mlugg/setup-zig@v2
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          # The GDAL/PROJ objects live under target/, so this cache is the
+          # difference between a 3 minute run and a 40 minute one. Keying on the
+          # manifests means a driver-set change starts a clean build instead of
+          # silently reusing stale objects.
+          key: ${{ matrix.target }}-${{ hashFiles('Cargo.toml', 'Cargo.lock') }}
+          cache-on-failure: true
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Check formatting
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        run: cargo clippy --release --target ${{ matrix.target }} --all-targets -- -D warnings
+
+      # Pure-function unit tests (option handling, sample-type dispatch, the
+      # geometry/field-type name maps). They need no GDAL runtime and are cheap;
+      # one platform is enough to cover them.
+      - name: Rust unit tests
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        run: cargo test --release --target ${{ matrix.target }} --lib
+
+      # `npm run build` is scripts/build.mjs: it drops MSYS2/Cygwin prefixes from
+      # PATH, verifies sqlite3 is reachable, then drives `napi build` and stages
+      # the PROJ/GDAL data files into assets/.
+      - name: Build
+        run: npm run build -- --target ${{ matrix.target }} ${{ matrix.cross && '--cross-compile' || '' }}
+
+      - name: Test
+        run: npm test
+
+      # One installable tarball per platform: root package files + assets/ + the
+      # binary, with os/cpu/libc set so npm refuses a mismatched machine. Run
+      # through npm so the script can find the npm CLI without a shell.
+      - name: Pack
+        run: npm run pack
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gdal-rs-napi-${{ matrix.target }}
+          path: |
+            *.node
+            dist/*.tgz
+          if-no-files-found: error
+
+  release:
+    name: release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Publish the tarballs as release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="$GITHUB_REF_NAME"
+          gh release view "$tag" >/dev/null 2>&1 \
+            || gh release create "$tag" --title "$tag" --generate-notes
+          find artifacts -name '*.tgz' -print -exec gh release upload "$tag" {} --clobber \;

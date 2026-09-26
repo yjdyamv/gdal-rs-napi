@@ -1,0 +1,49 @@
+[package]
+name = "gdal-rs-napi"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+license = "MIT"
+description = "Node.js bindings for GDAL, built on the gdal / gdal-sys Rust crates with a self-contained static GDAL + PROJ"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+napi = { version = "3", default-features = false, features = [
+  "napi4",
+  "dyn-symbols",
+  "serde-json",
+] }
+napi-derive = "3"
+gdal = "0.19"
+gdal-sys = "0.12"
+gdal-src = { version = "0.3", optional = true, default-features = false }
+proj-sys = "0.27"
+serde_json = "1"
+
+[build-dependencies]
+napi-build = "2"
+
+[features]
+default = ["bundled"]
+bundled = [
+  "dep:gdal-src",
+  "gdal-sys/bundled",
+  # gdal-src turns every driver OFF unless it is named explicitly, so this list
+  # *is* the shipped driver set. internal_drivers covers GTiff, PNG, JPEG, GIF,
+  # VRT, MEM and the OGR shapefile/GeoJSON/KML family; sqlite adds
+  # SQLite/GPKG/VFK. GEOS is deliberately absent: it is LGPL, and statically
+  # linking it would relicense this whole artifact.
+  "gdal-src/internal_drivers",
+  "gdal-src/driver_sqlite",
+  "gdal-src/driver_gpkg",
+  "gdal-src/driver_vfk",
+]
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = "symbols"
+opt-level = 3

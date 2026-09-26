@@ -1,0 +1,805 @@
+//! Vector layers: reading features, their attributes and their geometry.
+//!
+//! Features are **materialised** into plain JS data rather than wrapped. A
+//! `gdal::vector::Feature<'a>` borrows its layer, which borrows the dataset, so
+//! handing one to JS would mean keeping three lifetimes and a GDAL handle alive
+//! behind the user's back — and a `Feature`'s geometry is lazily populated, so it
+//! is only valid while the feature lives. Copying the fields out removes the
+//! whole class of problems, and the values are what JS wants anyway.
+
+use gdal::Metadata;
+use gdal::vector::{
+    Feature, FieldDefn, FieldValue, LayerAccess, OGRFieldType, OGRwkbGeometryType,
+    geometry_type_flatten, geometry_type_has_m, geometry_type_has_z,
+};
+use napi::bindgen_prelude::*;
+use napi_derive::napi;
+use serde_json::{Map, Value};
+
+use crate::dataset::{SharedDataset, lock_handle};
+use crate::error::{IntoGdalResult, Result, bad_argument};
+use crate::json::{is_scalar, json_f64, json_i64, json_joined_text, json_text};
+use crate::runtime::{ensure_initialized, lock_gdal};
+
+/// One attribute of a layer.
+#[napi(object)]
+pub struct FieldInfo {
+    pub name: String,
+    /// GDAL's name for the field type, e.g. `String`, `Integer64`, `RealList`.
+    pub field_type: String,
+    pub width: i32,
+    pub precision: i32,
+}
+
+/// A feature, copied out of GDAL.
+///
+/// `fid` and `geometry` are `Value` rather than `Option` so that "absent" is an
+/// explicit `null`. `napi` turns `None` into a *missing* property (`undefined`),
+/// which would sit oddly next to `properties`, where a SQL `NULL` already shows
+/// up as `null`.
+#[napi(object)]
+pub struct FeatureRecord {
+    /// The feature id, or `null` when the driver does not expose one.
+    pub fid: Value,
+    /// Field name to value. A `NULL` field is present with the value `null`,
+    /// which is how you tell it apart from a field that does not exist.
+    pub properties: Value,
+    /// The geometry as GeoJSON, or `null` when the feature has none.
+    pub geometry: Value,
+}
+
+#[napi(js_name = "Layer")]
+pub struct JsLayer {
+    shared: SharedDataset,
+    index: usize,
+}
+
+impl JsLayer {
+    pub fn new(shared: SharedDataset, index: usize) -> Self {
+        Self { shared, index }
+    }
+}
+
+/// Pull one feature across the FFI boundary.
+fn to_record(feature: &Feature<'_>, field_names: &[String]) -> Result<FeatureRecord> {
+    let mut properties = Map::with_capacity(field_names.len());
+    for (index, name) in field_names.iter().enumerate() {
+        let value = match feature.field(index).gdal()? {
+            // The `gdal` crate pulls chrono in without its `alloc` feature, so
+            // the date types cannot be formatted here. Let GDAL render them —
+            // it already knows the field's date format.
+            Some(FieldValue::DateValue(_)) | Some(FieldValue::DateTimeValue(_)) => feature
+                .field_as_string(index)
+                .gdal()?
+                .map_or(Value::Null, Value::from),
+            other => field_value_to_json(other),
+        };
+        properties.insert(name.clone(), value);
+    }
+
+    // A feature may have no geometry, and `Feature::geometry()` still returns
+    // `Some` for it: it lazily fills the wrapper from `OGR_F_GetGeometryRef`,
+    // which hands back NULL. Exporting that asks GDAL to serialise nothing and
+    // fails.
+    //
+    // `Geometry::has_gdal_ptr()` cannot be used to tell the difference — upstream
+    // `set_c_geometry` stores `Some(ptr)` unconditionally, so a NULL geometry
+    // still reports `true`. Ask GDAL directly instead.
+    let has_geometry = unsafe { !gdal_sys::OGR_F_GetGeometryRef(feature.c_feature()).is_null() };
+    let geometry = if has_geometry {
+        // This call is what populates the wrapper's pointer.
+        match feature.geometry() {
+            Some(geometry) => to_geojson(geometry)?,
+            None => Value::Null,
+        }
+    } else {
+        Value::Null
+    };
+
+    Ok(FeatureRecord {
+        fid: feature
+            .fid()
+            .map_or(Value::Null, |fid| Value::from(fid as i64)),
+        properties: Value::Object(properties),
+        geometry,
+    })
+}
+
+fn field_value_to_json(value: Option<FieldValue>) -> Value {
+    match value {
+        None => Value::Null,
+        Some(FieldValue::IntegerValue(v)) => Value::from(v),
+        Some(FieldValue::IntegerListValue(v)) => Value::from(v),
+        Some(FieldValue::Integer64Value(v)) => Value::from(v),
+        Some(FieldValue::Integer64ListValue(v)) => Value::from(v),
+        Some(FieldValue::StringValue(v)) => Value::from(v),
+        Some(FieldValue::StringListValue(v)) => Value::from(v),
+        Some(FieldValue::RealValue(v)) => Value::from(v),
+        Some(FieldValue::RealListValue(v)) => Value::from(v),
+        // `to_record` intercepts these and asks GDAL to render them, because the
+        // `gdal` crate pulls chrono in without its `alloc` feature, so the date
+        // types cannot be formatted here. Reaching this arm would mean the
+        // interception was bypassed, so returning `null` is deliberate.
+        Some(FieldValue::DateValue(_)) | Some(FieldValue::DateTimeValue(_)) => Value::Null,
+    }
+}
+
+fn layer_field_names(layer: &impl LayerAccess) -> Vec<String> {
+    layer.defn().fields().map(|field| field.name()).collect()
+}
+
+/// The layer's fields as `(name, type)` pairs.
+///
+/// The type is needed when writing: several drivers have no list columns and
+/// quietly downgrade a list field to a scalar one, so the *field* has to decide
+/// which setter is used.
+fn layer_fields(layer: &impl LayerAccess) -> Vec<(String, OGRFieldType::Type)> {
+    layer
+        .defn()
+        .fields()
+        .map(|field| (field.name(), field.field_type()))
+        .collect()
+}
+
+/// `OGRFieldType::Type` is a `c_uint` alias, not a Rust enum, so it has no
+/// `Debug` worth printing — formatting it yields a bare number. Map it to the
+/// names GDAL itself uses (`OGR_GetFieldTypeName` returns the same vocabulary).
+fn field_type_name(field_type: gdal_sys::OGRFieldType::Type) -> String {
+    use gdal_sys::OGRFieldType as OFT;
+
+    let name = match field_type {
+        OFT::OFTInteger => "Integer",
+        OFT::OFTIntegerList => "IntegerList",
+        OFT::OFTReal => "Real",
+        OFT::OFTRealList => "RealList",
+        OFT::OFTString => "String",
+        OFT::OFTStringList => "StringList",
+        OFT::OFTWideString => "WideString",
+        OFT::OFTWideStringList => "WideStringList",
+        OFT::OFTBinary => "Binary",
+        OFT::OFTDate => "Date",
+        OFT::OFTTime => "Time",
+        OFT::OFTDateTime => "DateTime",
+        OFT::OFTInteger64 => "Integer64",
+        OFT::OFTInteger64List => "Integer64List",
+        // GDAL documents the list as extensible, so an unrecognised value is
+        // not an error — surface it rather than guessing.
+        other => return format!("Unknown({other})"),
+    };
+    name.to_string()
+}
+
+/// Canonical name for a geometry type.
+///
+/// Deliberately *not* `OGRGeometryTypeToName`: GDAL spells that value
+/// `Multi Polygon`, while GeoJSON, WKT and PostGIS all write `MultiPolygon`.
+/// This is the inverse of [`geometry_type_from_name`], so the two agree.
+///
+/// A `Z` / `M` / `Z M` suffix reports the coordinate modifiers, but see
+/// `geometry_type_from_name` for why it is informational only.
+pub(crate) fn geometry_type_name(ty: OGRwkbGeometryType::Type) -> String {
+    use OGRwkbGeometryType as WKB;
+
+    let base = match geometry_type_flatten(ty) {
+        WKB::wkbNone => "None",
+        WKB::wkbPoint => "Point",
+        WKB::wkbLineString => "LineString",
+        WKB::wkbPolygon => "Polygon",
+        WKB::wkbMultiPoint => "MultiPoint",
+        WKB::wkbMultiLineString => "MultiLineString",
+        WKB::wkbMultiPolygon => "MultiPolygon",
+        WKB::wkbGeometryCollection => "GeometryCollection",
+        // `wkbUnknown`, and any type GDAL grows later.
+        _ => "Unknown",
+    };
+
+    let mut name = base.to_string();
+    if geometry_type_has_z(ty) {
+        name.push_str(" Z");
+    }
+    if geometry_type_has_m(ty) {
+        name.push_str(" M");
+    }
+    name
+}
+
+/// Map a geometry type name onto GDAL's enum, accepting the spellings
+/// [`geometry_type_name`] produces.
+///
+/// Comparison ignores case, spaces, underscores and hyphens, so `MultiPolygon`,
+/// `multi polygon` and `multipolygon` all land on the same value. A trailing
+/// `Z` / `M` / `ZM` is accepted but ignored: geometries are exchanged as GeoJSON,
+/// which carries the Z coordinate in the position itself rather than in the
+/// layer's type.
+pub(crate) fn geometry_type_from_name(name: &str) -> Result<OGRwkbGeometryType::Type> {
+    let normalised: String = name
+        .chars()
+        .filter(|c| !matches!(c, ' ' | '_' | '-'))
+        .flat_map(char::to_lowercase)
+        .collect();
+
+    // No base name ends in `z` or `m`, so this cannot eat part of one.
+    let base = normalised
+        .strip_suffix("zm")
+        .or_else(|| normalised.strip_suffix('z'))
+        .or_else(|| normalised.strip_suffix('m'))
+        .unwrap_or(normalised.as_str());
+
+    let ty = match base {
+        "" | "unknown" => OGRwkbGeometryType::wkbUnknown,
+        "none" => OGRwkbGeometryType::wkbNone,
+        "point" => OGRwkbGeometryType::wkbPoint,
+        "linestring" => OGRwkbGeometryType::wkbLineString,
+        "polygon" => OGRwkbGeometryType::wkbPolygon,
+        "multipoint" => OGRwkbGeometryType::wkbMultiPoint,
+        "multilinestring" => OGRwkbGeometryType::wkbMultiLineString,
+        "multipolygon" => OGRwkbGeometryType::wkbMultiPolygon,
+        "geometrycollection" => OGRwkbGeometryType::wkbGeometryCollection,
+        other => {
+            return Err(bad_argument(format!(
+                "unknown geometry type {other:?}; expected one of Point, LineString, Polygon, \
+                 MultiPoint, MultiLineString, MultiPolygon, GeometryCollection, Unknown"
+            )));
+        }
+    };
+    Ok(ty)
+}
+
+/// Guess a field type from a JS value.
+///
+/// `None` means "do not make a field for this", which is what `null` and nested
+/// objects get — inventing a column for a value we cannot represent would be
+/// worse than leaving it out.
+///
+/// Arrays deliberately become a plain `String` holding comma-joined text rather
+/// than a list field. A driver with no list columns (GPKG, for one) *accepts* a
+/// list field request, creates a scalar column, and then keeps reporting the
+/// list type from its definition — so a list setter afterwards stores GDAL's
+/// internal `(2:a,b)` form instead of the value. `String` is the request that
+/// behaves the same on every driver. Fields that are *already* list-typed are
+/// still written as real lists; see `set_field_value`.
+fn inferred_field_type(value: &Value) -> Option<OGRFieldType::Type> {
+    use OGRFieldType as OFT;
+
+    Some(match value {
+        Value::Null => return None,
+        Value::Bool(_) => OFT::OFTInteger,
+        Value::Number(number) if number.is_i64() || number.is_u64() => OFT::OFTInteger64,
+        Value::Number(_) => OFT::OFTReal,
+        Value::String(_) => OFT::OFTString,
+        Value::Array(items) if items.iter().all(is_scalar) => OFT::OFTString,
+        Value::Array(_) | Value::Object(_) => return None,
+    })
+}
+
+/// Write `value` into a field **whose type is `field_type`**.
+///
+/// The field's type chooses the setter, not the JS value's. A driver with no
+/// list columns (GPKG, for one) silently downgrades a list field to a scalar
+/// one, and asking for a list setter afterwards stores GDAL's internal
+/// `(2:a,b)` form rather than the value.
+fn set_field_value(
+    feature: &mut Feature<'_>,
+    index: usize,
+    field_type: OGRFieldType::Type,
+    value: &Value,
+) -> Result<()> {
+    use OGRFieldType as OFT;
+
+    if value.is_null() {
+        return feature.set_field_null(index).gdal();
+    }
+
+    match field_type {
+        OFT::OFTStringList | OFT::OFTWideStringList => {
+            let owned = match value {
+                Value::Array(items) => items.iter().map(json_text).collect::<Result<Vec<_>>>()?,
+                other => vec![json_text(other)?],
+            };
+            let values: Vec<&str> = owned.iter().map(String::as_str).collect();
+            feature.set_field_string_list(index, &values).gdal()
+        }
+        OFT::OFTIntegerList | OFT::OFTInteger64List => {
+            let owned = match value {
+                Value::Array(items) => items.iter().map(json_i64).collect::<Result<Vec<_>>>()?,
+                other => vec![json_i64(other)?],
+            };
+            feature.set_field_integer64_list(index, &owned).gdal()
+        }
+        OFT::OFTRealList => {
+            let owned = match value {
+                Value::Array(items) => items.iter().map(json_f64).collect::<Result<Vec<_>>>()?,
+                other => vec![json_f64(other)?],
+            };
+            feature.set_field_double_list(index, &owned).gdal()
+        }
+        OFT::OFTString | OFT::OFTWideString => feature
+            .set_field_string(index, &json_joined_text(value)?)
+            .gdal(),
+        OFT::OFTInteger | OFT::OFTInteger64 => {
+            if matches!(value, Value::Array(_)) {
+                return Err(bad_argument(
+                    "the target field is an integer but the value is an array, and this driver \
+                     has no list columns",
+                ));
+            }
+            feature.set_field_integer64(index, json_i64(value)?).gdal()
+        }
+        OFT::OFTReal => {
+            if matches!(value, Value::Array(_)) {
+                return Err(bad_argument(
+                    "the target field is a number but the value is an array, and this driver \
+                     has no list columns",
+                ));
+            }
+            feature.set_field_double(index, json_f64(value)?).gdal()
+        }
+        // Dates: GDAL parses the text into the field's own format. Anything else
+        // GDAL grows later takes the text form too, rather than being dropped.
+        _ => {
+            if matches!(value, Value::Array(_)) {
+                return Err(bad_argument(format!(
+                    "cannot write an array into a field of type {field_type}"
+                )));
+            }
+            feature.set_field_string(index, &json_text(value)?).gdal()
+        }
+    }
+}
+
+/// Add a feature to `layer`, creating any missing fields first.
+fn write_feature(
+    layer: &gdal::vector::Layer<'_>,
+    geometry: Option<&Value>,
+    properties: Option<Value>,
+) -> Result<()> {
+    let properties = match properties {
+        None | Some(Value::Null) => Vec::new(),
+        Some(Value::Object(map)) => map.into_iter().collect::<Vec<_>>(),
+        Some(_) => return Err(bad_argument("properties must be an object")),
+    };
+
+    // GDAL fixes a layer's schema up front, so a property with no matching field
+    // needs one made for it. Inferring the type from the JS value keeps the
+    // common case — hand it a GeoJSON Feature and be done — to a single call.
+    let existing = layer_fields(layer);
+    for (name, value) in &properties {
+        if existing.iter().any(|(field, _)| field == name) {
+            continue;
+        }
+        if let Some(field_type) = inferred_field_type(value) {
+            FieldDefn::new(name, field_type)
+                .gdal()?
+                .add_to_layer(layer)
+                .gdal()?;
+        }
+    }
+
+    // Re-read: creating fields just changed the definition.
+    let fields = layer_fields(layer);
+    let mut feature = Feature::new(layer.defn()).gdal()?;
+
+    if let Some(geometry) = geometry
+        && !geometry.is_null()
+    {
+        feature.set_geometry(from_geojson(geometry)?).gdal()?;
+    }
+
+    for (name, value) in &properties {
+        // A `null` for a field that does not exist leaves nothing to write.
+        let Some(index) = fields.iter().position(|(field, _)| field == name) else {
+            continue;
+        };
+        set_field_value(&mut feature, index, fields[index].1, value)?;
+    }
+
+    feature.create(layer).gdal()
+}
+
+/// Overwrite fields on an existing feature.
+///
+/// Unlike `write_feature` this never reshapes the schema: an update should not
+/// silently add columns, so an unknown property is an error. A `null` geometry
+/// means "leave the geometry alone".
+fn update_existing(
+    layer: &gdal::vector::Layer<'_>,
+    fid: u64,
+    geometry: Option<&Value>,
+    properties: Option<Value>,
+) -> Result<()> {
+    let fields = layer_fields(layer);
+    let mut feature = layer
+        .feature(fid)
+        .ok_or_else(|| bad_argument(format!("no feature with id {fid}")))?;
+
+    if let Some(geometry) = geometry
+        && !geometry.is_null()
+    {
+        feature.set_geometry(from_geojson(geometry)?).gdal()?;
+    }
+
+    if let Some(Value::Object(map)) = properties {
+        for (name, value) in &map {
+            let index = fields
+                .iter()
+                .position(|(field, _)| field == name)
+                .ok_or_else(|| bad_argument(format!("the layer has no field named {name:?}")))?;
+            set_field_value(&mut feature, index, fields[index].1, value)?;
+        }
+    }
+
+    layer.set_feature(feature).gdal()
+}
+
+#[napi]
+impl JsLayer {
+    /// Position of this layer in the dataset, 0-based.
+    #[napi(getter)]
+    pub fn index(&self) -> u32 {
+        self.index as u32
+    }
+
+    #[napi(getter)]
+    pub fn name(&self) -> Result<String> {
+        ensure_initialized();
+        let _guard = lock_gdal();
+        let handle = lock_handle(&self.shared);
+        let layer = handle.get()?.layer(self.index).gdal()?;
+        Ok(layer.name())
+    }
+
+    /// Feature count, or `null` when the driver cannot answer without a full
+    /// scan. Use the count only as a hint: filter it if you need certainty.
+    #[napi(getter)]
+    pub fn feature_count(&self) -> Result<Option<i64>> {
+        ensure_initialized();
+        let _guard = lock_gdal();
+        let handle = lock_handle(&self.shared);
+        let layer = handle.get()?.layer(self.index).gdal()?;
+        Ok(layer.try_feature_count().map(|count| count as i64))
+    }
+
+    /// The layer's geometry type, e.g. `Point`, `MultiPolygon`, `Unknown`.
+    #[napi(getter)]
+    pub fn geometry_type(&self) -> Result<String> {
+        ensure_initialized();
+        let _guard = lock_gdal();
+        let handle = lock_handle(&self.shared);
+        let layer = handle.get()?.layer(self.index).gdal()?;
+        Ok(geometry_type_name(layer.defn().geometry_type()))
+    }
+
+    #[napi(getter)]
+    pub fn fields(&self) -> Result<Vec<FieldInfo>> {
+        ensure_initialized();
+        let _guard = lock_gdal();
+        let handle = lock_handle(&self.shared);
+        let layer = handle.get()?.layer(self.index).gdal()?;
+        Ok(layer
+            .defn()
+            .fields()
+            .map(|field| FieldInfo {
+                name: field.name(),
+                field_type: field_type_name(field.field_type()),
+                width: field.width(),
+                precision: field.precision(),
+            })
+            .collect())
+    }
+
+    /// Bounding box as `[minX, minY, maxX, maxY]`, or `null` when the layer has
+    /// no extent (an empty layer, typically).
+    #[napi(getter)]
+    pub fn extent(&self) -> Result<Option<Vec<f64>>> {
+        ensure_initialized();
+        let _guard = lock_gdal();
+        let handle = lock_handle(&self.shared);
+        let layer = handle.get()?.layer(self.index).gdal()?;
+        Ok(layer
+            .try_get_extent()
+            .gdal()?
+            .map(|envelope| vec![envelope.MinX, envelope.MinY, envelope.MaxX, envelope.MaxY]))
+    }
+
+    /// The layer's CRS as WKT, or `null` when it has none.
+    #[napi(getter)]
+    pub fn spatial_ref_wkt(&self) -> Result<Option<String>> {
+        ensure_initialized();
+        let _guard = lock_gdal();
+        let handle = lock_handle(&self.shared);
+        let layer = handle.get()?.layer(self.index).gdal()?;
+        match layer.spatial_ref() {
+            Some(srs) => Ok(srs.to_wkt().ok()),
+            None => Ok(None),
+        }
+    }
+
+    #[napi]
+    pub fn metadata(
+        &self,
+        domain: Option<String>,
+    ) -> Result<std::collections::HashMap<String, String>> {
+        ensure_initialized();
+        let _guard = lock_gdal();
+        let handle = lock_handle(&self.shared);
+        let layer = handle.get()?.layer(self.index).gdal()?;
+        let domain = domain.unwrap_or_default();
+
+        let mut out = std::collections::HashMap::new();
+        for entry in layer.metadata() {
+            if entry.domain == domain {
+                out.insert(entry.key, entry.value);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Read every feature the current filters leave visible.
+    ///
+    /// Materialising the whole layer is the simple half of the API; a streaming
+    /// version that pulls batches on the thread pool belongs with the async
+    /// work, and until then a huge layer costs one array of plain objects.
+    #[napi]
+    pub fn features_sync(&self) -> Result<Vec<FeatureRecord>> {
+        ensure_initialized();
+        let _guard = lock_gdal();
+        let handle = lock_handle(&self.shared);
+        let mut layer = handle.get()?.layer(self.index).gdal()?;
+
+        // Collected before iterating: `features()` borrows the layer mutably.
+        let field_names = layer_field_names(&layer);
+
+        let mut records = Vec::new();
+        for feature in layer.features() {
+            records.push(to_record(&feature, &field_names)?);
+        }
+        Ok(records)
+    }
+
+    /// A single feature by id, or `null`.
+    #[napi]
+    pub fn feature(&self, fid: i64) -> Result<Option<FeatureRecord>> {
+        ensure_initialized();
+        let _guard = lock_gdal();
+        let handle = lock_handle(&self.shared);
+        let layer = handle.get()?.layer(self.index).gdal()?;
+        let field_names = layer_field_names(&layer);
+
+        match layer.feature(fid as u64) {
+            Some(feature) => Ok(Some(to_record(&feature, &field_names)?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Write a feature.
+    ///
+    /// Properties that name no existing field get one created for them, with the
+    /// type inferred from the JS value: a string becomes a `String` field, an
+    /// integer `Integer64`, a number `Real`, a boolean `Integer`, and an array of
+    /// scalars a `String` holding comma-joined text (see `inferred_field_type`
+    /// for why not a list field). A `null` or a nested object creates nothing.
+    /// Fields that already exist keep their declared type, lists included.
+    #[napi]
+    pub fn create_feature(&self, geometry: Option<Value>, properties: Option<Value>) -> Result<()> {
+        ensure_initialized();
+        let _guard = lock_gdal();
+        let handle = lock_handle(&self.shared);
+        let layer = handle.get()?.layer(self.index).gdal()?;
+        write_feature(&layer, geometry.as_ref(), properties)
+    }
+
+    /// Overwrite fields on an existing feature.
+    ///
+    /// Only the fields you name change, and unlike `createFeature` an unknown
+    /// property is an error rather than a new column. A `null` geometry leaves
+    /// the current geometry alone.
+    #[napi]
+    pub fn update_feature(
+        &self,
+        fid: i64,
+        geometry: Option<Value>,
+        properties: Option<Value>,
+    ) -> Result<()> {
+        ensure_initialized();
+        let _guard = lock_gdal();
+        let handle = lock_handle(&self.shared);
+        let layer = handle.get()?.layer(self.index).gdal()?;
+        update_existing(&layer, fid as u64, geometry.as_ref(), properties)
+    }
+
+    /// Limit the layer to features matching an OGR SQL `WHERE` clause, e.g.
+    /// `"population > 1000 AND name LIKE 'A%'"`. Pass `null` to clear.
+    #[napi]
+    pub fn set_attribute_filter(&self, query: Option<String>) -> Result<()> {
+        ensure_initialized();
+        let _guard = lock_gdal();
+        let handle = lock_handle(&self.shared);
+        let mut layer = handle.get()?.layer(self.index).gdal()?;
+        match query {
+            Some(query) => layer.set_attribute_filter(&query).gdal()?,
+            None => layer.clear_attribute_filter(),
+        }
+        Ok(())
+    }
+
+    #[napi]
+    pub fn set_spatial_filter_rect(
+        &self,
+        min_x: f64,
+        min_y: f64,
+        max_x: f64,
+        max_y: f64,
+    ) -> Result<()> {
+        ensure_initialized();
+        let _guard = lock_gdal();
+        let handle = lock_handle(&self.shared);
+        let mut layer = handle.get()?.layer(self.index).gdal()?;
+        layer.set_spatial_filter_rect(min_x, min_y, max_x, max_y);
+        Ok(())
+    }
+
+    #[napi]
+    pub fn clear_spatial_filter(&self) -> Result<()> {
+        ensure_initialized();
+        let _guard = lock_gdal();
+        let handle = lock_handle(&self.shared);
+        let mut layer = handle.get()?.layer(self.index).gdal()?;
+        layer.clear_spatial_filter();
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Geometry conversion helpers
+//
+// Geometries are exchanged as GeoJSON objects, which is what JS code already
+// speaks. These are free functions rather than a class because the interesting
+// operations are pure conversions; a `Geometry` wrapper earns its keep once
+// geometries can be constructed for writing.
+// ---------------------------------------------------------------------------
+
+fn to_geojson(geometry: &gdal::vector::Geometry) -> Result<Value> {
+    let json = geometry.json().gdal()?;
+    serde_json::from_str(&json)
+        .map_err(|err| bad_argument(format!("GDAL returned invalid GeoJSON: {err}")))
+}
+
+fn from_geojson(geometry: &Value) -> Result<gdal::vector::Geometry> {
+    let encoded = serde_json::to_string(geometry)
+        .map_err(|err| bad_argument(format!("cannot encode geometry as GeoJSON: {err}")))?;
+    gdal::vector::Geometry::from_geojson(&encoded).gdal()
+}
+
+#[napi]
+pub fn geometry_type_of(geometry: Value) -> Result<String> {
+    ensure_initialized();
+    let _guard = lock_gdal();
+    Ok(geometry_type_name(from_geojson(&geometry)?.geometry_type()))
+}
+
+#[napi]
+pub fn geometry_to_wkt(geometry: Value) -> Result<String> {
+    ensure_initialized();
+    let _guard = lock_gdal();
+    from_geojson(&geometry)?.wkt().gdal()
+}
+
+#[napi]
+pub fn geometry_to_wkb(geometry: Value) -> Result<Buffer> {
+    ensure_initialized();
+    let _guard = lock_gdal();
+    Ok(from_geojson(&geometry)?.wkb().gdal()?.into())
+}
+
+#[napi]
+pub fn geometry_from_wkt(wkt: String) -> Result<Value> {
+    ensure_initialized();
+    let _guard = lock_gdal();
+    to_geojson(&gdal::vector::Geometry::from_wkt(&wkt).gdal()?)
+}
+
+#[napi]
+pub fn geometry_from_wkb(wkb: Buffer) -> Result<Value> {
+    ensure_initialized();
+    let _guard = lock_gdal();
+    to_geojson(&gdal::vector::Geometry::from_wkb(wkb.as_ref()).gdal()?)
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    const CANONICAL: [&str; 8] = [
+        "Point",
+        "LineString",
+        "Polygon",
+        "MultiPoint",
+        "MultiLineString",
+        "MultiPolygon",
+        "GeometryCollection",
+        "Unknown",
+    ];
+
+    #[test]
+    fn geometry_names_round_trip() {
+        // The pair has to be exact inverses, otherwise a name read off a layer
+        // cannot be fed back into createLayer.
+        for name in CANONICAL {
+            let ty = geometry_type_from_name(name).expect(name);
+            assert_eq!(geometry_type_name(ty), name, "{name} did not survive");
+        }
+    }
+
+    #[test]
+    fn geometry_names_are_reported_the_way_geojson_spells_them() {
+        // GDAL's own OGRGeometryTypeToName would say "Multi Polygon" here.
+        let ty = geometry_type_from_name("MultiPolygon").unwrap();
+        assert_eq!(geometry_type_name(ty), "MultiPolygon");
+    }
+
+    #[test]
+    fn geometry_names_tolerate_spacing_and_case() {
+        for spelling in [
+            "multipolygon",
+            "MULTIPOLYGON",
+            "MultiPolygon",
+            "multi polygon",
+            "Multi_Polygon",
+            "multi-polygon",
+        ] {
+            assert_eq!(
+                geometry_type_from_name(spelling).unwrap(),
+                OGRwkbGeometryType::wkbMultiPolygon,
+                "{spelling}"
+            );
+        }
+    }
+
+    #[test]
+    fn geometry_names_reject_nonsense() {
+        let err = geometry_type_from_name("hypercube").unwrap_err();
+        assert!(
+            err.reason.contains("unknown geometry type"),
+            "{}",
+            err.reason
+        );
+    }
+
+    #[test]
+    fn field_type_names_use_gdal_vocabulary() {
+        use OGRFieldType as OFT;
+
+        assert_eq!(field_type_name(OFT::OFTInteger), "Integer");
+        assert_eq!(field_type_name(OFT::OFTInteger64), "Integer64");
+        assert_eq!(field_type_name(OFT::OFTReal), "Real");
+        assert_eq!(field_type_name(OFT::OFTString), "String");
+        assert_eq!(field_type_name(OFT::OFTStringList), "StringList");
+        assert_eq!(field_type_name(OFT::OFTDateTime), "DateTime");
+        // Unknown values are surfaced rather than silently mapped, because GDAL
+        // documents the list as extensible.
+        assert_eq!(field_type_name(999), "Unknown(999)");
+    }
+
+    #[test]
+    fn field_types_come_from_the_js_value() {
+        use OGRFieldType as OFT;
+
+        assert_eq!(inferred_field_type(&json!("a")), Some(OFT::OFTString));
+        assert_eq!(inferred_field_type(&json!(true)), Some(OFT::OFTInteger));
+        assert_eq!(inferred_field_type(&json!(1)), Some(OFT::OFTInteger64));
+        assert_eq!(inferred_field_type(&json!(1.5)), Some(OFT::OFTReal));
+        // Arrays become text on purpose: see the doc comment on the function.
+        assert_eq!(
+            inferred_field_type(&json!(["a", "b"])),
+            Some(OFT::OFTString)
+        );
+        assert_eq!(inferred_field_type(&json!([1, 2])), Some(OFT::OFTString));
+
+        // Nothing is invented for values we cannot represent.
+        assert_eq!(inferred_field_type(&json!(null)), None);
+        assert_eq!(inferred_field_type(&json!({ "a": 1 })), None);
+        assert_eq!(inferred_field_type(&json!([{ "a": 1 }])), None);
+    }
+}
