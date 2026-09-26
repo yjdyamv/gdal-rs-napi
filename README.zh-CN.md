@@ -162,13 +162,86 @@ dataset.close()
 `updateFeature(fid, geometry, properties)` 只改你点名的字段，遇到不存在的属性会报错
 （而不是加列），`geometry` 传 `null` 表示保持原样。
 
+## 调用 GDAL 命令行工具（gdal_translate / gdalwarp / ogr2ogr）
+
+三个工具各对应一次调用。`args` 就是**该工具自己的命令行参数**，GDAL 文档里的任何选项都能
+直接粘贴过来，不必再学一套词汇。
+
+```js
+// gdal_translate -of COG -co COMPRESS=DEFLATE in.tif out.tif
+await gdal.translate('out.tif', 'in.tif', ['-of', 'COG', '-co', 'COMPRESS=DEFLATE'])
+
+// gdalwarp -t_srs EPSG:3857 -r cubic in.tif out.tif
+await gdal.warp('out-3857.tif', ['in.tif'], ['-t_srs', 'EPSG:3857', '-r', 'cubic'])
+
+// ogr2ogr -f GPKG out.gpkg in.geojson -nln places
+await gdal.vectorTranslate('out.gpkg', ['in.geojson'], ['-f', 'GPKG', '-nln', 'places'])
+```
+
+每个都有 `Sync` 版本；源只有一个时还可以作为已打开数据集的方法调用。模块级的 `warp` 与
+`vectorTranslate` 接受源列表，`gdalwarp` 会把它们合并：
+
+```js
+const dataset = gdal.openSync('in.tif')
+dataset.warpSync('out-3857.tif', ['-t_srs', 'EPSG:3857', '-r', 'cubic'])
+```
+
+几点值得知道：
+
+- **返回的是一个 `Dataset`**，也就是 GDAL 刚创建的那个，照常读；`close()` 负责落盘。
+- **目标传空字符串表示内存**：`translateSync('', source, ['-of', 'MEM'])` 直接返回内存数据集。
+- **`LAYOUT=COG` 要重新打开才看得到**。GDAL 交回的是刚写完的数据集，`LAYOUT` 是驱动**打开**
+  一个成品 COG 时才报的，所以要断言这一点请重新打开文件。
+- **参数写错会把参数原样回显**：`gdal_translate rejected these arguments: -not-a-real-option`，
+  而不是像 `gdal` 自己的 `BuildVRTOptions` 那样——它从不检查 GDAL 是否返回了空 options 指针——
+  直接崩在空指针上。
+- **这里的 `ogr2ogr` 没有 `-overwrite`**。那是命令行层的功能，不属于 `GDALVectorTranslate`：
+  目标已存在时是**追加/更新**而不是替换，需要替换请先删掉目标。
+
 ## 异步语义（用之前请读）
 
 触碰 GDAL 的每个操作都会拿一把**进程级锁**：GDAL 的 last-error 是进程全局状态，
 `gdal` crate 每次 FFI 后立刻读取并重置它，并发调用会互相串错错误信息。
 
-所以异步 API 让 **event loop** 不被阻塞，但**不会**让 GDAL 工作并行。
-十个并发 `readPixels()` 和顺序执行十个耗时一样。
+所以异步 API 让 **event loop** 不被阻塞，但**仅靠它不会**让 GDAL 工作并行。
+`open()` 出来的数据集上十个并发 `readPixels()` 和顺序执行十个耗时一样。
+
+### 真并行：`openThreadSafe()`
+
+GDAL ≥ 3.10 提供 `GDALGetThreadSafeDataset`，本绑定把它暴露了出来：
+
+```js
+const dataset = await gdal.openThreadSafe('big.tif')
+const band = dataset.band(0)
+
+// 这些是真正重叠执行的，不会在锁上排队
+const tiles = await Promise.all(windows.map((window) => band.readPixels(window)))
+```
+
+这类数据集的**像素读取**走锁的**共享**侧而不是独占侧。其余操作仍然走独占侧，所以上面说的
+全局错误状态串扰依然被排除在外。
+
+```sh
+node scripts/bench-parallel.mjs big.tif --concurrency 4
+```
+
+代价与边界：
+
+- **只读、只栅格**。GDAL 的 thread-safe dataset 不含矢量图层，也不含多维 API。
+  `writePixels`、`setProjection`、`setGeoTransform`、`setMetadataItem`、`flush` 以及所有图层
+  访问都抛 `GDAL_BAD_ARGUMENT`——那些请用 `open()`。`createCopy` 和 `translate`/`warp` 系列
+  是可用的：它们读源、写到别处。
+- **用 `threadSafe` 自省**：`open()` 得到的是 `false`，`openThreadSafe()` 是 `true`。驱动完全
+  不支持时**打开就会失败并指名驱动**，而不是悄悄退回串行。
+- **并发上限由工作线程池决定**：Node 默认 4 条，所以除非启动 Node 前调大
+  `UV_THREADPOOL_SIZE`，最多只有 4 个读取重叠。
+- **文件描述符**：多数驱动并非原生线程安全，GDAL 会**每线程重开一次文件**，调高并发就会消耗
+  fd——记得同时调大 `ulimit -n`。GTiff / COG（libtiff）是例外，也是最省的那种。
+- **块缓存命中时并行没有收益**：如果读能由 GDAL 的块缓存直接满足，锁从来就不是瓶颈。
+  `openThreadSafe()` 的价值出现在读很贵的时候：冷 I/O，或者解压。
+
+`close()` 的行为与其它地方一致：之后的读取会失败，而**已经在进行中**的读取会在仍然存活的句柄上
+正常跑完。
 
 ### 错误码
 
@@ -305,11 +378,21 @@ DGN、S57、VFK、CSV、GTFS、KMLSUPEROVERLAY、STACIT/STACTA、PGDUMP 等。
 **不含**：KML、GML、GPX（需要 libexpat）、LIBKML、HDF5、NetCDF、PostgreSQL，
 以及网络驱动（WMS/WMTS/OGCAPI，需要 curl）。要加就得改 `bundled` feature 列表并重新构建。
 
+`openThreadSafe()` 需要 GDAL ≥ 3.10，bundled 构建满足。链接 3.10 以前的系统 GDAL
+（`--no-default-features`）**仍然能编译**，只是没有这个方法：`build.rs` 读取 `gdal-sys`
+报告的版本号，仅在 `gdal::ThreadSafeDataset` 存在时才打开它。
+
 ## 已知缺口
 
-暂无 `gdalwarp`/`gdal_translate` 封装；没有 `SpatialRef` 类（构造 CRS 只能用
-`epsgToWkt`）；没有 `statistics()` 与 `buildOverviews()`；读图层是整层物化，
-没有流式或异步迭代；Intel macOS 与 32 位目标未构建。
+没有 `SpatialRef` 类（构造 CRS 只能用 `epsgToWkt`）；没有 `statistics()` 与
+`buildOverviews()`；读图层是整层物化，没有流式或异步迭代；`translate`/`warp`/`ogr2ogr`
+没有进度回调，也没有 `-overwrite` 兼容层；没有 `GDALDEMProcessing`（hillshade 等）。
+
+一个构建系统层面的瑕疵：**异步方法的返回类型在 `.d.ts` 里是 `Promise<unknown>`**，
+因为 napi 无法从 `Task` 推导 `JsValue`。同步方法的类型是准确的，运行时返回的也确实是对应
+对象；只有类型标注这一层信息丢失。
+
+Intel macOS 与 32 位目标未构建。
 
 ## 许可证
 

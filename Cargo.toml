@@ -47,3 +47,9 @@ lto = true
 codegen-units = 1
 strip = "symbols"
 opt-level = 3
+
+[lints.rust.unexpected_cfgs]
+level = "warn"
+# `build.rs` sets this from `DEP_GDAL_VERSION_NUMBER`, because `gdal` gates
+# `ThreadSafeDataset` on GDAL >= 3.10 behind a `cfg` we cannot observe from here.
+check-cfg = ['cfg(gd_thread_safe)']

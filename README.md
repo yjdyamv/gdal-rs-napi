@@ -246,16 +246,104 @@ an unknown property rather than adding a column, and treats a `null` geometry as
 On a feature, `fid` and `geometry` are `null` when absent — matching
 `properties`, where a SQL `NULL` is also `null`.
 
+## Programs — `gdal_translate`, `gdalwarp` and `ogr2ogr`
+
+Three of GDAL's command-line tools are available as one call each. `args` are that
+tool's **own command-line arguments**, so anything in GDAL's documentation can be
+pasted straight in and there is no second vocabulary to learn.
+
+```js
+// gdal_translate -of COG -co COMPRESS=DEFLATE in.tif out.tif
+await gdal.translate('out.tif', 'in.tif', ['-of', 'COG', '-co', 'COMPRESS=DEFLATE'])
+
+// gdalwarp -t_srs EPSG:3857 -r cubic in.tif out.tif
+await gdal.warp('out-3857.tif', ['in.tif'], ['-t_srs', 'EPSG:3857', '-r', 'cubic'])
+
+// ogr2ogr -f GPKG out.gpkg in.geojson -nln places
+await gdal.vectorTranslate('out.gpkg', ['in.geojson'], ['-f', 'GPKG', '-nln', 'places'])
+```
+
+Each also comes with a `Sync` suffix, and as a method on an already-open dataset
+when there is a single source. The module-level `warp` and `vectorTranslate` take
+a list, and `gdalwarp` merges what it is given:
+
+```js
+const dataset = gdal.openSync('in.tif')
+dataset.warpSync('out-3857.tif', ['-t_srs', 'EPSG:3857', '-r', 'cubic'])
+```
+
+Worth knowing:
+
+- **You get a `Dataset` back.** It is the dataset GDAL created, so read it as
+  usual; `close()` writes it out.
+- **An empty destination means memory.** `translateSync('', source, ['-of',
+  'MEM'])` returns an in-memory dataset instead of touching the filesystem.
+- **`LAYOUT=COG` shows up on reopen, not on the returned handle.** GDAL hands back
+  the dataset it just wrote, and the driver reports `LAYOUT` when it opens a
+  finished COG — so reopen the file if that is what you are asserting.
+- **A bad argument is reported with the arguments in it** —
+  `gdal_translate rejected these arguments: -not-a-real-option` — rather than the
+  crash `gdal`'s own `BuildVRTOptions` wrapper walks into, which never checks
+  whether GDAL returned a null options pointer.
+- **`ogr2ogr` has no `-overwrite` here.** That flag is a command-line feature, not
+  part of `GDALVectorTranslate`: an existing destination is updated rather than
+  replaced, so delete it first if that is what you want.
+
 ## Async semantics — read this before relying on it
 
 Every operation that touches GDAL takes a **process-wide lock**, because GDAL
 keeps its last-error state globally and the `gdal` crate reads and resets it
 right after each FFI call; concurrent calls can observe each other's errors.
 
-The async APIs therefore keep the Node **event loop** free — they do not make
-GDAL work run in parallel. Ten concurrent `readPixels()` calls take as long as
-ten sequential ones. (GDAL ≥ 3.10 has `GDALGetThreadSafeDataset` for genuinely
-parallel read-only raster access; that is not wired up yet.)
+The async APIs therefore keep the Node **event loop** free — by themselves they do
+not make GDAL work run in parallel. Ten concurrent `readPixels()` calls on a
+dataset from `open()` take as long as ten sequential ones.
+
+### Real parallelism: `openThreadSafe()`
+
+GDAL ≥ 3.10 has `GDALGetThreadSafeDataset`, and this binding wires it up:
+
+```js
+const dataset = await gdal.openThreadSafe('big.tif')
+const band = dataset.band(0)
+
+// These genuinely overlap instead of queueing on the lock.
+const tiles = await Promise.all(windows.map((window) => band.readPixels(window)))
+```
+
+A pixel read of such a dataset takes the **shared** side of the lock rather than
+the exclusive side. Everything else still takes the exclusive side, so the global
+error-state race described above stays out of the picture.
+
+```sh
+node scripts/bench-parallel.mjs big.tif --concurrency 4
+```
+
+What it costs, and what it does not do:
+
+- **Read-only, raster-only.** GDAL's thread-safe datasets exclude vector layers
+  and the multidimensional API. `writePixels`, `setProjection`, `setGeoTransform`,
+  `setMetadataItem`, `flush` and every layer accessor throw `GDAL_BAD_ARGUMENT` on
+  one — use `open()` for those. `createCopy` and the `translate`/`warp` family do
+  work, because they read the source and write somewhere else.
+- **`threadSafe` tells you which kind you have.** `open()` datasets report
+  `false`, `openThreadSafe()` ones `true`. A driver that cannot do it at all fails
+  the open with a message naming it, rather than quietly handing back a dataset
+  that serialises.
+- **Concurrency is capped by the worker pool.** Node's is four threads by default,
+  so only four reads overlap unless you raise `UV_THREADPOOL_SIZE` before starting
+  Node.
+- **File descriptors.** Most drivers are not natively thread-safe, and GDAL
+  reopens the file per thread for those, so raising the concurrency costs file
+  descriptors — raise `ulimit -n` too. GTiff and COG (libtiff) are the exception,
+  and the cheap case.
+- **A warm block cache is free.** If GDAL can serve a read from its block cache
+  then the lock was never the bottleneck and there is nothing to win.
+  `openThreadSafe()` pays off when reads are expensive: cold I/O, or
+  decompression.
+
+`close()` behaves as it does everywhere else: later reads fail, and a read already
+in flight finishes against a handle that is still alive.
 
 ### Error codes
 
@@ -428,11 +516,18 @@ backs GTiff and COG.
 PostgreSQL, and the network drivers (WMS/WMTS/OGCAPI — they need curl). Enabling
 any of them means editing the `bundled` feature list and rebuilding.
 
+`openThreadSafe()` needs GDAL ≥ 3.10, which the bundled build satisfies. Linking a
+system GDAL older than that (`--no-default-features`) still compiles — the method
+is simply absent, because `build.rs` reads the version `gdal-sys` reports and only
+switches it on where `gdal::ThreadSafeDataset` exists.
+
 ### Targets
 
-Prebuilt binaries are published for `win32-x64-msvc`, `darwin-x64`,
-`darwin-arm64`, `linux-x64-gnu` and `linux-arm64-gnu`. musl and 32-bit targets
-are not supported.
+CI builds six targets, the ones in the table under "Prebuilt binaries":
+`win32-x64-msvc`, `darwin-arm64`, `linux-x64-gnu`, `linux-arm64-gnu`, and the two
+musl ones. The musl legs are `continue-on-error` — static C++ GDAL cross-linked
+under musl through napi's `--cross-compile` plus zig is the least certain link in
+the chain — so a release can ship without them. 32-bit targets are not built.
 
 ## Licence
 

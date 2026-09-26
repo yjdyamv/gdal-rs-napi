@@ -1,15 +1,17 @@
 //! `Dataset`: opening, creating, and the dataset-level accessors.
 //!
-//! Everything that outlives a call hangs off a single `Arc<Mutex<DatasetHandle>>`
-//! so that `Dataset` and the `RasterBand`s it hands out share one GDAL handle,
-//! and so a `close()` invalidates every derived object rather than leaving a
-//! dangling pointer behind. The `gdal` crate's `RasterBand<'a>` borrows the
-//! `Dataset`, which is exactly why we never store one: bands are re-derived from
-//! the handle on each call.
+//! Everything that outlives a call hangs off a [`DatasetRef`], so that `Dataset`
+//! and the `RasterBand`s it hands out share one GDAL handle, and so a `close()`
+//! invalidates every derived object rather than leaving a dangling pointer
+//! behind. The `gdal` crate's `RasterBand<'a>` borrows the `Dataset`, which is
+//! exactly why we never store one: bands are re-derived from the handle on each
+//! call.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard};
 
+#[cfg(gd_thread_safe)]
+use gdal::ThreadSafeDataset;
 use gdal::cpl::CslStringList;
 use gdal::spatial_ref::SpatialRef;
 use gdal::vector::{LayerAccess, LayerOptions, OGRwkbGeometryType};
@@ -21,8 +23,9 @@ use serde_json::Value;
 use crate::band::JsRasterBand;
 use crate::dtype::DataType;
 use crate::error::{GdalErrorCode, IntoGdalResult, Result, bad_argument, into_status_error, split};
+use crate::programs;
 use crate::raster_io::{build_creation_options, create_dataset};
-use crate::runtime::{ensure_initialized, lock_gdal};
+use crate::runtime::{ensure_initialized, lock_gdal, lock_gdal_shared};
 use crate::vector::JsLayer;
 
 pub struct DatasetHandle {
@@ -46,6 +49,179 @@ impl DatasetHandle {
         self.dataset
             .as_ref()
             .ok_or_else(|| bad_argument("the dataset is closed"))
+    }
+
+    pub fn get_mut(&mut self) -> Result<&mut GdalDataset> {
+        self.dataset
+            .as_mut()
+            .ok_or_else(|| bad_argument("the dataset is closed"))
+    }
+
+    fn into_shared(dataset: GdalDataset) -> SharedDataset {
+        Arc::new(Mutex::new(Self {
+            dataset: Some(dataset),
+        }))
+    }
+}
+
+/// A handle to an open dataset. Two flavours, differing only in how access is
+/// serialised:
+///
+/// * [`DatasetRef::Serialised`] is what `open`/`create` produce. Every operation
+///   takes the process-wide GDAL lock in *write* mode plus this dataset's own
+///   mutex, so nothing runs concurrently — which is what GDAL's process-global
+///   error state requires.
+/// * `DatasetRef::Concurrent` comes from `openThreadSafe` and holds a
+///   `GDALGetThreadSafeDataset`. Pixel reads take the process-wide lock in *read*
+///   mode and skip the per-dataset mutex, so several of them genuinely run at
+///   once. Everything else still takes the write lock.
+#[derive(Clone)]
+pub enum DatasetRef {
+    Serialised(SharedDataset),
+    #[cfg(gd_thread_safe)]
+    Concurrent {
+        /// `Some` until `close()`. The `Option` is what makes `close()` work the
+        /// same way here as it does for the serialised flavour: taking the
+        /// dataset out drops the last reference and GDAL closes the file. A read
+        /// already in flight holds a clone, so it finishes against a live handle
+        /// and only *later* reads fail.
+        dataset: Arc<Mutex<Option<ThreadSafeDataset>>>,
+    },
+}
+
+/// Clone the thread-safe dataset out of its slot, or report that it is closed.
+#[cfg(gd_thread_safe)]
+fn concurrent(slot: &Arc<Mutex<Option<ThreadSafeDataset>>>) -> Result<ThreadSafeDataset> {
+    let slot = slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    slot.clone()
+        .ok_or_else(|| bad_argument("the dataset is closed"))
+}
+
+/// What every write attempt on a thread-safe dataset is told.
+fn read_only() -> Error<GdalErrorCode> {
+    bad_argument(
+        "a thread-safe dataset is read-only: use open() if you need to write, or to reach \
+         vector layers",
+    )
+}
+
+impl DatasetRef {
+    /// Wrap a freshly opened dataset the ordinary way.
+    pub fn serialised(dataset: GdalDataset) -> Self {
+        Self::Serialised(DatasetHandle::into_shared(dataset))
+    }
+
+    /// Run `f` with **read** access, under the shared lock when this handle is
+    /// concurrent.
+    ///
+    /// # Lock rules
+    ///
+    /// Only pixel reads call this. **The closure must not reach anything that
+    /// takes the write lock**: `RwLock` is not reentrant, so that deadlocks the
+    /// process. Concretely — no [`Self::with_exclusive`], no [`Self::with_mut`],
+    /// no second dataset, no program call. `read_window` only touches GDAL, so it
+    /// is safe.
+    pub fn with<T>(&self, f: impl FnOnce(&GdalDataset) -> Result<T>) -> Result<T> {
+        match self {
+            Self::Serialised(shared) => {
+                let _guard = lock_gdal();
+                let handle = lock_handle(shared);
+                f(handle.get()?)
+            }
+            #[cfg(gd_thread_safe)]
+            Self::Concurrent { dataset } => {
+                let _guard = lock_gdal_shared();
+                // Cloned out rather than read in place, so `close()` does not have
+                // to wait for a whole pixel read to finish.
+                let dataset = concurrent(dataset)?;
+                f(dataset.as_ref())
+            }
+        }
+    }
+
+    /// Run `f` with read access under the **write** lock, even for a concurrent
+    /// handle.
+    ///
+    /// Everything other than a pixel read uses this, because the rest of the API
+    /// reaches into GDAL in ways that touch global state.
+    pub fn with_exclusive<T>(&self, f: impl FnOnce(&GdalDataset) -> Result<T>) -> Result<T> {
+        match self {
+            Self::Serialised(shared) => {
+                let _guard = lock_gdal();
+                let handle = lock_handle(shared);
+                f(handle.get()?)
+            }
+            #[cfg(gd_thread_safe)]
+            Self::Concurrent { dataset } => {
+                let _guard = lock_gdal();
+                let dataset = concurrent(dataset)?;
+                f(dataset.as_ref())
+            }
+        }
+    }
+
+    /// Run `f` with write access. A thread-safe dataset is read-only by
+    /// construction, so it refuses.
+    pub fn with_mut<T>(&self, f: impl FnOnce(&mut GdalDataset) -> Result<T>) -> Result<T> {
+        match self {
+            Self::Serialised(shared) => {
+                let _guard = lock_gdal();
+                let mut handle = lock_handle(shared);
+                f(handle.get_mut()?)
+            }
+            #[cfg(gd_thread_safe)]
+            Self::Concurrent { .. } => Err(read_only()),
+        }
+    }
+
+    /// Whether this handle can actually be read concurrently, for `dataset.threadSafe`.
+    pub fn is_concurrent(&self) -> bool {
+        match self {
+            Self::Serialised(_) => false,
+            #[cfg(gd_thread_safe)]
+            Self::Concurrent { .. } => true,
+        }
+    }
+
+    /// Reject vector access on a thread-safe handle.
+    ///
+    /// GDAL's thread-safe datasets are raster-only, so without this a layer call
+    /// would fail with "layer index 0 is out of range" — true, but useless as an
+    /// explanation.
+    pub fn ensure_vector_capable(&self) -> Result<()> {
+        if self.is_concurrent() {
+            return Err(bad_argument(
+                "a thread-safe dataset has no vector layers: GDAL's thread-safe datasets are \
+                 read-only rasters. Use open() to read vector data instead.",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Release the handle. Idempotent.
+    pub fn close(&self) -> Result<()> {
+        match self {
+            Self::Serialised(shared) => {
+                let _guard = lock_gdal();
+                let mut handle = lock_handle(shared);
+                if let Some(dataset) = handle.dataset.take() {
+                    dataset.close().gdal()?;
+                }
+                Ok(())
+            }
+            #[cfg(gd_thread_safe)]
+            Self::Concurrent { dataset } => {
+                // The write lock is what makes this safe: it waits for any read in
+                // flight, and a read that already cloned the handle keeps it alive
+                // until it is done, so nothing is closed from under it.
+                let _guard = lock_gdal();
+                let mut slot = dataset
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                *slot = None;
+                Ok(())
+            }
+        }
     }
 }
 
@@ -104,6 +280,38 @@ fn open_gdal(path: &str, update: bool) -> Result<GdalDataset> {
     .gdal()
 }
 
+/// Open a dataset several threads can read at once.
+///
+/// GDAL only offers this for read-only rasters, which is why the flags stop at
+/// `GDAL_OF_RASTER` — no `GDAL_OF_VECTOR`, no `GDAL_OF_UPDATE`.
+#[cfg(gd_thread_safe)]
+fn open_thread_safe_gdal(path: &str) -> Result<DatasetRef> {
+    ensure_initialized();
+    let _guard = lock_gdal();
+
+    let dataset = GdalDataset::open_ex(
+        path,
+        DatasetOptions {
+            open_flags: GdalOpenFlags::GDAL_OF_RASTER | GdalOpenFlags::GDAL_OF_THREAD_SAFE,
+            ..DatasetOptions::default()
+        },
+    )
+    .gdal()?;
+
+    match dataset.try_into_thread_safe(GdalOpenFlags::GDAL_OF_RASTER) {
+        Ok(dataset) => Ok(DatasetRef::Concurrent {
+            dataset: Arc::new(Mutex::new(Some(dataset))),
+        }),
+        Err(err) => {
+            let driver = err.into_inner().driver().short_name();
+            Err(bad_argument(format!(
+                "{driver} cannot be read from several threads: openThreadSafe() needs a read-only \
+                 raster. Use open() and read it through the serialised API instead."
+            )))
+        }
+    }
+}
+
 fn create_gdal(path: &str, options: &CreateOptions) -> Result<GdalDataset> {
     ensure_initialized();
     let _guard = lock_gdal();
@@ -130,22 +338,17 @@ fn create_vector_gdal(path: &str, driver_name: &str) -> Result<GdalDataset> {
 
 #[napi(js_name = "Dataset")]
 pub struct JsDataset {
-    shared: SharedDataset,
+    dataset: DatasetRef,
     path: String,
 }
 
 impl JsDataset {
-    fn wrap(dataset: GdalDataset, path: String) -> Self {
-        Self {
-            shared: Arc::new(Mutex::new(DatasetHandle {
-                dataset: Some(dataset),
-            })),
-            path,
-        }
+    fn wrap_ref(dataset: DatasetRef, path: String) -> Self {
+        Self { dataset, path }
     }
 
-    pub fn shared(&self) -> &SharedDataset {
-        &self.shared
+    fn wrap(dataset: GdalDataset, path: String) -> Self {
+        Self::wrap_ref(DatasetRef::serialised(dataset), path)
     }
 }
 
@@ -158,43 +361,44 @@ impl JsDataset {
         self.path.clone()
     }
 
+    /// Whether this handle is read concurrently. True only for `openThreadSafe`.
+    #[napi(getter)]
+    pub fn thread_safe(&self) -> bool {
+        self.dataset.is_concurrent()
+    }
+
     #[napi(getter)]
     pub fn driver(&self) -> Result<String> {
-        let _guard = lock_gdal();
-        let handle = lock_handle(&self.shared);
-        Ok(handle.get()?.driver().short_name())
+        self.dataset
+            .with_exclusive(|dataset| Ok(dataset.driver().short_name()))
     }
 
     /// Raster width in pixels.
     #[napi(getter)]
     pub fn width(&self) -> Result<u32> {
-        let _guard = lock_gdal();
-        let handle = lock_handle(&self.shared);
-        Ok(handle.get()?.raster_size().0 as u32)
+        self.dataset
+            .with_exclusive(|dataset| Ok(dataset.raster_size().0 as u32))
     }
 
     /// Raster height in pixels.
     #[napi(getter)]
     pub fn height(&self) -> Result<u32> {
-        let _guard = lock_gdal();
-        let handle = lock_handle(&self.shared);
-        Ok(handle.get()?.raster_size().1 as u32)
+        self.dataset
+            .with_exclusive(|dataset| Ok(dataset.raster_size().1 as u32))
     }
 
     #[napi(getter)]
     pub fn band_count(&self) -> Result<u32> {
-        let _guard = lock_gdal();
-        let handle = lock_handle(&self.shared);
-        Ok(handle.get()?.raster_count() as u32)
+        self.dataset
+            .with_exclusive(|dataset| Ok(dataset.raster_count() as u32))
     }
 
     /// Six affine geotransform coefficients, or `null` when the dataset has none
     /// (which is normal for an unreferenced raster).
     #[napi(getter)]
     pub fn geo_transform(&self) -> Result<Option<Vec<f64>>> {
-        let _guard = lock_gdal();
-        let handle = lock_handle(&self.shared);
-        Ok(handle.get()?.geo_transform().ok().map(|gt| gt.to_vec()))
+        self.dataset
+            .with_exclusive(|dataset| Ok(dataset.geo_transform().ok().map(|gt| gt.to_vec())))
     }
 
     /// Set the geotransform: `[originX, pixelWidth, rowRotation, originY,
@@ -207,15 +411,8 @@ impl JsDataset {
                 values.len()
             ))
         })?;
-
-        let _guard = lock_gdal();
-        let mut handle = lock_handle(&self.shared);
-        handle
-            .dataset
-            .as_mut()
-            .ok_or_else(|| bad_argument("the dataset is closed"))?
-            .set_geo_transform(&array)
-            .gdal()
+        self.dataset
+            .with_mut(|dataset| dataset.set_geo_transform(&array).gdal())
     }
 
     /// Set the CRS from a WKT string — see `epsgToWkt` for the usual way to get
@@ -223,46 +420,41 @@ impl JsDataset {
     /// `spatialRefWkt` will do too.
     #[napi]
     pub fn set_projection(&self, wkt: String) -> Result<()> {
-        let _guard = lock_gdal();
-        let mut handle = lock_handle(&self.shared);
-        handle
-            .dataset
-            .as_mut()
-            .ok_or_else(|| bad_argument("the dataset is closed"))?
-            .set_projection(&wkt)
-            .gdal()
+        self.dataset
+            .with_mut(|dataset| dataset.set_projection(&wkt).gdal())
     }
 
     /// CRS as WKT, or `null` when the dataset has no projection.
     #[napi(getter)]
     pub fn projection(&self) -> Result<Option<String>> {
-        let _guard = lock_gdal();
-        let handle = lock_handle(&self.shared);
-        let wkt = handle.get()?.projection();
-        Ok(if wkt.is_empty() { None } else { Some(wkt) })
+        self.dataset.with_exclusive(|dataset| {
+            let wkt = dataset.projection();
+            Ok(if wkt.is_empty() { None } else { Some(wkt) })
+        })
     }
 
     /// Key/value metadata for `domain` (default: the plain-string domain).
+    ///
+    /// `IMAGE_STRUCTURE` lives here rather than on a band, which is how you check
+    /// what a `createCopy` to COG actually produced.
     #[napi]
     pub fn metadata(&self, domain: Option<String>) -> Result<HashMap<String, String>> {
-        let _guard = lock_gdal();
-        let handle = lock_handle(&self.shared);
         let domain = domain.unwrap_or_default();
-
-        let mut out = HashMap::new();
-        for entry in handle.get()?.metadata() {
-            if entry.domain == domain {
-                out.insert(entry.key, entry.value);
+        self.dataset.with_exclusive(|dataset| {
+            let mut out = HashMap::new();
+            for entry in dataset.metadata() {
+                if entry.domain == domain {
+                    out.insert(entry.key, entry.value);
+                }
             }
-        }
-        Ok(out)
+            Ok(out)
+        })
     }
 
     #[napi]
     pub fn metadata_domains(&self) -> Result<Vec<String>> {
-        let _guard = lock_gdal();
-        let handle = lock_handle(&self.shared);
-        Ok(handle.get()?.metadata_domains())
+        self.dataset
+            .with_exclusive(|dataset| Ok(dataset.metadata_domains()))
     }
 
     #[napi]
@@ -272,38 +464,29 @@ impl JsDataset {
         value: String,
         domain: Option<String>,
     ) -> Result<()> {
-        let _guard = lock_gdal();
-        let mut handle = lock_handle(&self.shared);
         let domain = domain.unwrap_or_default();
-        // `set_metadata_item` needs `&mut Dataset`, but the handle owns it, so a
-        // local mutable borrow is enough.
-        let dataset = handle
-            .dataset
-            .as_mut()
-            .ok_or_else(|| bad_argument("the dataset is closed"))?;
-        dataset.set_metadata_item(&key, &value, &domain).gdal()
+        self.dataset
+            .with_mut(|dataset| dataset.set_metadata_item(&key, &value, &domain).gdal())
     }
 
     /// Band at `index`, **0-based** (GDAL itself is 1-based).
     #[napi]
     pub fn band(&self, index: u32) -> Result<JsRasterBand> {
         ensure_initialized();
-        let _guard = lock_gdal();
-
-        let data_type = {
-            let handle = lock_handle(&self.shared);
-            let dataset = handle.get()?;
+        let data_type = self.dataset.with_exclusive(|dataset| {
             let band_count = dataset.raster_count();
             if index as usize >= band_count {
                 return Err(bad_argument(format!(
                     "band index {index} is out of range: the dataset has {band_count} band(s)"
                 )));
             }
-            DataType::from_gdal(dataset.rasterband(index as usize + 1).gdal()?.band_type())
-        };
+            Ok(DataType::from_gdal(
+                dataset.rasterband(index as usize + 1).gdal()?.band_type(),
+            ))
+        })?;
 
         Ok(JsRasterBand::new(
-            Arc::clone(&self.shared),
+            self.dataset.clone(),
             index as usize,
             data_type,
         ))
@@ -311,11 +494,9 @@ impl JsDataset {
 
     #[napi]
     pub fn bands(&self) -> Result<Vec<JsRasterBand>> {
-        let band_count = {
-            let _guard = lock_gdal();
-            let handle = lock_handle(&self.shared);
-            handle.get()?.raster_count()
-        };
+        let band_count = self
+            .dataset
+            .with_exclusive(|dataset| Ok(dataset.raster_count()))?;
         (0..band_count as u32)
             .map(|index| self.band(index))
             .collect()
@@ -326,8 +507,7 @@ impl JsDataset {
     #[napi]
     pub fn create_layer(&self, options: CreateLayerOptions) -> Result<JsLayer> {
         ensure_initialized();
-        let _guard = lock_gdal();
-        let mut handle = lock_handle(&self.shared);
+        self.dataset.ensure_vector_capable()?;
 
         let geometry_type = match &options.geometry_type {
             Some(name) => crate::vector::geometry_type_from_name(name)?,
@@ -345,11 +525,7 @@ impl JsDataset {
             .collect();
         let layer_option_refs: Vec<&str> = layer_options.iter().map(String::as_str).collect();
 
-        let index = {
-            let dataset = handle
-                .dataset
-                .as_mut()
-                .ok_or_else(|| bad_argument("the dataset is closed"))?;
+        let index = self.dataset.with_mut(|dataset| {
             // A driver is free to name the layer differently, so record the
             // position rather than assuming it lands at the end.
             let index = dataset.layer_count();
@@ -365,66 +541,62 @@ impl JsDataset {
                     },
                 })
                 .gdal()?;
-            index
-        };
+            Ok(index)
+        })?;
 
-        Ok(JsLayer::new(Arc::clone(&self.shared), index))
+        Ok(JsLayer::new(self.dataset.clone(), index))
     }
 
     /// Number of vector layers.
     #[napi(getter)]
     pub fn layer_count(&self) -> Result<u32> {
-        let _guard = lock_gdal();
-        let handle = lock_handle(&self.shared);
-        Ok(handle.get()?.layer_count() as u32)
+        self.dataset.ensure_vector_capable()?;
+        self.dataset
+            .with_exclusive(|dataset| Ok(dataset.layer_count() as u32))
     }
 
     /// Layer at `index`, **0-based**.
     #[napi]
     pub fn layer(&self, index: u32) -> Result<JsLayer> {
         ensure_initialized();
-        let layer_count = {
-            let _guard = lock_gdal();
-            let handle = lock_handle(&self.shared);
-            handle.get()?.layer_count()
-        };
+        self.dataset.ensure_vector_capable()?;
+        let layer_count = self
+            .dataset
+            .with_exclusive(|dataset| Ok(dataset.layer_count()))?;
+
         if index as usize >= layer_count {
             return Err(bad_argument(format!(
                 "layer index {index} is out of range: the dataset has {layer_count} layer(s)"
             )));
         }
-        Ok(JsLayer::new(Arc::clone(&self.shared), index as usize))
+        Ok(JsLayer::new(self.dataset.clone(), index as usize))
     }
 
     #[napi]
     pub fn layer_by_name(&self, name: String) -> Result<JsLayer> {
         ensure_initialized();
-        let found = {
-            let _guard = lock_gdal();
-            let handle = lock_handle(&self.shared);
-            let dataset = handle.get()?;
-            let mut found = None;
+        self.dataset.ensure_vector_capable()?;
+        let found = self.dataset.with_exclusive(|dataset| {
             for candidate in 0..dataset.layer_count() {
                 if dataset.layer(candidate).gdal()?.name() == name {
-                    found = Some(candidate);
-                    break;
+                    return Ok(Some(candidate));
                 }
             }
-            found
-        };
+            Ok(None)
+        })?;
+
         match found {
-            Some(index) => Ok(JsLayer::new(Arc::clone(&self.shared), index)),
+            Some(index) => Ok(JsLayer::new(self.dataset.clone(), index)),
             None => Err(bad_argument(format!("no layer named {name:?}"))),
         }
     }
 
     #[napi]
     pub fn layers(&self) -> Result<Vec<JsLayer>> {
-        let layer_count = {
-            let _guard = lock_gdal();
-            let handle = lock_handle(&self.shared);
-            handle.get()?.layer_count()
-        };
+        self.dataset.ensure_vector_capable()?;
+        let layer_count = self
+            .dataset
+            .with_exclusive(|dataset| Ok(dataset.layer_count()))?;
         (0..layer_count as u32)
             .map(|index| self.layer(index))
             .collect()
@@ -444,15 +616,12 @@ impl JsDataset {
         options: Option<Value>,
     ) -> Result<JsDataset> {
         ensure_initialized();
-        let _guard = lock_gdal();
-        let handle = lock_handle(&self.shared);
-        let source = handle.get()?;
-
         let driver = DriverManager::get_driver_by_name(&driver).gdal()?;
         let creation_options = build_creation_options(options.as_ref())?;
-        let dataset = source
-            .create_copy(&driver, &path, &creation_options)
-            .gdal()?;
+
+        let dataset = self.dataset.with_exclusive(|source| {
+            source.create_copy(&driver, &path, &creation_options).gdal()
+        })?;
         Ok(JsDataset::wrap(dataset, path))
     }
 
@@ -464,7 +633,7 @@ impl JsDataset {
         options: Option<Value>,
     ) -> Result<AsyncTask<CopyTask>> {
         Ok(AsyncTask::new(CopyTask {
-            shared: Arc::clone(&self.shared),
+            dataset: self.dataset.clone(),
             path,
             driver,
             // `CslStringList` wraps a raw GDAL pointer, so the task carries plain
@@ -475,19 +644,14 @@ impl JsDataset {
 
     #[napi]
     pub fn flush_sync(&self) -> Result<()> {
-        let _guard = lock_gdal();
-        let mut handle = lock_handle(&self.shared);
-        let dataset = handle
-            .dataset
-            .as_mut()
-            .ok_or_else(|| bad_argument("the dataset is closed"))?;
-        dataset.flush_cache().gdal()
+        self.dataset
+            .with_mut(|dataset| dataset.flush_cache().gdal())
     }
 
     #[napi]
     pub fn flush(&self) -> AsyncTask<FlushTask> {
         AsyncTask::new(FlushTask {
-            shared: Arc::clone(&self.shared),
+            dataset: self.dataset.clone(),
         })
     }
 
@@ -495,12 +659,79 @@ impl JsDataset {
     /// loudly instead of touching freed memory.
     #[napi]
     pub fn close(&self) -> Result<()> {
-        let _guard = lock_gdal();
-        let mut handle = lock_handle(&self.shared);
-        if let Some(dataset) = handle.dataset.take() {
-            dataset.close().gdal()?;
-        }
-        Ok(())
+        self.dataset.close()
+    }
+
+    /// Run `gdal_translate` on this dataset.
+    ///
+    /// `args` are GDAL's own command-line arguments, so anything in its
+    /// documentation can be pasted in: `['-of', 'COG', '-co', 'COMPRESS=DEFLATE']`.
+    /// There is no need to name the source or the destination — this dataset is
+    /// the source and `dest` is the destination.
+    #[napi]
+    pub fn translate_sync(&self, dest: String, args: Option<Vec<String>>) -> Result<JsDataset> {
+        let args = args.unwrap_or_default();
+        let dataset = self.dataset.with_exclusive(|source| {
+            programs::run(programs::Program::Translate, &dest, &[source], &args)
+        })?;
+        Ok(JsDataset::wrap(dataset, dest))
+    }
+
+    #[napi]
+    pub fn translate(&self, dest: String, args: Option<Vec<String>>) -> AsyncTask<ProgramTask> {
+        program_task(
+            programs::Program::Translate,
+            dest,
+            self.dataset.clone(),
+            args,
+        )
+    }
+
+    /// Run `gdalwarp` with this dataset as its only source.
+    #[napi]
+    pub fn warp_sync(&self, dest: String, args: Option<Vec<String>>) -> Result<JsDataset> {
+        let args = args.unwrap_or_default();
+        let dataset = self.dataset.with_exclusive(|source| {
+            programs::run(programs::Program::Warp, &dest, &[source], &args)
+        })?;
+        Ok(JsDataset::wrap(dataset, dest))
+    }
+
+    #[napi]
+    pub fn warp(&self, dest: String, args: Option<Vec<String>>) -> AsyncTask<ProgramTask> {
+        program_task(programs::Program::Warp, dest, self.dataset.clone(), args)
+    }
+
+    /// Run `GDALVectorTranslate` (ogr2ogr) with this dataset as its only source.
+    ///
+    /// `-overwrite` is an ogr2ogr *command-line* feature, not part of the library
+    /// API: an existing destination is updated rather than replaced, so delete it
+    /// first if that is what you want.
+    #[napi]
+    pub fn vector_translate_sync(
+        &self,
+        dest: String,
+        args: Option<Vec<String>>,
+    ) -> Result<JsDataset> {
+        let args = args.unwrap_or_default();
+        let dataset = self.dataset.with_exclusive(|source| {
+            programs::run(programs::Program::VectorTranslate, &dest, &[source], &args)
+        })?;
+        Ok(JsDataset::wrap(dataset, dest))
+    }
+
+    #[napi]
+    pub fn vector_translate(
+        &self,
+        dest: String,
+        args: Option<Vec<String>>,
+    ) -> AsyncTask<ProgramTask> {
+        program_task(
+            programs::Program::VectorTranslate,
+            dest,
+            self.dataset.clone(),
+            args,
+        )
     }
 }
 
@@ -512,13 +743,19 @@ fn op<T>(result: Result<T>) -> OpResult<T> {
     result.map_err(split)
 }
 
-/// What `OpenTask` should produce. One task type covers opening, raster
-/// creation and vector creation so the async surface stays uniform and
+/// What `OpenTask` should produce. One task type covers opening, raster creation,
+/// vector creation and thread-safe opening, so the async surface stays uniform and
 /// `napi::Task` is implemented only once.
 enum OpenKind {
-    Open { update: bool },
+    Open {
+        update: bool,
+    },
     CreateRaster(CreateOptions),
-    CreateVector { driver: String },
+    CreateVector {
+        driver: String,
+    },
+    #[cfg(gd_thread_safe)]
+    ThreadSafe,
 }
 
 pub struct OpenTask {
@@ -527,20 +764,26 @@ pub struct OpenTask {
 }
 
 impl Task for OpenTask {
-    type Output = OpResult<GdalDataset>;
+    type Output = OpResult<DatasetRef>;
     type JsValue = JsDataset;
 
     fn compute(&mut self) -> napi::Result<Self::Output> {
         Ok(op(match &self.kind {
-            OpenKind::Open { update } => open_gdal(&self.path, *update),
-            OpenKind::CreateRaster(options) => create_gdal(&self.path, options),
-            OpenKind::CreateVector { driver } => create_vector_gdal(&self.path, driver),
+            OpenKind::Open { update } => open_gdal(&self.path, *update).map(DatasetRef::serialised),
+            OpenKind::CreateRaster(options) => {
+                create_gdal(&self.path, options).map(DatasetRef::serialised)
+            }
+            OpenKind::CreateVector { driver } => {
+                create_vector_gdal(&self.path, driver).map(DatasetRef::serialised)
+            }
+            #[cfg(gd_thread_safe)]
+            OpenKind::ThreadSafe => open_thread_safe_gdal(&self.path),
         }))
     }
 
     fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
         output
-            .map(|dataset| JsDataset::wrap(dataset, self.path.clone()))
+            .map(|dataset| JsDataset::wrap_ref(dataset, self.path.clone()))
             .map_err(|(code, reason)| into_status_error(code, reason))
     }
 }
@@ -560,6 +803,27 @@ pub fn open(path: String, options: Option<OpenOptions>) -> AsyncTask<OpenTask> {
 pub fn open_sync(path: String, options: Option<OpenOptions>) -> Result<JsDataset> {
     let update = options.and_then(|options| options.update).unwrap_or(false);
     Ok(JsDataset::wrap(open_gdal(&path, update)?, path))
+}
+
+/// Open a read-only raster that several worker threads can read at the same time.
+///
+/// This is the only way to get real GDAL parallelism out of this binding: with
+/// `open()` every call is serialised behind one process-wide lock. The trade-offs
+/// are in the README — most drivers end up reopening the file per thread, so a high
+/// read concurrency costs file descriptors.
+#[cfg(gd_thread_safe)]
+#[napi]
+pub fn open_thread_safe(path: String) -> AsyncTask<OpenTask> {
+    AsyncTask::new(OpenTask {
+        path,
+        kind: OpenKind::ThreadSafe,
+    })
+}
+
+#[cfg(gd_thread_safe)]
+#[napi]
+pub fn open_thread_safe_sync(path: String) -> Result<JsDataset> {
+    Ok(JsDataset::wrap_ref(open_thread_safe_gdal(&path)?, path))
 }
 
 /// Create a raster dataset. `options.driver` must name a driver that supports
@@ -592,8 +856,107 @@ pub fn create_vector_sync(path: String, driver: String) -> Result<JsDataset> {
     Ok(JsDataset::wrap(create_vector_gdal(&path, &driver)?, path))
 }
 
+// ---------------------------------------------------------------------------
+// gdal_translate / gdalwarp / ogr2ogr, named by path
+//
+// The `Dataset` methods above cover an already-open source. These cover the case
+// where it is not open — and, for `warp` and `vectorTranslate`, more than one.
+// ---------------------------------------------------------------------------
+
+/// `gdal_translate <args> source dest`, as one call.
+#[napi]
+pub fn translate(
+    dest: String,
+    source: String,
+    args: Option<Vec<String>>,
+) -> AsyncTask<ProgramTask> {
+    program_task_paths(programs::Program::Translate, dest, vec![source], args)
+}
+
+#[napi]
+pub fn translate_sync(
+    dest: String,
+    source: String,
+    args: Option<Vec<String>>,
+) -> Result<JsDataset> {
+    let args = args.unwrap_or_default();
+    let dataset = programs::run_with_paths(programs::Program::Translate, &dest, &[source], &args)?;
+    Ok(JsDataset::wrap(dataset, dest))
+}
+
+/// `gdalwarp <args> sources... dest`, as one call. Several sources merge.
+#[napi]
+pub fn warp(
+    dest: String,
+    sources: Vec<String>,
+    args: Option<Vec<String>>,
+) -> AsyncTask<ProgramTask> {
+    program_task_paths(programs::Program::Warp, dest, sources, args)
+}
+
+#[napi]
+pub fn warp_sync(
+    dest: String,
+    sources: Vec<String>,
+    args: Option<Vec<String>>,
+) -> Result<JsDataset> {
+    let args = args.unwrap_or_default();
+    let dataset = programs::run_with_paths(programs::Program::Warp, &dest, &sources, &args)?;
+    Ok(JsDataset::wrap(dataset, dest))
+}
+
+/// `ogr2ogr <args> dest sources...`, as one call.
+#[napi]
+pub fn vector_translate(
+    dest: String,
+    sources: Vec<String>,
+    args: Option<Vec<String>>,
+) -> AsyncTask<ProgramTask> {
+    program_task_paths(programs::Program::VectorTranslate, dest, sources, args)
+}
+
+#[napi]
+pub fn vector_translate_sync(
+    dest: String,
+    sources: Vec<String>,
+    args: Option<Vec<String>>,
+) -> Result<JsDataset> {
+    let args = args.unwrap_or_default();
+    let dataset =
+        programs::run_with_paths(programs::Program::VectorTranslate, &dest, &sources, &args)?;
+    Ok(JsDataset::wrap(dataset, dest))
+}
+
+fn program_task(
+    program: programs::Program,
+    dest: String,
+    dataset: DatasetRef,
+    args: Option<Vec<String>>,
+) -> AsyncTask<ProgramTask> {
+    AsyncTask::new(ProgramTask {
+        program,
+        dest,
+        sources: ProgramSources::Open(dataset),
+        args: args.unwrap_or_default(),
+    })
+}
+
+fn program_task_paths(
+    program: programs::Program,
+    dest: String,
+    sources: Vec<String>,
+    args: Option<Vec<String>>,
+) -> AsyncTask<ProgramTask> {
+    AsyncTask::new(ProgramTask {
+        program,
+        dest,
+        sources: ProgramSources::Paths(sources),
+        args: args.unwrap_or_default(),
+    })
+}
+
 pub struct FlushTask {
-    shared: SharedDataset,
+    dataset: DatasetRef,
 }
 
 impl Task for FlushTask {
@@ -601,13 +964,9 @@ impl Task for FlushTask {
     type JsValue = ();
 
     fn compute(&mut self) -> napi::Result<Self::Output> {
-        let _guard = lock_gdal();
-        let mut handle = lock_handle(&self.shared);
-        Ok(op(handle
+        Ok(op(self
             .dataset
-            .as_mut()
-            .ok_or_else(|| bad_argument("the dataset is closed"))
-            .and_then(|dataset| dataset.flush_cache().gdal())))
+            .with_mut(|dataset| dataset.flush_cache().gdal())))
     }
 
     fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
@@ -618,7 +977,7 @@ impl Task for FlushTask {
 /// `createCopy` on the thread pool: writing a whole COG is exactly the kind of
 /// operation that should not hold up the event loop.
 pub struct CopyTask {
-    shared: SharedDataset,
+    dataset: DatasetRef,
     path: String,
     driver: String,
     options: Vec<(String, String)>,
@@ -629,25 +988,73 @@ impl Task for CopyTask {
     type JsValue = JsDataset;
 
     fn compute(&mut self) -> napi::Result<Self::Output> {
-        let _guard = lock_gdal();
-        let handle = lock_handle(&self.shared);
+        let CopyTask {
+            dataset,
+            path,
+            driver,
+            options,
+        } = self;
 
-        Ok(op((|| {
-            let source = handle.get()?;
-            let driver = DriverManager::get_driver_by_name(&self.driver).gdal()?;
+        Ok(op(dataset.with_exclusive(|source| {
+            let driver = DriverManager::get_driver_by_name(driver).gdal()?;
 
             let mut list = CslStringList::new();
-            for (name, value) in &self.options {
+            for (name, value) in options.iter() {
                 list.add_name_value(name, value).gdal()?;
             }
 
-            source.create_copy(&driver, &self.path, &list).gdal()
-        })()))
+            source.create_copy(&driver, path, &list).gdal()
+        })))
     }
 
     fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
         output
             .map(|dataset| JsDataset::wrap(dataset, self.path.clone()))
+            .map_err(|(code, reason)| into_status_error(code, reason))
+    }
+}
+
+/// Where a program's sources come from.
+pub enum ProgramSources {
+    /// Paths to open inside the worker — the module-level API.
+    Paths(Vec<String>),
+    /// A dataset the caller already has open — the `Dataset` methods.
+    Open(DatasetRef),
+}
+
+/// `gdal_translate` / `gdalwarp` / `ogr2ogr` on the thread pool. A warp of a large
+/// raster is the longest single operation this binding offers, so it had better
+/// not block the event loop.
+pub struct ProgramTask {
+    program: programs::Program,
+    dest: String,
+    sources: ProgramSources,
+    args: Vec<String>,
+}
+
+impl Task for ProgramTask {
+    type Output = OpResult<GdalDataset>;
+    type JsValue = JsDataset;
+
+    fn compute(&mut self) -> napi::Result<Self::Output> {
+        let ProgramTask {
+            program,
+            dest,
+            sources,
+            args,
+        } = self;
+
+        Ok(op(match sources {
+            ProgramSources::Paths(paths) => programs::run_with_paths(*program, dest, paths, args),
+            ProgramSources::Open(dataset) => {
+                dataset.with_exclusive(|source| programs::run(*program, dest, &[source], args))
+            }
+        }))
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
+        output
+            .map(|dataset| JsDataset::wrap(dataset, self.dest.clone()))
             .map_err(|(code, reason)| into_status_error(code, reason))
     }
 }

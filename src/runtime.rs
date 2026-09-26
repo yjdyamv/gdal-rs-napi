@@ -4,9 +4,9 @@
 use std::ffi::CStr;
 use std::os::raw::c_char;
 use std::path::PathBuf;
-use std::sync::{Mutex, MutexGuard, OnceLock};
+use std::sync::{Mutex, OnceLock, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
-/// Serialises every GDAL call made through this addon.
+/// Serialises access to GDAL.
 ///
 /// GDAL keeps its "last error" in process-global state, and the `gdal` crate
 /// reads + resets it right after each FFI call — so two threads inside GDAL at
@@ -14,17 +14,33 @@ use std::sync::{Mutex, MutexGuard, OnceLock};
 /// either. Holding this for the duration of each operation keeps those races
 /// out.
 ///
-/// The practical consequence: the async APIs keep the Node event loop free, but
-/// they do **not** make GDAL work run in parallel. (GDAL >= 3.10 offers
-/// `GDALGetThreadSafeDataset` for genuinely parallel read-only raster access;
-/// that is deliberately out of scope for now.)
-static GDAL_LOCK: Mutex<()> = Mutex::new(());
+/// It is a reader/writer lock rather than a plain mutex so that pixel reads of a
+/// thread-safe dataset (see `DatasetRef::Concurrent`) can run genuinely in
+/// parallel. Everything else takes the write lock and therefore excludes them,
+/// which is what keeps the error-state race described above out of the picture.
+///
+/// The consequence for the ordinary `open()` path is unchanged: the async APIs
+/// keep the Node event loop free, but they do **not** make GDAL work run in
+/// parallel. Only `openThreadSafe()` does.
+static GDAL_LOCK: RwLock<()> = RwLock::new(());
 
-/// Take the process-wide GDAL lock. A poisoned mutex is recovered from on
-/// purpose: a panic in one operation must not brick the whole addon.
-pub fn lock_gdal() -> MutexGuard<'static, ()> {
+/// Exclusive access. Everything except a thread-safe dataset's pixel reads takes
+/// this. A poisoned lock is recovered from on purpose: a panic in one operation
+/// must not brick the whole addon.
+pub fn lock_gdal() -> RwLockWriteGuard<'static, ()> {
     GDAL_LOCK
-        .lock()
+        .write()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+/// Shared access, for pixel reads of a thread-safe dataset only.
+///
+/// **A closure running under this lock must never call `lock_gdal()`**: `RwLock`
+/// is not reentrant, so taking the write lock while holding the read lock
+/// deadlocks the process. See `DatasetRef::with`.
+pub fn lock_gdal_shared() -> RwLockReadGuard<'static, ()> {
+    GDAL_LOCK
+        .read()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 

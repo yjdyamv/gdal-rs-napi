@@ -4,7 +4,9 @@
 //! `gdal-sys` -> a statically linked `libgdal` + `libproj`.
 //!
 //! Every operation that touches GDAL takes `runtime::lock_gdal()` first; see
-//! the comment on that lock for why.
+//! the comment on that lock for why. The one exception is a pixel read of a
+//! dataset opened through `openThreadSafe`, which takes the shared side of that
+//! lock and therefore runs genuinely in parallel.
 
 #![deny(clippy::all)]
 // Statically linking PROJ into GDAL makes MSVC emit a batch of LNK4217
@@ -22,6 +24,7 @@ mod dataset;
 mod dtype;
 mod error;
 mod json;
+mod programs;
 mod raster_io;
 mod runtime;
 mod vector;

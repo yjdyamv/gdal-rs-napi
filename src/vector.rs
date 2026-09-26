@@ -16,7 +16,7 @@ use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use serde_json::{Map, Value};
 
-use crate::dataset::{SharedDataset, lock_handle};
+use crate::dataset::DatasetRef;
 use crate::error::{IntoGdalResult, Result, bad_argument};
 use crate::json::{is_scalar, json_f64, json_i64, json_joined_text, json_text};
 use crate::runtime::{ensure_initialized, lock_gdal};
@@ -50,13 +50,13 @@ pub struct FeatureRecord {
 
 #[napi(js_name = "Layer")]
 pub struct JsLayer {
-    shared: SharedDataset,
+    dataset: DatasetRef,
     index: usize,
 }
 
 impl JsLayer {
-    pub fn new(shared: SharedDataset, index: usize) -> Self {
-        Self { shared, index }
+    pub fn new(dataset: DatasetRef, index: usize) -> Self {
+        Self { dataset, index }
     }
 }
 
@@ -442,10 +442,10 @@ impl JsLayer {
     #[napi(getter)]
     pub fn name(&self) -> Result<String> {
         ensure_initialized();
-        let _guard = lock_gdal();
-        let handle = lock_handle(&self.shared);
-        let layer = handle.get()?.layer(self.index).gdal()?;
-        Ok(layer.name())
+        self.dataset.with_exclusive(|dataset| {
+            let layer = dataset.layer(self.index).gdal()?;
+            Ok(layer.name())
+        })
     }
 
     /// Feature count, or `null` when the driver cannot answer without a full
@@ -453,38 +453,38 @@ impl JsLayer {
     #[napi(getter)]
     pub fn feature_count(&self) -> Result<Option<i64>> {
         ensure_initialized();
-        let _guard = lock_gdal();
-        let handle = lock_handle(&self.shared);
-        let layer = handle.get()?.layer(self.index).gdal()?;
-        Ok(layer.try_feature_count().map(|count| count as i64))
+        self.dataset.with_exclusive(|dataset| {
+            let layer = dataset.layer(self.index).gdal()?;
+            Ok(layer.try_feature_count().map(|count| count as i64))
+        })
     }
 
     /// The layer's geometry type, e.g. `Point`, `MultiPolygon`, `Unknown`.
     #[napi(getter)]
     pub fn geometry_type(&self) -> Result<String> {
         ensure_initialized();
-        let _guard = lock_gdal();
-        let handle = lock_handle(&self.shared);
-        let layer = handle.get()?.layer(self.index).gdal()?;
-        Ok(geometry_type_name(layer.defn().geometry_type()))
+        self.dataset.with_exclusive(|dataset| {
+            let layer = dataset.layer(self.index).gdal()?;
+            Ok(geometry_type_name(layer.defn().geometry_type()))
+        })
     }
 
     #[napi(getter)]
     pub fn fields(&self) -> Result<Vec<FieldInfo>> {
         ensure_initialized();
-        let _guard = lock_gdal();
-        let handle = lock_handle(&self.shared);
-        let layer = handle.get()?.layer(self.index).gdal()?;
-        Ok(layer
-            .defn()
-            .fields()
-            .map(|field| FieldInfo {
-                name: field.name(),
-                field_type: field_type_name(field.field_type()),
-                width: field.width(),
-                precision: field.precision(),
-            })
-            .collect())
+        self.dataset.with_exclusive(|dataset| {
+            let layer = dataset.layer(self.index).gdal()?;
+            Ok(layer
+                .defn()
+                .fields()
+                .map(|field| FieldInfo {
+                    name: field.name(),
+                    field_type: field_type_name(field.field_type()),
+                    width: field.width(),
+                    precision: field.precision(),
+                })
+                .collect())
+        })
     }
 
     /// Bounding box as `[minX, minY, maxX, maxY]`, or `null` when the layer has
@@ -492,26 +492,26 @@ impl JsLayer {
     #[napi(getter)]
     pub fn extent(&self) -> Result<Option<Vec<f64>>> {
         ensure_initialized();
-        let _guard = lock_gdal();
-        let handle = lock_handle(&self.shared);
-        let layer = handle.get()?.layer(self.index).gdal()?;
-        Ok(layer
-            .try_get_extent()
-            .gdal()?
-            .map(|envelope| vec![envelope.MinX, envelope.MinY, envelope.MaxX, envelope.MaxY]))
+        self.dataset.with_exclusive(|dataset| {
+            let layer = dataset.layer(self.index).gdal()?;
+            Ok(layer
+                .try_get_extent()
+                .gdal()?
+                .map(|envelope| vec![envelope.MinX, envelope.MinY, envelope.MaxX, envelope.MaxY]))
+        })
     }
 
     /// The layer's CRS as WKT, or `null` when it has none.
     #[napi(getter)]
     pub fn spatial_ref_wkt(&self) -> Result<Option<String>> {
         ensure_initialized();
-        let _guard = lock_gdal();
-        let handle = lock_handle(&self.shared);
-        let layer = handle.get()?.layer(self.index).gdal()?;
-        match layer.spatial_ref() {
-            Some(srs) => Ok(srs.to_wkt().ok()),
-            None => Ok(None),
-        }
+        self.dataset.with_exclusive(|dataset| {
+            let layer = dataset.layer(self.index).gdal()?;
+            match layer.spatial_ref() {
+                Some(srs) => Ok(srs.to_wkt().ok()),
+                None => Ok(None),
+            }
+        })
     }
 
     #[napi]
@@ -520,18 +520,18 @@ impl JsLayer {
         domain: Option<String>,
     ) -> Result<std::collections::HashMap<String, String>> {
         ensure_initialized();
-        let _guard = lock_gdal();
-        let handle = lock_handle(&self.shared);
-        let layer = handle.get()?.layer(self.index).gdal()?;
         let domain = domain.unwrap_or_default();
+        self.dataset.with_exclusive(|dataset| {
+            let layer = dataset.layer(self.index).gdal()?;
 
-        let mut out = std::collections::HashMap::new();
-        for entry in layer.metadata() {
-            if entry.domain == domain {
-                out.insert(entry.key, entry.value);
+            let mut out = std::collections::HashMap::new();
+            for entry in layer.metadata() {
+                if entry.domain == domain {
+                    out.insert(entry.key, entry.value);
+                }
             }
-        }
-        Ok(out)
+            Ok(out)
+        })
     }
 
     /// Read every feature the current filters leave visible.
@@ -542,33 +542,33 @@ impl JsLayer {
     #[napi]
     pub fn features_sync(&self) -> Result<Vec<FeatureRecord>> {
         ensure_initialized();
-        let _guard = lock_gdal();
-        let handle = lock_handle(&self.shared);
-        let mut layer = handle.get()?.layer(self.index).gdal()?;
+        self.dataset.with_exclusive(|dataset| {
+            let mut layer = dataset.layer(self.index).gdal()?;
 
-        // Collected before iterating: `features()` borrows the layer mutably.
-        let field_names = layer_field_names(&layer);
+            // Collected before iterating: `features()` borrows the layer mutably.
+            let field_names = layer_field_names(&layer);
 
-        let mut records = Vec::new();
-        for feature in layer.features() {
-            records.push(to_record(&feature, &field_names)?);
-        }
-        Ok(records)
+            let mut records = Vec::new();
+            for feature in layer.features() {
+                records.push(to_record(&feature, &field_names)?);
+            }
+            Ok(records)
+        })
     }
 
     /// A single feature by id, or `null`.
     #[napi]
     pub fn feature(&self, fid: i64) -> Result<Option<FeatureRecord>> {
         ensure_initialized();
-        let _guard = lock_gdal();
-        let handle = lock_handle(&self.shared);
-        let layer = handle.get()?.layer(self.index).gdal()?;
-        let field_names = layer_field_names(&layer);
+        self.dataset.with_exclusive(|dataset| {
+            let layer = dataset.layer(self.index).gdal()?;
+            let field_names = layer_field_names(&layer);
 
-        match layer.feature(fid as u64) {
-            Some(feature) => Ok(Some(to_record(&feature, &field_names)?)),
-            None => Ok(None),
-        }
+            match layer.feature(fid as u64) {
+                Some(feature) => Ok(Some(to_record(&feature, &field_names)?)),
+                None => Ok(None),
+            }
+        })
     }
 
     /// Write a feature.
@@ -582,10 +582,12 @@ impl JsLayer {
     #[napi]
     pub fn create_feature(&self, geometry: Option<Value>, properties: Option<Value>) -> Result<()> {
         ensure_initialized();
-        let _guard = lock_gdal();
-        let handle = lock_handle(&self.shared);
-        let layer = handle.get()?.layer(self.index).gdal()?;
-        write_feature(&layer, geometry.as_ref(), properties)
+        // `with_mut` rather than `with_exclusive` so that a write is refused on a
+        // read-only thread-safe dataset.
+        self.dataset.with_mut(|dataset| {
+            let layer = dataset.layer(self.index).gdal()?;
+            write_feature(&layer, geometry.as_ref(), properties)
+        })
     }
 
     /// Overwrite fields on an existing feature.
@@ -601,10 +603,10 @@ impl JsLayer {
         properties: Option<Value>,
     ) -> Result<()> {
         ensure_initialized();
-        let _guard = lock_gdal();
-        let handle = lock_handle(&self.shared);
-        let layer = handle.get()?.layer(self.index).gdal()?;
-        update_existing(&layer, fid as u64, geometry.as_ref(), properties)
+        self.dataset.with_mut(|dataset| {
+            let layer = dataset.layer(self.index).gdal()?;
+            update_existing(&layer, fid as u64, geometry.as_ref(), properties)
+        })
     }
 
     /// Limit the layer to features matching an OGR SQL `WHERE` clause, e.g.
@@ -612,14 +614,14 @@ impl JsLayer {
     #[napi]
     pub fn set_attribute_filter(&self, query: Option<String>) -> Result<()> {
         ensure_initialized();
-        let _guard = lock_gdal();
-        let handle = lock_handle(&self.shared);
-        let mut layer = handle.get()?.layer(self.index).gdal()?;
-        match query {
-            Some(query) => layer.set_attribute_filter(&query).gdal()?,
-            None => layer.clear_attribute_filter(),
-        }
-        Ok(())
+        self.dataset.with_mut(|dataset| {
+            let mut layer = dataset.layer(self.index).gdal()?;
+            match query {
+                Some(query) => layer.set_attribute_filter(&query).gdal()?,
+                None => layer.clear_attribute_filter(),
+            }
+            Ok(())
+        })
     }
 
     #[napi]
@@ -631,21 +633,21 @@ impl JsLayer {
         max_y: f64,
     ) -> Result<()> {
         ensure_initialized();
-        let _guard = lock_gdal();
-        let handle = lock_handle(&self.shared);
-        let mut layer = handle.get()?.layer(self.index).gdal()?;
-        layer.set_spatial_filter_rect(min_x, min_y, max_x, max_y);
-        Ok(())
+        self.dataset.with_mut(|dataset| {
+            let mut layer = dataset.layer(self.index).gdal()?;
+            layer.set_spatial_filter_rect(min_x, min_y, max_x, max_y);
+            Ok(())
+        })
     }
 
     #[napi]
     pub fn clear_spatial_filter(&self) -> Result<()> {
         ensure_initialized();
-        let _guard = lock_gdal();
-        let handle = lock_handle(&self.shared);
-        let mut layer = handle.get()?.layer(self.index).gdal()?;
-        layer.clear_spatial_filter();
-        Ok(())
+        self.dataset.with_mut(|dataset| {
+            let mut layer = dataset.layer(self.index).gdal()?;
+            layer.clear_spatial_filter();
+            Ok(())
+        })
     }
 }
 
