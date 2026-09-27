@@ -105,6 +105,15 @@ jobs:
           # difference between a 3 minute run and a 40 minute one. Keying on the
           # manifests means a driver-set change starts a clean build instead of
           # silently reusing stale objects.
+          #
+          # `prefix-key` carries the runner architecture, which the shared part of
+          # a rust-cache key does not. Without it a restore that misses its exact
+          # key falls back to another leg's cache — and on the arm64 runner that
+          # can bring in an x86_64 rustup default toolchain, after which every
+          # `cargo` invocation tries to install `stable-x86_64-unknown-linux-gnu`
+          # and dies, which is how the aarch64-musl leg has been failing two
+          # seconds into the build.
+          prefix-key: v0-rust-${{ runner.arch }}
           key: ${{ matrix.target }}-${{ hashFiles('Cargo.toml', 'Cargo.lock') }}
           cache-on-failure: true
 
