@@ -10,6 +10,7 @@ use std::ffi::c_int;
 use gdal::cpl::CslStringList;
 use gdal::errors::GdalError;
 use gdal::raster::RasterBand;
+use gdal::vector::{FieldDefn, LayerAccess, OGRFieldType};
 use napi_derive::napi;
 use serde_json::Value;
 
@@ -270,6 +271,116 @@ pub fn rasterize(
     cpl_result(class)
 }
 
+#[napi(object)]
+#[derive(Debug, Clone, Default)]
+pub struct PolygonizeOptions {
+    /// Field the pixel values are written to. Default `DN`, as in
+    /// `gdal_polygonize.py`. Created when the layer does not already have it.
+    pub field_name: Option<String>,
+    /// Either 4 or 8 neighbouring pixels. Default 4, as in GDAL.
+    pub connectedness: Option<u32>,
+}
+
+/// `PolygonizeOptions` resolved and checked.
+#[derive(Debug, Clone)]
+pub struct PolygonizeRequest {
+    field_name: String,
+    connectedness: c_int,
+}
+
+pub fn polygonize_request(options: Option<PolygonizeOptions>) -> Result<PolygonizeRequest> {
+    let options = options.unwrap_or_default();
+    let connectedness = options.connectedness.unwrap_or(4);
+    if connectedness != 4 && connectedness != 8 {
+        return Err(bad_argument(format!(
+            "connectedness is 4 or 8, following GDAL, not {connectedness}"
+        )));
+    }
+    let field_name = options.field_name.unwrap_or_else(|| "DN".to_string());
+    if field_name.is_empty() {
+        return Err(bad_argument("the field the values go into needs a name"));
+    }
+    Ok(PolygonizeRequest {
+        field_name,
+        connectedness: connectedness as c_int,
+    })
+}
+
+/// Whether a band holds floats, which decides both the polygonize entry point and
+/// the type of field its values need.
+fn band_is_float(band: &RasterBand<'_>) -> bool {
+    matches!(
+        crate::dtype::DataType::from_gdal(band.band_type()),
+        crate::dtype::DataType::Float32 | crate::dtype::DataType::Float64
+    )
+}
+
+/// Turn a band's values into polygons in `layer`. `GDALPolygonize`, or
+/// `GDALFPolygonize` when the band holds floats — the same pair
+/// `gdal_polygonize.py` chooses between.
+pub fn polygonize(
+    band: &RasterBand<'_>,
+    layer: &mut gdal::vector::Layer<'_>,
+    request: &PolygonizeRequest,
+) -> Result<()> {
+    let float = band_is_float(band);
+
+    // The values have to land in a field of a matching type, and GDAL's own tool
+    // creates that field rather than asking the caller to — so do the same. `Real`
+    // for a float band, `Integer` otherwise.
+    let field = match layer
+        .defn()
+        .fields()
+        .position(|field| field.name() == request.field_name)
+    {
+        Some(field) => field,
+        None => {
+            let field_type = if float {
+                OGRFieldType::OFTReal
+            } else {
+                OGRFieldType::OFTInteger
+            };
+            let definition = FieldDefn::new(&request.field_name, field_type).gdal()?;
+            definition.add_to_layer(&*layer).gdal()?;
+            // Appended, so it is the last one.
+            layer.defn().fields().count() - 1
+        }
+    };
+
+    let mut options = CslStringList::new();
+    if request.connectedness == 8 {
+        // The option name GDAL's own tool passes for 8-connectivity.
+        options.add_string("8CONNECTED=8").gdal()?;
+    }
+
+    let source = unsafe { band.c_rasterband() };
+    let target = unsafe { layer.c_layer() };
+    let class = unsafe {
+        if float {
+            gdal_sys::GDALFPolygonize(
+                source,
+                std::ptr::null_mut(),
+                target,
+                field as c_int,
+                options.as_ptr(),
+                None,
+                std::ptr::null_mut(),
+            )
+        } else {
+            gdal_sys::GDALPolygonize(
+                source,
+                std::ptr::null_mut(),
+                target,
+                field as c_int,
+                options.as_ptr(),
+                None,
+                std::ptr::null_mut(),
+            )
+        }
+    };
+    cpl_result(class)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -331,6 +442,37 @@ mod tests {
                 threshold: 0,
                 connectedness: None
             })
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn polygonize_names_its_field_and_takes_four_or_eight() {
+        let defaults = polygonize_request(None).unwrap();
+        assert_eq!(defaults.field_name, "DN");
+        assert_eq!(defaults.connectedness, 4);
+
+        let named = polygonize_request(Some(PolygonizeOptions {
+            field_name: Some("value".to_string()),
+            connectedness: Some(8),
+        }))
+        .unwrap();
+        assert_eq!(named.field_name, "value");
+        assert_eq!(named.connectedness, 8);
+
+        assert!(
+            polygonize_request(Some(PolygonizeOptions {
+                field_name: None,
+                connectedness: Some(6)
+            }))
+            .is_err()
+        );
+        // A field with no name is not a field.
+        assert!(
+            polygonize_request(Some(PolygonizeOptions {
+                field_name: Some(String::new()),
+                connectedness: None
+            }))
             .is_err()
         );
     }

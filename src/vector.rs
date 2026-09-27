@@ -85,6 +85,15 @@ impl JsLayer {
     pub fn new(dataset: DatasetRef, index: usize) -> Self {
         Self { dataset, index }
     }
+
+    /// The dataset this layer belongs to.
+    ///
+    /// For the operations that need two datasets at once — see
+    /// [`crate::dataset::with_two`] — rather than a fourth way to reach the layer
+    /// itself.
+    pub(crate) fn dataset(&self) -> &DatasetRef {
+        &self.dataset
+    }
 }
 
 /// Pull one feature across the FFI boundary.

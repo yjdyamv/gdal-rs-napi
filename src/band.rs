@@ -14,15 +14,17 @@ use gdal::raster::RasterBand;
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 
-use crate::dataset::DatasetRef;
+use crate::dataset::{DatasetRef, with_two};
 use crate::dtype::DataType;
 use crate::error::{GdalErrorCode, IntoGdalResult, Result, bad_argument, into_status_error, split};
 use crate::raster_io::{ReadOptions, read_window, resample_alg, resolve_window, write_window};
 use crate::raster_tools::{
-    FillNoDataOptions, FillNoDataRequest, SieveFilterOptions, SieveFilterRequest, checksum_options,
-    fill_no_data, fill_nodata_request, sieve_filter, sieve_filter_request,
+    FillNoDataOptions, FillNoDataRequest, PolygonizeOptions, PolygonizeRequest, SieveFilterOptions,
+    SieveFilterRequest, checksum_options, fill_no_data, fill_nodata_request, polygonize,
+    polygonize_request, sieve_filter, sieve_filter_request,
 };
 use crate::runtime::ensure_initialized;
+use crate::vector::JsLayer;
 
 /// Re-derive this band's `RasterBand` and hand it to `f`.
 ///
@@ -683,6 +685,55 @@ impl JsRasterBand {
         }))
     }
 
+    /// Turn this band's values into polygons in `layer` — GDAL's `GDALPolygonize`,
+    /// the algorithm behind `gdal_polygonize.py`. A float band goes through
+    /// `GDALFPolygonize` and a `Real` field instead, which is the pair GDAL's own
+    /// tool chooses between.
+    ///
+    /// The values land in a field called `fieldName` (default `DN`), created when
+    /// the layer does not have one. `layer` will usually belong to a *different*
+    /// dataset from this band, and that dataset has to be writable.
+    ///
+    /// ```js
+    /// raster.band(0).polygonizeSync(layer)     // 4-connected, into the field `DN`
+    /// await raster.band(0).polygonize(layer, { connectedness: 8, fieldName: 'value' })
+    /// ```
+    #[napi]
+    pub fn polygonize_sync(
+        &self,
+        layer: &JsLayer,
+        options: Option<PolygonizeOptions>,
+    ) -> Result<()> {
+        let request = polygonize_request(options)?;
+        // Both datasets at once: the process-wide lock is not reentrant, so the band
+        // and the layer cannot each be reached through their own lock.
+        with_two(&self.dataset, layer.dataset(), |raster, vector| {
+            let band = raster.rasterband(self.index + 1).gdal()?;
+            let mut target = vector.layer(layer.index() as usize).gdal()?;
+            polygonize(&band, &mut target, &request)
+        })
+    }
+
+    /// The same, on the thread pool: polygonizing reads the whole band and writes
+    /// features.
+    #[napi(ts_return_type = "Promise<void>")]
+    pub fn polygonize(
+        &self,
+        layer: &JsLayer,
+        options: Option<PolygonizeOptions>,
+    ) -> Result<AsyncTask<PolygonizeTask>> {
+        let request = polygonize_request(options)?;
+        Ok(AsyncTask::new(PolygonizeTask {
+            dataset: self.dataset.clone(),
+            // The layer's dataset travels along, because the layer will usually live
+            // in a dataset other than this band's.
+            layer: layer.dataset().clone(),
+            layer_index: layer.index() as usize,
+            index: self.index,
+            request,
+        }))
+    }
+
     /// Read in the band's own sample type, with no conversion. The returned
     /// buffer is the raw little-endian bytes of `width * height` samples; use
     /// `bytesPerSample(band.dataType)` to view it as a typed array.
@@ -922,6 +973,43 @@ impl Task for SieveFilterTask {
     fn compute(&mut self) -> napi::Result<Self::Output> {
         let band = JsRasterBand::new(self.dataset.clone(), self.index, DataType::Unknown);
         Ok(op(band.apply_sieve_filter(self.request)))
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
+        output.map_err(|(code, reason)| into_status_error(code, reason))
+    }
+}
+
+/// Polygonizing reads the whole band and writes features into another dataset's
+/// layer, so it belongs on the pool.
+pub struct PolygonizeTask {
+    dataset: DatasetRef,
+    /// The layer's own dataset: it is usually not the one the band is in.
+    layer: DatasetRef,
+    layer_index: usize,
+    index: usize,
+    request: PolygonizeRequest,
+}
+
+impl Task for PolygonizeTask {
+    type Output = OpResult<()>;
+    type JsValue = ();
+
+    fn compute(&mut self) -> napi::Result<Self::Output> {
+        let PolygonizeTask {
+            dataset,
+            layer,
+            layer_index,
+            index,
+            request,
+        } = self;
+        let (index, layer_index) = (*index, *layer_index);
+
+        Ok(op(with_two(dataset, layer, |raster, vector| {
+            let band = raster.rasterband(index + 1).gdal()?;
+            let mut target = vector.layer(layer_index).gdal()?;
+            polygonize(&band, &mut target, request)
+        })))
     }
 
     fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {

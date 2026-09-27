@@ -54,6 +54,15 @@ First working cut — everything here is new.
   `options` is GDAL's own and is passed through as written (`ALL_TOUCHED`,
   `MERGE_ALG`, `INIT_DEST`, ...). It does not reproject, so the geometry has to be
   in the raster's coordinate system already — `warp` is the tool that moves things.
+- `RasterBand.polygonize()` / `polygonizeSync()` writes this band's values out as
+  polygons in an OGR layer — `GDALPolygonize`, or `GDALFPolygonize` for a float
+  band, which is the pair `gdal_polygonize.py` chooses between. The values land in
+  a field named by `fieldName` (default `DN`), created with `Real` for a float band
+  and `Integer` otherwise when the layer does not have it; `connectedness` is 4 or
+  8. The layer is usually in a *different* dataset from the band, and both are
+  reached under one lock — a `with_two` helper that exists because the process-wide
+  GDAL lock is not reentrant, so two datasets cannot be opened through two
+  `with_exclusive` calls.
 - Programs: `translate` / `translateSync`, `warp` / `warpSync`, `vectorTranslate` /
   `vectorTranslateSync` — `gdal_translate`, `gdalwarp` and `ogr2ogr`, each taking
   that tool's own command-line arguments. `warp` and `vectorTranslate` take a list

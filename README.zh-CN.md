@@ -186,6 +186,18 @@ await dataset.rasterize([square], { burnValues: [1], options: { ALL_TOUCHED: tru
 `options` 里其余的键都是 GDAL 自己的选项名（`ALL_TOUCHED`、`MERGE_ALG`、`INIT_DEST`），原样透传。
 **它不做重投影**：几何必须已经在栅格自己的坐标系里，要挪位置用 `warp`。
 
+第五个是反方向，把波段的值写成多边形：
+
+```js
+raster.band(0).polygonizeSync(layer)   // 4 连通，写进 `DN` 字段
+await raster.band(0).polygonize(layer, { connectedness: 8, fieldName: 'value' })
+```
+
+每个"同值的连通区"出一个多边形，写进 `fieldName` 指定的字段（默认 `DN`）；图层没有这个字段就建一个
+—— 浮点波段建 `Real`，其余建 `Integer`，因为字段类型必须和样本类型对得上。`connectedness` 取 4 或 8。
+这个图层通常在**另一个**数据集里（和波段不是一个），完全没问题：两者在同一把锁下同时握住，图层的
+数据集必须可写。
+
 两个容易踩的点：`width`/`height` 是 GDAL 原样返回的，**只对栅格数据集有意义**
 （矢量 GPKG 也会返回一个数字），用之前先看 `bandCount`；`IMAGE_STRUCTURE`
 元数据挂在 **dataset** 上而不是 band 上。

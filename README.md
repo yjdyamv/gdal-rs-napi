@@ -255,6 +255,19 @@ await dataset.rasterize([square], { burnValues: [1], options: { ALL_TOUCHED: tru
 reproject**: the geometry has to already be in the raster's coordinate system, and
 `warp` is the tool when it is not.
 
+And a fifth goes the other way, writing a band's values out as polygons:
+
+```js
+raster.band(0).polygonizeSync(layer)   // 4-connected, into the field `DN`
+await raster.band(0).polygonize(layer, { connectedness: 8, fieldName: 'value' })
+```
+
+One polygon per connected region of equal value, in a field called `fieldName`
+(default `DN`) that is created when the layer does not have it — `Real` for a float
+band, `Integer` otherwise, because the field has to match the samples. The layer
+will usually belong to a **different** dataset from the band, which is fine: both are
+held under one lock, and the layer's dataset has to be writable.
+
 Two things that save confusion: `width` / `height` come straight from GDAL and
 are only meaningful when there are bands, so check `bandCount` before trusting
 them on a vector dataset; and `IMAGE_STRUCTURE` lives on the **dataset**, not on

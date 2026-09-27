@@ -469,6 +469,68 @@ test('rasterize runs on the pool too', async () => {
   dataset.close()
 })
 
+test('polygonize turns band values into layer polygons', () => {
+  const raster = gdal.createSync(tmp('polygonize.tif'), {
+    driver: 'GTiff',
+    width: 4,
+    height: 4,
+    bandCount: 1,
+  })
+  const values = new Uint8Array(16).fill(1)
+  values[0] = 2
+  values[1] = 2
+  values[4] = 2 // a 2x2 block of 2s in the corner, the rest one region of 1s
+  raster.band(0).writePixelsSync(bytesOf(values))
+
+  const vector = gdal.createVectorSync(tmp('polygonize.gpkg'), 'GPKG')
+  const layer = vector.createLayer({ name: 'values', geometryType: 'Polygon', epsg: 4326 })
+
+  raster.band(0).polygonizeSync(layer)
+
+  const features = layer.featuresSync()
+  assert.equal(features.length, 2, 'one polygon per connected region of equal value')
+  assert.deepEqual(
+    features.map((feature) => feature.properties.DN).sort(),
+    [1, 2],
+  )
+  for (const feature of features) assert.equal(feature.geometry.type, 'Polygon')
+
+  // The 2s are the corner block, and the raster has no geotransform, so the ring
+  // is in pixel coordinates.
+  const ring = features.find((feature) => feature.properties.DN === 2).geometry.coordinates[0]
+  const xs = ring.map(([x]) => x)
+  const ys = ring.map(([, y]) => y)
+  assert.deepEqual([Math.min(...xs), Math.max(...xs)], [0, 2])
+  assert.deepEqual([Math.min(...ys), Math.max(...ys)], [0, 2])
+
+  vector.close()
+  raster.close()
+})
+
+test('polygonize runs on the pool, and names its field', async () => {
+  const raster = gdal.createSync(tmp('polygonize-async.tif'), {
+    driver: 'GTiff',
+    width: 2,
+    height: 2,
+    bandCount: 1,
+    dataType: 'Float32',
+  })
+  raster.band(0).writePixelsSync(bytesOf(new Float32Array([1.5, 1.5, 1.5, 1.5])))
+
+  const vector = gdal.createVectorSync(tmp('polygonize-async.gpkg'), 'GPKG')
+  const layer = vector.createLayer({ name: 'values', geometryType: 'Polygon', epsg: 4326 })
+
+  await raster.band(0).polygonize(layer, { fieldName: 'value', connectedness: 8 })
+
+  const features = layer.featuresSync()
+  assert.equal(features.length, 1)
+  // A float band needs a Real field, or the value would be truncated away.
+  assert.equal(features[0].properties.value, 1.5)
+
+  vector.close()
+  raster.close()
+})
+
 test('the async twins of the band tools do the same thing', async () => {
   const dataset = await gdal.create(tmp('async-tools.tif'), {
     driver: 'GTiff',

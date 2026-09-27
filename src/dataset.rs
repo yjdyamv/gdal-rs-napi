@@ -189,6 +189,19 @@ impl DatasetRef {
         }
     }
 
+    /// The handle behind **one** mutex, without taking the process-wide lock — for
+    /// the callers that already hold it (see [`with_two`]).
+    ///
+    /// A thread-safe dataset is a `ThreadSafeDataset` with no writable `GdalDataset`
+    /// to hand out, which is the same reason it refuses every write.
+    pub(crate) fn owned_handle(&self) -> Result<MutexGuard<'_, DatasetHandle>> {
+        match self {
+            Self::Serialised(shared) => Ok(lock_handle(shared)),
+            #[cfg(gd_thread_safe)]
+            Self::Concurrent { .. } => Err(read_only()),
+        }
+    }
+
     /// Reject vector access on a thread-safe handle.
     ///
     /// GDAL's thread-safe datasets are raster-only, so without this a layer call
@@ -273,6 +286,25 @@ pub struct CreateLayerOptions {
     /// `createFeature` adds fields as it meets them, inferring each type from the
     /// first value it sees.
     pub fields: Option<Vec<FieldDefinition>>,
+}
+
+/// Run `f` with two datasets in hand at once, under a single acquisition of the
+/// process-wide lock.
+///
+/// The lock is not reentrant, so an operation that reaches into two datasets — a
+/// raster band written out as polygons in another dataset's layer, say — cannot go
+/// through `with_exclusive` twice. Both handles come from here instead, which also
+/// means the two per-dataset mutexes are never taken in a cycle: one thread holds
+/// the process-wide lock for the duration.
+pub(crate) fn with_two<T>(
+    first: &DatasetRef,
+    second: &DatasetRef,
+    f: impl FnOnce(&mut GdalDataset, &mut GdalDataset) -> Result<T>,
+) -> Result<T> {
+    let _guard = lock_gdal();
+    let mut first = first.owned_handle()?;
+    let mut second = second.owned_handle()?;
+    f(first.get_mut()?, second.get_mut()?)
 }
 
 fn open_gdal(path: &str, update: bool) -> Result<GdalDataset> {
