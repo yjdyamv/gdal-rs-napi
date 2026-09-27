@@ -534,12 +534,8 @@ CRS 只做到点与包围盒的变换：几何对象本身不参与变换，`Coo
 精度目标）没有暴露，且变换是同步的 —— 上百万个点需要调用方自行分块。
 
 读图层可以按批读（游标），但那是游标而不是 JS 的 async iterator；且 GDAL 的读取位置在图层上，
-同一图层同时只能有一个读取者。`translate`/`warp`/`ogr2ogr`/`gdaldem` 都没有进度回调，
-`vectorTranslate` 也没有 `-overwrite` 兼容层；`statistics()` 与直方图只能读，不能写回数据集。
-
-一个构建系统层面的瑕疵：**异步方法的返回类型在 `.d.ts` 里是 `Promise<unknown>`**，
-因为 napi 无法从 `Task` 推导 `JsValue`。同步方法的类型是准确的，运行时返回的也确实是对应
-对象；只有类型标注这一层信息丢失。
+同一图层同时只能有一个读取者。`translate`/`warp`/`ogr2ogr`/`gdaldem` 都没有进度回调；
+`statistics()` 与直方图只能读，不能写回数据集。
 
 Intel macOS 与 32 位目标未构建。
 

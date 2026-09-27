@@ -79,6 +79,11 @@ First working cut — everything here is new.
   `GDAL_BAD_ARGUMENT`, and everything other than a pixel read still takes the
   exclusive side so the error-state race above stays excluded. Most drivers reopen
   the file per thread, so concurrency costs file descriptors; GTiff/COG do not.
+- The async methods carry `ts_return_type` annotations, so the generated
+  `binding.d.ts` names what they resolve to — `Promise<Dataset>`,
+  `Promise<Buffer>`, `Promise<BandStatistics | null>` — instead of the
+  `Promise<unknown>` napi produces when it cannot work out a `Task`'s `JsValue`. A
+  test reads the generated file so the annotations cannot quietly disappear.
 - Errors carry a stable `err.code` (`GDAL_CPL_FAILURE`, `GDAL_BAD_ARGUMENT`, …) on
   the sync surface. `napi::Task` fixes its error type, so async methods throw the
   same token at the front of the message instead.
@@ -145,7 +150,4 @@ First working cut — everything here is new.
   keeps the reading position on the layer, so one reader per layer at a time.
 - Array-valued properties are written as comma-joined text rather than list fields,
   unless the field is declared as a list one — see `FieldDefinition`.
-- Generated `.d.ts` types the async methods as `Promise<unknown>`, because `napi`
-  cannot resolve `Task::JsValue`. The sync signatures are exact and the values
-  returned at runtime are right; only the annotation is lost.
 - Intel macOS and 32-bit targets are not built.

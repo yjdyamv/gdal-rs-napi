@@ -425,7 +425,7 @@ impl Task for IdentifyEpsgTask {
 ///
 /// Searches the CRS database, so this can take a moment — hence a promise. Returns
 /// `null` when nothing matches, which is an answer rather than a failure.
-#[napi]
+#[napi(ts_return_type = "Promise<string | null>")]
 pub fn identify_epsg(wkt: String) -> AsyncTask<IdentifyEpsgTask> {
     AsyncTask::new(IdentifyEpsgTask { wkt })
 }

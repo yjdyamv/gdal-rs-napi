@@ -792,7 +792,7 @@ impl JsDataset {
         Ok(JsDataset::wrap(dataset, path))
     }
 
-    #[napi]
+    #[napi(ts_return_type = "Promise<Dataset>")]
     pub fn create_copy(
         &self,
         path: String,
@@ -815,7 +815,7 @@ impl JsDataset {
             .with_mut(|dataset| dataset.flush_cache().gdal())
     }
 
-    #[napi]
+    #[napi(ts_return_type = "Promise<void>")]
     pub fn flush(&self) -> AsyncTask<FlushTask> {
         AsyncTask::new(FlushTask {
             dataset: self.dataset.clone(),
@@ -855,7 +855,7 @@ impl JsDataset {
         Ok(JsDataset::wrap(dataset, dest))
     }
 
-    #[napi]
+    #[napi(ts_return_type = "Promise<Dataset>")]
     pub fn dem_process(
         &self,
         dest: String,
@@ -905,7 +905,7 @@ impl JsDataset {
         self.dataset.with_mut(remove_overviews)
     }
 
-    #[napi]
+    #[napi(ts_return_type = "Promise<void>")]
     pub fn remove_overviews(&self) -> AsyncTask<BuildOverviewsTask> {
         AsyncTask::new(BuildOverviewsTask {
             dataset: self.dataset.clone(),
@@ -932,7 +932,7 @@ impl JsDataset {
             .with_mut(|dataset| write_overviews(dataset, &request))
     }
 
-    #[napi]
+    #[napi(ts_return_type = "Promise<void>")]
     pub fn build_overviews(
         &self,
         options: Option<BuildOverviewsOptions>,
@@ -959,7 +959,7 @@ impl JsDataset {
         Ok(JsDataset::wrap(dataset, dest))
     }
 
-    #[napi]
+    #[napi(ts_return_type = "Promise<Dataset>")]
     pub fn translate(&self, dest: String, args: Option<Vec<String>>) -> AsyncTask<ProgramTask> {
         program_task(
             programs::Program::Translate,
@@ -979,16 +979,16 @@ impl JsDataset {
         Ok(JsDataset::wrap(dataset, dest))
     }
 
-    #[napi]
+    #[napi(ts_return_type = "Promise<Dataset>")]
     pub fn warp(&self, dest: String, args: Option<Vec<String>>) -> AsyncTask<ProgramTask> {
         program_task(programs::Program::Warp, dest, self.dataset.clone(), args)
     }
 
     /// Run `GDALVectorTranslate` (ogr2ogr) with this dataset as its only source.
     ///
-    /// `-overwrite` is an ogr2ogr *command-line* feature, not part of the library
-    /// API: an existing destination is updated rather than replaced, so delete it
-    /// first if that is what you want.
+    /// An existing layer is replaced by default; `-overwrite` drops the destination
+    /// *file* first, which is what ogr2ogr's own flag does, and `-append` asks for
+    /// the other behaviour.
     #[napi]
     pub fn vector_translate_sync(
         &self,
@@ -1002,7 +1002,7 @@ impl JsDataset {
         Ok(JsDataset::wrap(dataset, dest))
     }
 
-    #[napi]
+    #[napi(ts_return_type = "Promise<Dataset>")]
     pub fn vector_translate(
         &self,
         dest: String,
@@ -1072,7 +1072,7 @@ impl Task for OpenTask {
 
 /// Open an existing dataset. Runs on the libuv thread pool, so the event loop
 /// stays free while GDAL reads the header.
-#[napi]
+#[napi(ts_return_type = "Promise<Dataset>")]
 pub fn open(path: String, options: Option<OpenOptions>) -> AsyncTask<OpenTask> {
     let update = options.and_then(|options| options.update).unwrap_or(false);
     AsyncTask::new(OpenTask {
@@ -1094,7 +1094,7 @@ pub fn open_sync(path: String, options: Option<OpenOptions>) -> Result<JsDataset
 /// are in the README — most drivers end up reopening the file per thread, so a high
 /// read concurrency costs file descriptors.
 #[cfg(gd_thread_safe)]
-#[napi]
+#[napi(ts_return_type = "Promise<Dataset>")]
 pub fn open_thread_safe(path: String) -> AsyncTask<OpenTask> {
     AsyncTask::new(OpenTask {
         path,
@@ -1111,7 +1111,7 @@ pub fn open_thread_safe_sync(path: String) -> Result<JsDataset> {
 /// Create a raster dataset. `options.driver` must name a driver that supports
 /// `Create` (GTiff, GPKG, MEM, ...); `band_count` defaults to 1 and
 /// `data_type` to `Uint8`.
-#[napi]
+#[napi(ts_return_type = "Promise<Dataset>")]
 pub fn create(path: String, options: CreateOptions) -> AsyncTask<OpenTask> {
     AsyncTask::new(OpenTask {
         path,
@@ -1125,7 +1125,7 @@ pub fn create_sync(path: String, options: CreateOptions) -> Result<JsDataset> {
 }
 
 /// Create an empty vector dataset. Add layers with `dataset.createLayer(...)`.
-#[napi]
+#[napi(ts_return_type = "Promise<Dataset>")]
 pub fn create_vector(path: String, driver: String) -> AsyncTask<OpenTask> {
     AsyncTask::new(OpenTask {
         path,
@@ -1146,7 +1146,7 @@ pub fn create_vector_sync(path: String, driver: String) -> Result<JsDataset> {
 // ---------------------------------------------------------------------------
 
 /// `gdal_translate <args> source dest`, as one call.
-#[napi]
+#[napi(ts_return_type = "Promise<Dataset>")]
 pub fn translate(
     dest: String,
     source: String,
@@ -1167,7 +1167,7 @@ pub fn translate_sync(
 }
 
 /// `gdalwarp <args> sources... dest`, as one call. Several sources merge.
-#[napi]
+#[napi(ts_return_type = "Promise<Dataset>")]
 pub fn warp(
     dest: String,
     sources: Vec<String>,
@@ -1188,7 +1188,7 @@ pub fn warp_sync(
 }
 
 /// `ogr2ogr <args> dest sources...`, as one call.
-#[napi]
+#[napi(ts_return_type = "Promise<Dataset>")]
 pub fn vector_translate(
     dest: String,
     sources: Vec<String>,
@@ -1239,7 +1239,7 @@ fn program_task_paths(
 
 /// `gdaldem <algorithm> source dest`, as one call. `colorFile` is read only by the
 /// `color-relief` algorithm.
-#[napi]
+#[napi(ts_return_type = "Promise<Dataset>")]
 pub fn dem_process(
     dest: String,
     source: String,

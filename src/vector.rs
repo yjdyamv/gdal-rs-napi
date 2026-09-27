@@ -902,7 +902,7 @@ impl JsFeatureCursor {
         self.next_batch()
     }
 
-    #[napi]
+    #[napi(ts_return_type = "Promise<Array<FeatureRecord>>")]
     pub fn read(&self) -> AsyncTask<CursorTask> {
         AsyncTask::new(CursorTask {
             dataset: self.dataset.clone(),

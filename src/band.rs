@@ -355,7 +355,7 @@ impl JsRasterBand {
         self.compute_statistics(statistics_request(options))
     }
 
-    #[napi]
+    #[napi(ts_return_type = "Promise<BandStatistics | null>")]
     pub fn statistics(&self, options: Option<StatisticsOptions>) -> AsyncTask<StatisticsTask> {
         AsyncTask::new(StatisticsTask {
             dataset: self.dataset.clone(),
@@ -375,7 +375,7 @@ impl JsRasterBand {
         self.compute_histogram(histogram_request(options)?)
     }
 
-    #[napi]
+    #[napi(ts_return_type = "Promise<BandHistogram>")]
     pub fn histogram(&self, options: HistogramOptions) -> Result<AsyncTask<HistogramTask>> {
         // Resolved here rather than in `compute`, so a bad range or bucket count
         // is thrown by the call instead of surfacing as a rejected promise.
@@ -409,7 +409,7 @@ impl JsRasterBand {
         Ok(bytes.into())
     }
 
-    #[napi]
+    #[napi(ts_return_type = "Promise<Buffer>")]
     pub fn read_pixels(&self, options: Option<ReadOptions>) -> AsyncTask<ReadBandTask> {
         AsyncTask::new(ReadBandTask {
             dataset: self.dataset.clone(),
@@ -419,7 +419,7 @@ impl JsRasterBand {
         })
     }
 
-    #[napi]
+    #[napi(ts_return_type = "Promise<Buffer>")]
     pub fn read_as(
         &self,
         data_type: DataType,
@@ -442,7 +442,7 @@ impl JsRasterBand {
         self.write_sync(data.as_ref(), &options)
     }
 
-    #[napi]
+    #[napi(ts_return_type = "Promise<void>")]
     pub fn write_pixels(
         &self,
         data: Buffer,
