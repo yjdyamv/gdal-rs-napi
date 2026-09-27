@@ -402,9 +402,12 @@ Worth knowing:
   `gdal_translate rejected these arguments: -not-a-real-option` — rather than the
   crash `gdal`'s own `BuildVRTOptions` wrapper walks into, which never checks
   whether GDAL returned a null options pointer.
-- **`ogr2ogr` has no `-overwrite` here.** That flag is a command-line feature, not
-  part of `GDALVectorTranslate`: an existing destination is updated rather than
-  replaced, so delete it first if that is what you want.
+- **`ogr2ogr` replaces the destination layer by default, and `-append` adds to it
+  instead.** Point `GDALVectorTranslate` at a destination whose layer already
+  exists and that layer is replaced — no flag needed. `-overwrite` is ogr2ogr's own
+  flag rather than GDAL's, so this wrapper implements it by dropping the destination
+  *file* first, which takes every layer in that file with it. Reach for it when that
+  is what you mean, and `-append` when you want to add rather than replace.
 - **`gdaldem` is here as well**, through `demProcess` / `demProcessSync` on a
   dataset or `gdal.demProcess` by path: `hillshade`, `slope`, `aspect`,
   `color-relief`, `tri`, `tpi` and `roughness`. They want a geotransform, and the

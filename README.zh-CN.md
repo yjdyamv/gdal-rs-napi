@@ -291,8 +291,10 @@ dataset.warpSync('out-3857.tif', ['-t_srs', 'EPSG:3857', '-r', 'cubic'])
 - **参数写错会把参数原样回显**：`gdal_translate rejected these arguments: -not-a-real-option`，
   而不是像 `gdal` 自己的 `BuildVRTOptions` 那样——它从不检查 GDAL 是否返回了空 options 指针——
   直接崩在空指针上。
-- **这里的 `ogr2ogr` 没有 `-overwrite`**。那是命令行层的功能，不属于 `GDALVectorTranslate`：
-  目标已存在时是**追加/更新**而不是替换，需要替换请先删掉目标。
+- **`ogr2ogr` 默认会替换目标图层，`-append` 才是追加。** 把 `GDALVectorTranslate` 指向一个
+  同名图层已存在的目标，那个图层会被**替换** —— 不需要任何标志。`-overwrite` 是 ogr2ogr 自己的
+  标志而不是 GDAL 的，所以本包自己实现它：**先把目标文件删掉**，因此那个文件里的**所有**图层都会
+  一起消失。确实想要这个效果再用它；只是想"加进去"请用 `-append`。
 - **`gdaldem` 也提供了**：数据集上的 `demProcess` / `demProcessSync`，或按路径的
   `gdal.demProcess`，支持 `hillshade`、`slope`、`aspect`、`color-relief`、`tri`、`tpi`、
   `roughness`。它们需要 geotransform，而计算坡度的那些需要以米为单位的 CRS。

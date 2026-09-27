@@ -921,13 +921,13 @@ impl Task for CursorTask {
 // geometries can be constructed for writing.
 // ---------------------------------------------------------------------------
 
-fn to_geojson(geometry: &gdal::vector::Geometry) -> Result<Value> {
+pub(crate) fn to_geojson(geometry: &gdal::vector::Geometry) -> Result<Value> {
     let json = geometry.json().gdal()?;
     serde_json::from_str(&json)
         .map_err(|err| bad_argument(format!("GDAL returned invalid GeoJSON: {err}")))
 }
 
-fn from_geojson(geometry: &Value) -> Result<gdal::vector::Geometry> {
+pub(crate) fn from_geojson(geometry: &Value) -> Result<gdal::vector::Geometry> {
     let encoded = serde_json::to_string(geometry)
         .map_err(|err| bad_argument(format!("cannot encode geometry as GeoJSON: {err}")))?;
     gdal::vector::Geometry::from_geojson(&encoded).gdal()

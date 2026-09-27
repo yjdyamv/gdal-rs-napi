@@ -6,6 +6,7 @@
 use gdal::spatial_ref::{AxisMappingStrategy, CoordTransform, SpatialRef};
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
+use serde_json::Value;
 
 use crate::error::{GdalErrorCode, IntoGdalResult, Result, bad_argument, into_status_error, split};
 use crate::runtime::{ensure_initialized, lock_gdal};
@@ -369,6 +370,22 @@ impl JsCoordinateTransform {
         let _guard = lock_gdal();
         let out = self.inner.transform_bounds(&corners, densify).gdal()?;
         Ok(out.to_vec())
+    }
+
+    /// Transform a geometry, in and out as GeoJSON.
+    ///
+    /// The geometry is walked by GDAL rather than by us, so every type is handled
+    /// — polygons, collections, nested rings — and so is the fact that a straight
+    /// line stops being straight under most projections. Transform a feature's
+    /// `geometry` and write it back if that is what you need.
+    #[napi]
+    pub fn transform_geometry(&self, geometry: Value) -> Result<Value> {
+        ensure_initialized();
+        let _guard = lock_gdal();
+
+        let geometry = crate::vector::from_geojson(&geometry)?;
+        let moved = geometry.transform(&self.inner).gdal()?;
+        crate::vector::to_geojson(&moved)
     }
 }
 

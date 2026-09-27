@@ -190,6 +190,57 @@ test('a terrain algorithm that does not exist is refused, with the list', () => 
   dataset.close()
 })
 
+test('vectorTranslate replaces the destination layer, and -append adds to it', () => {
+  const first = tmp('translate-first.geojson')
+  const second = tmp('translate-second.geojson')
+  const dest = tmp('translate-dest.gpkg')
+
+  writeFileSync(first, JSON.stringify(PLACES))
+  writeFileSync(
+    second,
+    JSON.stringify({
+      type: 'FeatureCollection',
+      features: [
+        {
+          type: 'Feature',
+          geometry: { type: 'Point', coordinates: [0, 0] },
+          properties: { name: 'only' },
+        },
+      ],
+    }),
+  )
+
+  const args = ['-f', 'GPKG', '-nln', 'places']
+  const names = () => {
+    const dataset = gdal.openSync(dest)
+    const read = dataset
+      .layer(0)
+      .featuresSync()
+      .map((feature) => feature.properties.name)
+      .sort()
+    dataset.close()
+    return read
+  }
+
+  gdal.vectorTranslateSync(dest, [first], args).close()
+  assert.deepEqual(names(), ['Berlin', 'Paris'])
+
+  // With no flag, an existing layer is replaced — that is GDAL's default, and the
+  // only way to tell it from "did nothing" is to feed it different data.
+  gdal.vectorTranslateSync(dest, [second], args).close()
+  assert.deepEqual(names(), ['only'])
+
+  // `-append` is GDAL's own flag and asks for the other behaviour.
+  gdal.vectorTranslateSync(dest, [second], [...args, '-append']).close()
+  assert.deepEqual(names(), ['only', 'only'])
+
+  // `-overwrite` is ogr2ogr's flag, not GDAL's: the wrapper drops the destination
+  // file first. That is why it has to be asked for, and why it takes every layer
+  // in the file with it.
+  gdal.vectorTranslateSync(dest, [second], [...args, '-overwrite']).close()
+  assert.deepEqual(names(), ['only'])
+})
+
 test('vectorTranslate() runs ogr2ogr, schema and all', () => {
   const source = tmp('places.geojson')
   const dest = tmp('places.gpkg')

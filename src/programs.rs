@@ -227,10 +227,23 @@ pub(crate) fn run(
         CString::new(dest).map_err(|_| bad_argument("the destination path contains a NUL byte"))?;
     let mut usage_error: c_int = 0;
 
+    // ogr2ogr implements -overwrite in its own command-line front end, not in
+    // GDALVectorTranslate, so we do the same: take the flag out and remove the
+    // destination before the call.
+    let (args, overwrite) = match program {
+        Program::VectorTranslate => split_overwrite(args),
+        _ => (args.to_vec(), false),
+    };
+    if overwrite {
+        // SAFETY: VSIUnlink takes a path and reports failure through its return
+        // value; a destination that was not there is not worth reporting.
+        unsafe { gdal_sys::VSIUnlink(c_dest.as_ptr()) };
+    }
+
     let handle = unsafe {
         match program {
             Program::Translate => {
-                let options = TranslateOptions::new(args)?;
+                let options = TranslateOptions::new(&args)?;
                 gdal_sys::GDALTranslate(
                     c_dest.as_ptr(),
                     sources[0].c_dataset(),
@@ -239,7 +252,7 @@ pub(crate) fn run(
                 )
             }
             Program::Warp => {
-                let options = WarpOptions::new(args)?;
+                let options = WarpOptions::new(&args)?;
                 let mut handles: Vec<_> = sources.iter().map(|source| source.c_dataset()).collect();
                 gdal_sys::GDALWarp(
                     c_dest.as_ptr(),
@@ -251,7 +264,7 @@ pub(crate) fn run(
                 )
             }
             Program::VectorTranslate => {
-                let options = VectorTranslateOptions::new(args)?;
+                let options = VectorTranslateOptions::new(&args)?;
                 let mut handles: Vec<_> = sources.iter().map(|source| source.c_dataset()).collect();
                 gdal_sys::GDALVectorTranslate(
                     c_dest.as_ptr(),
@@ -266,6 +279,22 @@ pub(crate) fn run(
     };
 
     take_result(program.name(), handle, usage_error)
+}
+
+/// Pull `-overwrite` out of an argument list.
+///
+/// The flag belongs to ogr2ogr, and ogr2ogr itself honours it by deleting the
+/// destination before it calls into the library — `GDALVectorTranslate` has no idea
+/// what it means. Doing the same in this wrapper keeps the flag working where the
+/// tool's own documentation puts it.
+fn split_overwrite(args: &[String]) -> (Vec<String>, bool) {
+    let overwrite = args.iter().any(|arg| arg == "-overwrite");
+    let kept = args
+        .iter()
+        .filter(|arg| *arg != "-overwrite")
+        .cloned()
+        .collect();
+    (kept, overwrite)
 }
 
 /// Run the terrain tools — `gdaldem`'s hillshade, slope, aspect and friends.
@@ -451,6 +480,19 @@ mod tests {
             Err(err) => err,
         };
         assert!(err.reason.contains("gdaldem rejected"), "{}", err.reason);
+    }
+
+    #[test]
+    fn overwrite_is_pulled_out_of_the_arguments() {
+        let args = vec!["-f".to_string(), "-overwrite".to_string(), "GPKG".to_string()];
+        let (kept, overwrite) = split_overwrite(&args);
+        assert!(overwrite);
+        // GDAL never sees the flag; it only ever saw the destination disappearing.
+        assert_eq!(kept, vec!["-f".to_string(), "GPKG".to_string()]);
+
+        let (untouched, overwrite) = split_overwrite(&["-f".to_string()]);
+        assert!(!overwrite);
+        assert_eq!(untouched, vec!["-f".to_string()]);
     }
 
     #[test]

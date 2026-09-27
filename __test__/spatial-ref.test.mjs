@@ -153,6 +153,44 @@ test('an impossible coordinate does not come back as a plausible number', () => 
   )
 })
 
+test('transformGeometry moves a whole geometry, not just points', () => {
+  const toMercator = new gdal.CoordinateTransform(wgs84(), webMercator())
+
+  const polygon = {
+    type: 'Polygon',
+    coordinates: [
+      [
+        [13.0, 52.0],
+        [13.8, 52.0],
+        [13.8, 53.0],
+        [13.0, 53.0],
+        [13.0, 52.0],
+      ],
+    ],
+  }
+
+  const moved = toMercator.transformGeometry(polygon)
+  assert.equal(moved.type, 'Polygon')
+  assert.deepEqual(
+    moved.coordinates.map((ring) => ring.length),
+    [5],
+    'the ring keeps its vertices',
+  )
+
+  // Same shape, metres instead of degrees.
+  const [x, y] = moved.coordinates[0][0]
+  assert.ok(x > 1_000_000 && y > 6_000_000, `expected metres, got ${x}, ${y}`)
+
+  // And back again, to the corner we started from.
+  const back = new gdal.CoordinateTransform(webMercator(), wgs84()).transformGeometry(moved)
+  const [lon, lat] = back.coordinates[0][0]
+  assert.ok(Math.abs(lon - 13.0) < 1e-9, `longitude came back as ${lon}`)
+  assert.ok(Math.abs(lat - 52.0) < 1e-9, `latitude came back as ${lat}`)
+
+  // Something that is not a geometry is an error, not an empty shape.
+  assert.throws(() => toMercator.transformGeometry({ type: 'Nonsense' }))
+})
+
 test('datasets and layers hand out their CRS as an object', () => {
   const path = tmp('spatial-ref-raster.tif')
   const created = gdal.createSync(path, { driver: 'GTiff', width: 4, height: 4, bandCount: 1 })

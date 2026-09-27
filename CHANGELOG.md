@@ -45,11 +45,18 @@ First working cut — everything here is new.
   `withAxisMapping`. `dataset.spatialRef` and `layer.spatialRef` hand one back for
   something already open, and `createLayer` takes `wkt` as well as `epsg`.
 - `CoordinateTransform` turns coordinates between two `SpatialRef`s:
-  `transformPoint`, `transformPoints` (a flat `Float64Array` in and out) and
-  `transformBounds`, which densifies the edges because transforming four corners
-  is wrong for any non-linear projection. `identifyEpsg(wkt)` resolves a CRS
-  description to an authority code, on the thread pool because it searches the
-  database.
+  `transformPoint`, `transformPoints` (a flat `Float64Array` in and out),
+  `transformGeometry` (GeoJSON in, GeoJSON out — GDAL walks the geometry, so
+  polygons, rings and collections are handled and a straight line stops being
+  straight where it should) and `transformBounds`, which densifies the edges
+  because transforming four corners is wrong for any non-linear projection.
+  `identifyEpsg(wkt)` resolves a CRS description to an authority code, on the
+  thread pool because it searches the database.
+- `vectorTranslate` takes `-overwrite`, which is ogr2ogr's flag rather than GDAL's:
+  `GDALVectorTranslate` replaces an existing layer on its own, and `-append` asks
+  for the other thing, so the wrapper implements the flag by dropping the
+  destination *file* — every layer in it goes too, which is worth knowing before
+  asking for it.
 - Coordinates are **longitude,latitude** throughout. GDAL reads `EPSG:4326` the
   other way round, under which `[13.4, 52.5]` is a valid coordinate in the Gulf of
   Aden rather than Berlin — so every `SpatialRef` built here asks for the
@@ -127,8 +134,7 @@ First working cut — everything here is new.
 - `buildOverviews({ bands })` is passed through, but GTiff — the only writable
   overview driver compiled in — refuses anything short of every band.
 - The programs have no progress callbacks (GDAL's `*OptionsSetProgress` is not
-  wired up), and `vectorTranslate` has no `-overwrite`, which is a command-line
-  feature rather than part of `GDALVectorTranslate`.
+  wired up).
 - No terrain algorithms beyond the ones `gdaldem` itself offers.
 - Reading a layer in batches is a cursor rather than a JS async iterator, and GDAL
   keeps the reading position on the layer, so one reader per layer at a time.
