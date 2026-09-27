@@ -236,6 +236,21 @@ bottom edges that is smaller than `blockSize`, because GDAL's own block read pad
 those, and a value that was never in the file is not worth handing to JS. Both of
 these return bytes, for the reason above.
 
+And to walk a band that does not fit in memory, one strip at a time:
+
+```js
+const strips = band.readChunksSync({ rows: 64 }, (chunk) => {
+  consume(chunk.data, chunk.x, chunk.y, chunk.width, chunk.height)
+  return true          // `false` stops the walk
+})
+```
+
+`rows` defaults to the band's block height, which is the strip GDAL reads anyway, and
+every strip arrives whole. The callback runs on the event loop, between reads, and its
+answer is the backpressure — so a walk long enough to matter belongs in a worker. (An
+async iterator, and with it `for await`, needs napi's async-generator support, which
+this version does not expose; `readChunksSync` is what that leaves.)
+
 Writing and creating:
 
 ```js

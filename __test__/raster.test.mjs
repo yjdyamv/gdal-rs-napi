@@ -614,6 +614,56 @@ test('contourGenerate takes an interval and an id field', async () => {
   raster.close()
 })
 
+test('readChunksSync walks a band in strips, and the answer stops it', () => {
+  const path = tmp('chunks.tif')
+  const dataset = gdal.createSync(path, {
+    driver: 'GTiff',
+    width: 4,
+    height: 6,
+    bandCount: 1,
+    dataType: 'Uint8',
+  })
+  const band = dataset.band(0)
+  band.writeValues(0, 0, 4, 6, bytesOf(ramp(4, 6)))
+
+  // Every strip arrives whole, in the band's own type, and says where it is.
+  const seen = []
+  const count = band.readChunksSync({ rows: 2 }, (chunk) => {
+    seen.push([chunk.y, chunk.height, chunk.width, chunk.data[0]])
+    return true
+  })
+  assert.equal(count, 3)
+  assert.deepEqual(seen, [
+    [0, 2, 4, 0],
+    [2, 2, 4, 8],
+    [4, 2, 4, 16],
+  ])
+
+  // The answer is the backpressure: `false` ends the walk, and the count says how
+  // far it got.
+  assert.equal(
+    band.readChunksSync({ rows: 1 }, () => false),
+    1,
+  )
+
+  // A window narrows it, and the strips are that window's columns.
+  const windowed = []
+  band.readChunksSync({ x: 1, y: 1, width: 2, height: 3, rows: 1 }, (chunk) => {
+    windowed.push(Array.from(chunk.data))
+    return true
+  })
+  assert.deepEqual(windowed, [
+    [5, 6],
+    [9, 10],
+    [13, 14],
+  ])
+
+  // A window that does not fit fails on the call, before any strip is read.
+  assert.throws(() => band.readChunksSync({ x: 3, width: 4 }, () => true), /falls outside the band/i)
+
+  dataset.close()
+})
+
 test('a band lists its overview levels, and each one reads whole', async () => {
   const path = tmp('overview-levels.tif')
   const dataset = gdal.createSync(path, {

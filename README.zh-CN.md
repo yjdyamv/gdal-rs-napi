@@ -195,6 +195,20 @@ band.writeBlock(300, 200, bytes)
 之后的范围，所以在右、下边缘会比 `blockSize` 小 —— GDAL 自己的块读会给那些位置补值，
 而文件里从来没有的值不值得交给 JS。这两个都返回字节，原因同上。
 
+要处理大到放不进内存的栅格，就一条一条地走：
+
+```js
+const strips = band.readChunksSync({ rows: 64 }, (chunk) => {
+  consume(chunk.data, chunk.x, chunk.y, chunk.width, chunk.height)
+  return true          // 返回 false 就停下
+})
+```
+
+`rows` 默认取该带的块高 —— 也就是 GDAL 反正要读的那一条；每一条都是完整的，不会是半条。
+回调在事件循环上、两次读之间执行，它的返回值就是背压 —— 所以真正耗时的走法应该放进 worker。
+（async iterator 那条路可以 `for await`，但需要 napi 的 async generator 支持，这个版本没有公开；
+`readChunksSync` 就是它剩下的形态。）
+
 写入、创建、地理参考：
 
 ```js

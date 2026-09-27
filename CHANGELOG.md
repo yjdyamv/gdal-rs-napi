@@ -113,6 +113,17 @@ First working cut — everything here is new.
   getter asks GDAL every time, so a level built after the band object was created shows
   up. Levels are read with raw `GDALRasterIO`: the `gdal` crate's readers start from a
   dataset and a band number, and an overview hangs off a band with no number of its own.
+- `band.readChunksSync(options, onChunk)` walks a band in horizontal strips, handing
+  each one to a callback and reading the next only once that call has come back. The
+  answer is the backpressure: `false` ends the walk, which is the contract `onProgress`
+  already has, and the return value says how many strips were handed out. `rows`
+  defaults to the band's block height — the strip GDAL reads anyway — so a raster
+  larger than memory can be processed a strip at a time, each strip whole. It is
+  synchronous on purpose: the alternative was napi's `AsyncGenerator`, the only way to
+  give a class a real `Symbol.asyncIterator`, and it cannot be reached from here — the
+  trait lives in the private `bindgen_runtime` module, its prelude re-export does not
+  exist in napi 3.13, and turning on the `experimental` feature changes neither. For a
+  long walk, run it in a worker.
 - `open()` / `openSync()` take a `Buffer` as well as a path, which is where the
   in-memory pipeline starts. The bytes go to a `/vsimem/` file, that file becomes the
   dataset's `path`, and closing the dataset unlinks it — so bytes written to in place

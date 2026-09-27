@@ -947,6 +947,54 @@ impl JsRasterBand {
         self.write_sync(data.as_ref(), &options)
     }
 
+    /// Walk the band in horizontal strips, handing each one to `onChunk` and reading
+    /// the next only once that call has come back.
+    ///
+    /// The answer *is* the backpressure: return `false` and the walk stops, the same
+    /// contract `onProgress` has. The strips are the band's own samples in its own
+    /// type, so a raster larger than memory can be processed a strip at a time, with
+    /// every strip whole — never a partial one. `rows` defaults to the band's block
+    /// height, the strip GDAL reads anyway. The return value is how many strips were
+    /// handed out.
+    ///
+    /// This one is synchronous: the callback runs on this thread, between reads, so
+    /// the walk holds the event loop for its duration. That is the price of not using
+    /// napi's async-iterator support, which is behind an experimental feature and
+    /// cannot be named from here at all — for a long walk, run it in a worker.
+    #[napi]
+    pub fn read_chunks_sync(
+        &self,
+        options: Option<ChunkOptions>,
+        on_chunk: napi::bindgen_prelude::Function<Chunk, bool>,
+    ) -> Result<u32> {
+        let plan = self.chunk_plan(&options.unwrap_or_default())?;
+
+        let mut handed_out = 0;
+        let mut next_row = plan.top;
+        while next_row < plan.bottom {
+            let rows = plan.rows.min(plan.bottom - next_row);
+            let bytes = self.read_sync(None, &window(plan.left, next_row, plan.width, rows))?;
+            handed_out += 1;
+            let keep_going = on_chunk
+                .call(Chunk {
+                    data: bytes.into(),
+                    x: plan.left,
+                    y: next_row,
+                    width: plan.width,
+                    height: rows,
+                })
+                // A callback that throws ends the walk, and there is no `CPLErr`
+                // behind a JS exception to report — its own message is the whole
+                // story, so it is carried over rather than swallowed.
+                .map_err(|error| bad_argument(format!("the chunk callback threw: {error}")))?;
+            if !keep_going {
+                break;
+            }
+            next_row += rows;
+        }
+        Ok(handed_out)
+    }
+
     /// This band's overview levels, as they were built — `[]` when there are none.
     ///
     /// Indexing the array is the `overviews.get(i)` of the GDAL API. A level is not a
@@ -1164,6 +1212,80 @@ fn read_overview_bytes(band: &mut RasterBand<'_>, level: usize) -> Result<Vec<u8
     };
     crate::raster_tools::cpl_result(class)?;
     Ok(bytes)
+}
+
+/// One strip of a band, as `readChunksSync` hands it over.
+#[napi(object)]
+pub struct Chunk {
+    /// The band's samples, in its own type: `width * height` of them.
+    pub data: Buffer,
+    /// Where that strip sits in the band.
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// What `readChunksSync` takes for its window and its strips.
+#[napi(object)]
+#[derive(Debug, Clone, Default)]
+pub struct ChunkOptions {
+    /// Left edge of the window, in pixels. Default 0.
+    pub x: Option<u32>,
+    /// Top edge of the window, in pixels. Default 0.
+    pub y: Option<u32>,
+    /// Width of the window. Default: to the right edge of the band.
+    pub width: Option<u32>,
+    /// Height of the window. Default: to the bottom edge of the band.
+    pub height: Option<u32>,
+    /// Rows in each strip. Default: the band's own block height.
+    pub rows: Option<u32>,
+}
+
+/// A `readChunksSync` walk, worked out and checked before the first strip is read.
+struct ChunkPlan {
+    left: u32,
+    width: u32,
+    top: u32,
+    bottom: u32,
+    rows: u32,
+}
+
+impl JsRasterBand {
+    fn chunk_plan(&self, options: &ChunkOptions) -> Result<ChunkPlan> {
+        let (band_width, band_height, block_rows) = self.dataset.with_exclusive(|dataset| {
+            with_band(dataset, self.index, |band| {
+                let (width, height) = band.size();
+                Ok((width, height, band.block_size().1))
+            })
+        })?;
+
+        let left = options.x.unwrap_or(0) as usize;
+        let top = options.y.unwrap_or(0) as usize;
+        let width = options
+            .width
+            .map_or(band_width.saturating_sub(left), |value| value as usize);
+        let height = options
+            .height
+            .map_or(band_height.saturating_sub(top), |value| value as usize);
+        let rows = options.rows.map_or(block_rows, |value| value as usize);
+
+        // The whole window is checked once, here, so a bad one fails on the call; the
+        // strips the walk reads are then parts of a window that fits.
+        crate::raster_io::resolve_window(
+            &window(left as u32, top as u32, width as u32, height as u32),
+            band_width,
+            band_height,
+        )?;
+
+        Ok(ChunkPlan {
+            left: left as u32,
+            width: width as u32,
+            top: top as u32,
+            bottom: (top + height) as u32,
+            rows: rows.max(1) as u32,
+        })
+    }
 }
 
 /// The ten sample types a band can have, and the two conversions a single sample
