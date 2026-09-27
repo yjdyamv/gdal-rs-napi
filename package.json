@@ -13,6 +13,7 @@
     "rust"
   ],
   "license": "MIT",
+  "private": true,
   "main": "index.js",
   "types": "index.d.ts",
   "files": [
@@ -42,10 +43,6 @@
     "build": "node scripts/build.mjs --platform --release --js binding.js --dts binding.d.ts && node scripts/stage-assets.mjs",
     "build:debug": "node scripts/build.mjs --platform --js binding.js --dts binding.d.ts && node scripts/stage-assets.mjs",
     "pack": "node scripts/pack-platform.mjs",
-    "artifacts": "napi artifacts && node scripts/stage-assets.mjs",
-    "create-npm-dirs": "napi create-npm-dirs",
-    "prepublishOnly": "napi prepublish -t npm",
-    "version": "napi version",
     "test": "node --test",
     "gdalinfo": "node examples/gdalinfo.mjs",
     "to-cog": "node examples/to-cog.mjs",
@@ -54,12 +51,8 @@
   "devDependencies": {
     "@napi-rs/cli": "3.10.5"
   },
-  "publishConfig": {
-    "registry": "https://registry.npmjs.org/",
-    "access": "public"
-  },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/your-org/gdal-rs-napi.git"
+    "url": "git+https://github.com/yjdyamv/gdal-rs-napi.git"
   }
 }

@@ -267,7 +267,7 @@ CI 为每个平台构建一个自包含 tarball，推 `v*` tag 时挂到 GitHub 
 **完全不发布到 npm**，直接装 release 资产：
 
 ```sh
-npm install https://github.com/your-org/gdal-rs-napi/releases/download/v0.1.0/gdal-rs-napi-0.1.0-darwin-arm64.tgz
+npm install https://github.com/yjdyamv/gdal-rs-napi/releases/download/v0.1.0/gdal-rs-napi-0.1.0-darwin-arm64.tgz
 ```
 
 每个 tarball 内含加载器、打包好的 GDAL/PROJ 数据和它自己的 `.node`，并声明了

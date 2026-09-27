@@ -384,7 +384,7 @@ Release when a `v*` tag is pushed. **Nothing is published to npm** — install a
 release asset directly:
 
 ```sh
-npm install https://github.com/your-org/gdal-rs-napi/releases/download/v0.1.0/gdal-rs-napi-0.1.0-darwin-arm64.tgz
+npm install https://github.com/yjdyamv/gdal-rs-napi/releases/download/v0.1.0/gdal-rs-napi-0.1.0-darwin-arm64.tgz
 ```
 
 Each tarball carries the loader, the packaged GDAL/PROJ data and its own `.node`,
