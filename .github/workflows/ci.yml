@@ -135,7 +135,7 @@ jobs:
       - name: Pack
         run: npm run pack
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v5
         with:
           name: gdal-rs-napi-${{ matrix.target }}
           path: |
@@ -151,15 +151,26 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      # No actions/checkout here on purpose: this job only needs the artifacts.
+      # That is also why GH_REPO has to be set below — `gh` infers the repository
+      # from the git remote, and without a checkout there is none to infer from,
+      # so `gh release create` fails immediately.
+      - uses: actions/download-artifact@v5
         with:
           path: artifacts
 
       - name: Publish the tarballs as release assets
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
         run: |
           tag="$GITHUB_REF_NAME"
           gh release view "$tag" >/dev/null 2>&1 \
             || gh release create "$tag" --title "$tag" --generate-notes
+          count=$(find artifacts -name '*.tgz' | wc -l)
+          if [ "$count" -eq 0 ]; then
+            echo "no tarballs were downloaded, so there is nothing to publish" >&2
+            exit 1
+          fi
+          echo "publishing $count tarball(s)"
           find artifacts -name '*.tgz' -print -exec gh release upload "$tag" {} --clobber \;
