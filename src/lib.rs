@@ -28,6 +28,7 @@ mod json;
 mod programs;
 mod progress;
 mod raster_io;
+mod raster_tools;
 mod runtime;
 mod spatial_ref;
 mod vector;

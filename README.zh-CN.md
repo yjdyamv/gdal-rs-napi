@@ -161,6 +161,19 @@ cog.close(); source.close()
 `maximum` 是 GDAL 的**缓存**而不是计算：在 `statistics()` 跑过之前（或打开一个自带统计量的
 格式之前）是 `null`。`readOnly` 跟随数据集的访问模式，因为波段自己没有访问模式。
 
+GDAL 有三个栅格算法可以直接作用在波段上：
+
+```js
+band.checksumSync()                    // gdalinfo 打的那个 16 位指纹
+band.checksumSync({ x: 0, y: 0, width: 256, height: 256 })  // 也可以只算一个窗口
+await band.fillNoData()                // 用邻域把 no-data 像素填上
+await band.sieveFilter({ threshold: 10 })  // 丢掉小于 10 像素的连通区
+```
+
+每个都有 `Sync` 孪生版。**`fillNoData` 与 `sieveFilter` 是原地修改**，所以数据集必须可写；
+`fillNoData` 还要求波段有 no-data 值，没有就直说，而不是猜哪些像素是洞。**`checksum` 会拒绝
+`resampling` / `outWidth` / `outHeight`**：它是"样本原样"的指纹，重采样进去只会让数字变了而已。
+
 两个容易踩的点：`width`/`height` 是 GDAL 原样返回的，**只对栅格数据集有意义**
 （矢量 GPKG 也会返回一个数字），用之前先看 `bandCount`；`IMAGE_STRUCTURE`
 元数据挂在 **dataset** 上而不是 band 上。

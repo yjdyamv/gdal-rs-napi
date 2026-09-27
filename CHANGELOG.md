@@ -39,6 +39,14 @@ First working cut — everything here is new.
   follows how the dataset was opened, since a band has no access mode of its own.
   Reading `scale` / `offset` is what keeps a DEM or reflectance raster from being
   treated as its raw integers.
+- `RasterBand` gains three of GDAL's raster algorithms, the ones that are neither
+  I/O nor a program: `checksum()` / `checksumSync()` — the 16-bit fingerprint
+  `gdalinfo` prints, with `resampling` / `outWidth` / `outHeight` refused rather
+  than quietly resampled into; `fillNoData()` / `fillNoDataSync()` —
+  `GDALFillNodata`, in place, and it says so when the band has no no-data value to
+  fill from; and `sieveFilter()` / `sieveFilterSync()` — `GDALSieveFilter`, in
+  place, with a threshold in pixels and 4- or 8-connectedness. Each async form runs
+  on the thread pool, like the readers and statistics do.
 - Programs: `translate` / `translateSync`, `warp` / `warpSync`, `vectorTranslate` /
   `vectorTranslateSync` — `gdal_translate`, `gdalwarp` and `ogr2ogr`, each taking
   that tool's own command-line arguments. `warp` and `vectorTranslate` take a list

@@ -226,6 +226,21 @@ from a DEM or a reflectance raster, which otherwise read as plain integers.
 until `statistics()` has run, or a format that stores them is opened. `readOnly`
 follows the dataset's access mode, because a band has none of its own.
 
+Three of GDAL's raster algorithms work straight on a band:
+
+```js
+band.checksumSync()                    // the 16-bit fingerprint gdalinfo prints
+band.checksumSync({ x: 0, y: 0, width: 256, height: 256 })  // or a window of it
+await band.fillNoData()                // fill no-data pixels from their neighbours
+await band.sieveFilter({ threshold: 10 })  // drop regions under 10 pixels
+```
+
+Each has a `Sync` twin. **`fillNoData` and `sieveFilter` work in place**, so the
+dataset has to be writable — `fillNoData` also needs the band to have a no-data
+value, and says so rather than guessing which pixels are holes. **`checksum`
+refuses `resampling` / `outWidth` / `outHeight`**: it is a fingerprint of the
+samples as they are, and resampling into it would only change the number.
+
 Two things that save confusion: `width` / `height` come straight from GDAL and
 are only meaningful when there are bands, so check `bandCount` before trusting
 them on a vector dataset; and `IMAGE_STRUCTURE` lives on the **dataset**, not on

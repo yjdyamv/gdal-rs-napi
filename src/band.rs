@@ -18,6 +18,10 @@ use crate::dataset::DatasetRef;
 use crate::dtype::DataType;
 use crate::error::{GdalErrorCode, IntoGdalResult, Result, bad_argument, into_status_error, split};
 use crate::raster_io::{ReadOptions, read_window, resample_alg, resolve_window, write_window};
+use crate::raster_tools::{
+    FillNoDataOptions, FillNoDataRequest, SieveFilterOptions, SieveFilterRequest, checksum_options,
+    fill_no_data, fill_nodata_request, sieve_filter, sieve_filter_request,
+};
 use crate::runtime::ensure_initialized;
 
 /// Re-derive this band's `RasterBand` and hand it to `f`.
@@ -247,6 +251,39 @@ impl JsRasterBand {
                 })
             })
         })
+    }
+
+    /// A checksum is of the samples as they are, so it takes the same window
+    /// resolution as a read and never the resampling path.
+    fn compute_checksum(&self, options: &ReadOptions) -> Result<u32> {
+        ensure_initialized();
+        self.dataset.with_exclusive(|dataset| {
+            with_band(dataset, self.index, |band| {
+                let (width, height) = band.size();
+                let window = resolve_window(options, width, height)?;
+                let checksum = band
+                    .checksum(
+                        (window.x as isize, window.y as isize),
+                        (window.width, window.height),
+                    )
+                    .gdal()?;
+                Ok(u32::from(checksum))
+            })
+        })
+    }
+
+    fn apply_fill_no_data(&self, request: FillNoDataRequest) -> Result<()> {
+        ensure_initialized();
+        // `with_mut`, so writing is the caller's to make: a read-only thread-safe
+        // dataset refuses it, and a closed one says so.
+        self.dataset
+            .with_mut(|dataset| with_band(dataset, self.index, |band| fill_no_data(band, request)))
+    }
+
+    fn apply_sieve_filter(&self, request: SieveFilterRequest) -> Result<()> {
+        ensure_initialized();
+        self.dataset
+            .with_mut(|dataset| with_band(dataset, self.index, |band| sieve_filter(band, request)))
     }
 
     fn read_sync(&self, target: Option<DataType>, options: &ReadOptions) -> Result<Vec<u8>> {
@@ -569,6 +606,83 @@ impl JsRasterBand {
         })
     }
 
+    /// GDAL's checksum of a window of this band: a 16-bit fingerprint of the
+    /// samples, the same number `gdalinfo` prints. Two rasters that agree here hold
+    /// the same samples there.
+    ///
+    /// The window defaults to the whole band. `resampling`, `outWidth` and
+    /// `outHeight` are refused rather than ignored, because a checksum is of the
+    /// samples as they are and silently resampling into it would change the number
+    /// for no reason anyone asked for.
+    #[napi]
+    pub fn checksum_sync(&self, options: Option<ReadOptions>) -> Result<u32> {
+        self.compute_checksum(&checksum_options(options)?)
+    }
+
+    /// The same, on the thread pool: a checksum of a large raster reads all of it,
+    /// so it costs what a read costs.
+    #[napi(ts_return_type = "Promise<number>")]
+    pub fn checksum(&self, options: Option<ReadOptions>) -> Result<AsyncTask<ChecksumTask>> {
+        let options = checksum_options(options)?;
+        Ok(AsyncTask::new(ChecksumTask {
+            dataset: self.dataset.clone(),
+            index: self.index,
+            options,
+        }))
+    }
+
+    /// Fill this band's no-data pixels from their neighbours — GDAL's
+    /// `GDALFillNodata`, the algorithm behind `gdal_fillnodata.py`.
+    ///
+    /// It works in place, so the dataset has to be writable, and the band needs a
+    /// no-data value: without one there is no telling a hole from data, and that is
+    /// reported rather than guessed at.
+    #[napi]
+    pub fn fill_no_data_sync(&self, options: Option<FillNoDataOptions>) -> Result<()> {
+        self.apply_fill_no_data(fill_nodata_request(options)?)
+    }
+
+    #[napi(ts_return_type = "Promise<void>")]
+    pub fn fill_no_data(
+        &self,
+        options: Option<FillNoDataOptions>,
+    ) -> Result<AsyncTask<FillNoDataTask>> {
+        // Resolved here, so a bad distance is thrown by the call rather than
+        // surfacing on the worker.
+        let request = fill_nodata_request(options)?;
+        Ok(AsyncTask::new(FillNoDataTask {
+            dataset: self.dataset.clone(),
+            index: self.index,
+            request,
+        }))
+    }
+
+    /// Remove connected regions smaller than `threshold` pixels — GDAL's
+    /// `GDALSieveFilter`, the algorithm behind `gdal_sieve.py`. A region that is
+    /// too small takes the value of its largest neighbour.
+    ///
+    /// It runs in place: this band is both source and destination, so the dataset
+    /// has to be writable.
+    ///
+    /// ```js
+    /// band.sieveFilterSync({ threshold: 10 })                        // 4-connected
+    /// band.sieveFilterSync({ threshold: 10, connectedness: 8 })
+    /// ```
+    #[napi]
+    pub fn sieve_filter_sync(&self, options: SieveFilterOptions) -> Result<()> {
+        self.apply_sieve_filter(sieve_filter_request(options)?)
+    }
+
+    #[napi(ts_return_type = "Promise<void>")]
+    pub fn sieve_filter(&self, options: SieveFilterOptions) -> Result<AsyncTask<SieveFilterTask>> {
+        let request = sieve_filter_request(options)?;
+        Ok(AsyncTask::new(SieveFilterTask {
+            dataset: self.dataset.clone(),
+            index: self.index,
+            request,
+        }))
+    }
+
     /// Read in the band's own sample type, with no conversion. The returned
     /// buffer is the raw little-endian bytes of `width * height` samples; use
     /// `bytesPerSample(band.dataType)` to view it as a typed array.
@@ -741,6 +855,73 @@ impl Task for HistogramTask {
     fn compute(&mut self) -> napi::Result<Self::Output> {
         let band = JsRasterBand::new(self.dataset.clone(), self.index, DataType::Unknown);
         Ok(op(band.compute_histogram(self.request)))
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
+        output.map_err(|(code, reason)| into_status_error(code, reason))
+    }
+}
+
+/// A checksum reads the whole window, which on a large raster is what a read costs,
+/// so it earns the thread pool.
+pub struct ChecksumTask {
+    dataset: DatasetRef,
+    index: usize,
+    options: ReadOptions,
+}
+
+impl Task for ChecksumTask {
+    type Output = OpResult<u32>;
+    type JsValue = u32;
+
+    fn compute(&mut self) -> napi::Result<Self::Output> {
+        // `data_type` only matters when writing; this path never does.
+        let band = JsRasterBand::new(self.dataset.clone(), self.index, DataType::Unknown);
+        Ok(op(band.compute_checksum(&self.options)))
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
+        output.map_err(|(code, reason)| into_status_error(code, reason))
+    }
+}
+
+/// Filling reads the band and writes it back, the same cost as a checksum of that
+/// size — so it goes on the pool for the same reason.
+pub struct FillNoDataTask {
+    dataset: DatasetRef,
+    index: usize,
+    request: FillNoDataRequest,
+}
+
+impl Task for FillNoDataTask {
+    type Output = OpResult<()>;
+    type JsValue = ();
+
+    fn compute(&mut self) -> napi::Result<Self::Output> {
+        let band = JsRasterBand::new(self.dataset.clone(), self.index, DataType::Unknown);
+        Ok(op(band.apply_fill_no_data(self.request)))
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
+        output.map_err(|(code, reason)| into_status_error(code, reason))
+    }
+}
+
+/// The sieve reads and rewrites the band, so it is on the pool for the same reason
+/// `FillNoDataTask` is.
+pub struct SieveFilterTask {
+    dataset: DatasetRef,
+    index: usize,
+    request: SieveFilterRequest,
+}
+
+impl Task for SieveFilterTask {
+    type Output = OpResult<()>;
+    type JsValue = ();
+
+    fn compute(&mut self) -> napi::Result<Self::Output> {
+        let band = JsRasterBand::new(self.dataset.clone(), self.index, DataType::Unknown);
+        Ok(op(band.apply_sieve_filter(self.request)))
     }
 
     fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {

@@ -304,6 +304,151 @@ test('scale and offset written by gdal_translate read back off the band', () => 
   reopened.close()
 })
 
+test('checksum fingerprints a window, and refuses the resampling knobs', () => {
+  const dataset = gdal.createSync(tmp('checksum.tif'), {
+    driver: 'GTiff',
+    width: 4,
+    height: 4,
+    bandCount: 1,
+  })
+  const band = dataset.band(0)
+  band.writePixelsSync(bytesOf(ramp(4, 4)))
+
+  const whole = band.checksumSync()
+  assert.equal(typeof whole, 'number')
+
+  // The same samples in another file are the same fingerprint.
+  const twin = gdal.createSync(tmp('checksum-twin.tif'), {
+    driver: 'GTiff',
+    width: 4,
+    height: 4,
+    bandCount: 1,
+  })
+  twin.band(0).writePixelsSync(bytesOf(ramp(4, 4)))
+  assert.equal(twin.band(0).checksumSync(), whole)
+  twin.close()
+
+  // Change one sample and the fingerprint changes.
+  band.writePixelsSync(bytesOf(Uint8Array.from([99, ...ramp(4, 4).slice(1)])))
+  assert.notEqual(band.checksumSync(), whole)
+
+  // A window checksums exactly those samples, so a band holding them agrees.
+  band.writePixelsSync(bytesOf(ramp(4, 4)))
+  const windowed = band.checksumSync({ x: 1, y: 1, width: 2, height: 2 })
+  const sliced = gdal.createSync(tmp('checksum-window.tif'), {
+    driver: 'GTiff',
+    width: 2,
+    height: 2,
+    bandCount: 1,
+  })
+  // ramp(4, 4) read from (1,1) is 5, 6 / 9, 10.
+  sliced.band(0).writePixelsSync(bytesOf(Uint8Array.from([5, 6, 9, 10])))
+  assert.equal(sliced.band(0).checksumSync(), windowed)
+  sliced.close()
+
+  // A checksum is of the samples as they are, so resampling into it is refused.
+  assert.throws(() => band.checksumSync({ outWidth: 2 }), /do not apply/)
+  assert.throws(() => band.checksumSync({ resampling: 'average' }), /do not apply/)
+  dataset.close()
+})
+
+test('fillNoData fills a hole from its neighbours, in place', () => {
+  const dataset = gdal.createSync(tmp('fill.tif'), {
+    driver: 'GTiff',
+    width: 4,
+    height: 4,
+    bandCount: 1,
+    dataType: 'Float32',
+  })
+  const band = dataset.band(0)
+  band.setNoDataValue(-9999)
+
+  const values = new Float32Array(16).fill(5)
+  values[5] = -9999
+  band.writePixelsSync(bytesOf(values))
+
+  band.fillNoDataSync()
+  const filled = Array.from(asTypedArray(band.readPixelsSync(), Float32Array))
+  // Interpolation between equal neighbours gives that value back; allow for the
+  // last bit or two of a float.
+  assert.ok(
+    filled.every((value) => Math.abs(value - 5) < 1e-6),
+    `every sample should be near 5, got ${filled}`,
+  )
+  dataset.close()
+
+  // Without a no-data value there is nothing to fill, and that is said plainly
+  // rather than left to GDAL.
+  const noHole = gdal.createSync(tmp('fill-nodata.tif'), {
+    driver: 'GTiff',
+    width: 2,
+    height: 2,
+    bandCount: 1,
+  })
+  assert.throws(() => noHole.band(0).fillNoDataSync(), (err) => err.code === 'GDAL_BAD_ARGUMENT')
+  assert.throws(() => noHole.band(0).fillNoDataSync({ maxDistance: 0 }), /positive number of pixels/)
+  noHole.close()
+})
+
+test('sieveFilter drops regions below the threshold', () => {
+  const dataset = gdal.createSync(tmp('sieve.tif'), {
+    driver: 'GTiff',
+    width: 8,
+    height: 8,
+    bandCount: 1,
+  })
+  const band = dataset.band(0)
+
+  const values = new Uint8Array(64).fill(1)
+  values[8 * 3 + 3] = 7
+  band.writePixelsSync(bytesOf(values))
+
+  band.sieveFilterSync({ threshold: 5 })
+  assert.equal(Array.from(band.readPixelsSync())[8 * 3 + 3], 1, 'a lone pixel is below the threshold')
+
+  // The same region survives a threshold of one.
+  band.writePixelsSync(bytesOf(values))
+  band.sieveFilterSync({ threshold: 1, connectedness: 8 })
+  assert.equal(Array.from(band.readPixelsSync())[8 * 3 + 3], 7)
+
+  assert.throws(() => band.sieveFilterSync({ threshold: 0 }), /remove nothing/)
+  assert.throws(() => band.sieveFilterSync({ threshold: 4, connectedness: 5 }), /4 or 8/)
+  dataset.close()
+})
+
+test('the async twins of the band tools do the same thing', async () => {
+  const dataset = await gdal.create(tmp('async-tools.tif'), {
+    driver: 'GTiff',
+    width: 4,
+    height: 4,
+    bandCount: 1,
+    dataType: 'Float32',
+  })
+  const band = dataset.band(0)
+  band.setNoDataValue(-9999)
+
+  const values = new Float32Array(16).fill(2)
+  values[10] = -9999
+  await band.writePixels(bytesOf(values))
+
+  assert.equal(await band.checksum(), band.checksumSync())
+
+  await band.fillNoData()
+  const filled = Array.from(asTypedArray(band.readPixelsSync(), Float32Array))
+  assert.ok(filled.every((value) => Math.abs(value - 2) < 1e-6), `got ${filled}`)
+
+  // A sieve on a band that is all one value has nothing to remove, which is the
+  // point: it runs, and leaves the data alone.
+  await band.sieveFilter({ threshold: 2 })
+  const sieved = Array.from(asTypedArray(band.readPixelsSync(), Float32Array))
+  assert.ok(
+    sieved.every((value) => Math.abs(value - 2) < 1e-6),
+    `the sieve should have left the band alone, got ${sieved}`,
+  )
+
+  dataset.close()
+})
+
 test('the async API mirrors the sync API', async () => {
   const path = tmp('async.tif')
   const created = await gdal.create(path, { driver: 'GTiff', width: 4, height: 1, bandCount: 1 })
