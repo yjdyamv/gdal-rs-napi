@@ -19,8 +19,9 @@ use crate::dtype::DataType;
 use crate::error::{GdalErrorCode, IntoGdalResult, Result, bad_argument, into_status_error, split};
 use crate::raster_io::{ReadOptions, read_window, resample_alg, resolve_window, write_window};
 use crate::raster_tools::{
-    FillNoDataOptions, FillNoDataRequest, PolygonizeOptions, PolygonizeRequest, SieveFilterOptions,
-    SieveFilterRequest, checksum_options, fill_no_data, fill_nodata_request, polygonize,
+    ContourGenerateOptions, ContourGenerateRequest, FillNoDataOptions, FillNoDataRequest,
+    PolygonizeOptions, PolygonizeRequest, SieveFilterOptions, SieveFilterRequest, checksum_options,
+    contour_generate, contour_generate_request, fill_no_data, fill_nodata_request, polygonize,
     polygonize_request, sieve_filter, sieve_filter_request,
 };
 use crate::runtime::ensure_initialized;
@@ -734,6 +735,55 @@ impl JsRasterBand {
         }))
     }
 
+    /// Draw contour lines for this band into `layer` — GDAL's
+    /// `GDALContourGenerateEx`, the call behind `gdal_contour`.
+    ///
+    /// Give `levels` (`[0, 100, 200]`) or an `interval` (with an optional `base`),
+    /// not both. The elevations land in `elevField` (default `ELEV`), and `idField`
+    /// names a field to put a per-line id in if you want one — both are created when
+    /// the layer does not have them.
+    ///
+    /// The band wants a geotransform, and the **layer** is what carries the CRS, so
+    /// the lines come out in the layer's coordinate system. It will usually be a
+    /// LineString layer in a different dataset from this band, and it has to be
+    /// writable.
+    ///
+    /// ```js
+    /// band.contourGenerateSync(layer, { levels: [0, 100, 200, 300] })
+    /// await band.contourGenerate(layer, { interval: 50, base: 0, idField: 'id' })
+    /// ```
+    #[napi]
+    pub fn contour_generate_sync(
+        &self,
+        layer: &JsLayer,
+        options: Option<ContourGenerateOptions>,
+    ) -> Result<()> {
+        let request = contour_generate_request(options)?;
+        with_two(&self.dataset, layer.dataset(), |raster, vector| {
+            let band = raster.rasterband(self.index + 1).gdal()?;
+            let mut target = vector.layer(layer.index() as usize).gdal()?;
+            contour_generate(&band, &mut target, &request)
+        })
+    }
+
+    /// The same, on the thread pool: contouring reads the whole band and writes a
+    /// feature per line.
+    #[napi(ts_return_type = "Promise<void>")]
+    pub fn contour_generate(
+        &self,
+        layer: &JsLayer,
+        options: Option<ContourGenerateOptions>,
+    ) -> Result<AsyncTask<ContourGenerateTask>> {
+        let request = contour_generate_request(options)?;
+        Ok(AsyncTask::new(ContourGenerateTask {
+            dataset: self.dataset.clone(),
+            layer: layer.dataset().clone(),
+            layer_index: layer.index() as usize,
+            index: self.index,
+            request,
+        }))
+    }
+
     /// Read in the band's own sample type, with no conversion. The returned
     /// buffer is the raw little-endian bytes of `width * height` samples; use
     /// `bytesPerSample(band.dataType)` to view it as a typed array.
@@ -1009,6 +1059,43 @@ impl Task for PolygonizeTask {
             let band = raster.rasterband(index + 1).gdal()?;
             let mut target = vector.layer(layer_index).gdal()?;
             polygonize(&band, &mut target, request)
+        })))
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
+        output.map_err(|(code, reason)| into_status_error(code, reason))
+    }
+}
+
+/// Contouring reads the whole band and writes a feature per line, into whichever
+/// dataset holds the layer.
+pub struct ContourGenerateTask {
+    dataset: DatasetRef,
+    /// The layer's own dataset, as in `PolygonizeTask`.
+    layer: DatasetRef,
+    layer_index: usize,
+    index: usize,
+    request: ContourGenerateRequest,
+}
+
+impl Task for ContourGenerateTask {
+    type Output = OpResult<()>;
+    type JsValue = ();
+
+    fn compute(&mut self) -> napi::Result<Self::Output> {
+        let ContourGenerateTask {
+            dataset,
+            layer,
+            layer_index,
+            index,
+            request,
+        } = self;
+        let (index, layer_index) = (*index, *layer_index);
+
+        Ok(op(with_two(dataset, layer, |raster, vector| {
+            let band = raster.rasterband(index + 1).gdal()?;
+            let mut target = vector.layer(layer_index).gdal()?;
+            contour_generate(&band, &mut target, request)
         })))
     }
 

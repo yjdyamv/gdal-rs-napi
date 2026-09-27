@@ -531,6 +531,89 @@ test('polygonize runs on the pool, and names its field', async () => {
   raster.close()
 })
 
+test('contourGenerate draws a line per level', () => {
+  const raster = gdal.createSync(tmp('contour.tif'), {
+    driver: 'GTiff',
+    width: 4,
+    height: 4,
+    bandCount: 1,
+    dataType: 'Float32',
+  })
+  // One value per row — 0, 10, 20, 30 — so the contour at 15 runs between the
+  // second and third rows. GDAL interpolates between pixel *centres*, which sit at
+  // y = 1.5 and y = 2.5, so the line is at y = 2.
+  const values = new Float32Array(16)
+  for (let y = 0; y < 4; y += 1) for (let x = 0; x < 4; x += 1) values[y * 4 + x] = y * 10
+  raster.band(0).writePixelsSync(bytesOf(values))
+
+  const vector = gdal.createVectorSync(tmp('contour.gpkg'), 'GPKG')
+  const layer = vector.createLayer({
+    name: 'contours',
+    geometryType: 'LineString',
+    epsg: 4326,
+  })
+
+  raster.band(0).contourGenerateSync(layer, { levels: [15] })
+
+  const features = layer.featuresSync()
+  assert.equal(features.length, 1)
+  assert.equal(features[0].properties.ELEV, 15, 'the elevation field is created and filled')
+  assert.equal(features[0].geometry.type, 'LineString')
+  const ys = features[0].geometry.coordinates.map(([, y]) => y)
+  assert.ok(
+    ys.every((y) => Math.abs(y - 2) < 1e-6),
+    `the line should sit between the two rows, got ${ys}`,
+  )
+
+  // Levels or an interval, not both and not neither.
+  assert.throws(() => raster.band(0).contourGenerateSync(layer, {}), /levels or an interval/)
+  assert.throws(
+    () => raster.band(0).contourGenerateSync(layer, { levels: [1], interval: 1 }),
+    /not both/,
+  )
+
+  vector.close()
+  raster.close()
+})
+
+test('contourGenerate takes an interval and an id field', async () => {
+  const raster = gdal.createSync(tmp('contour-interval.tif'), {
+    driver: 'GTiff',
+    width: 4,
+    height: 4,
+    bandCount: 1,
+    dataType: 'Float32',
+  })
+  const values = new Float32Array(16)
+  for (let y = 0; y < 4; y += 1) for (let x = 0; x < 4; x += 1) values[y * 4 + x] = y * 10
+  raster.band(0).writePixelsSync(bytesOf(values))
+
+  const vector = gdal.createVectorSync(tmp('contour-interval.gpkg'), 'GPKG')
+  const layer = vector.createLayer({
+    name: 'contours',
+    geometryType: 'LineString',
+    epsg: 4326,
+  })
+
+  // Every 20 from 5: the 5 lands between rows 0 and 1, the 25 between rows 2 and 3.
+  await raster.band(0).contourGenerate(layer, { interval: 20, base: 5, idField: 'id' })
+
+  const features = layer.featuresSync()
+  assert.equal(features.length, 2)
+  assert.deepEqual(
+    features.map((feature) => feature.properties.ELEV).sort((a, b) => a - b),
+    [5, 25],
+  )
+  assert.deepEqual(
+    features.map((feature) => feature.properties.id).sort((a, b) => a - b),
+    [0, 1],
+    'an id field is created and filled when one is asked for',
+  )
+
+  vector.close()
+  raster.close()
+})
+
 test('the async twins of the band tools do the same thing', async () => {
   const dataset = await gdal.create(tmp('async-tools.tif'), {
     driver: 'GTiff',

@@ -328,24 +328,12 @@ pub fn polygonize(
     // The values have to land in a field of a matching type, and GDAL's own tool
     // creates that field rather than asking the caller to — so do the same. `Real`
     // for a float band, `Integer` otherwise.
-    let field = match layer
-        .defn()
-        .fields()
-        .position(|field| field.name() == request.field_name)
-    {
-        Some(field) => field,
-        None => {
-            let field_type = if float {
-                OGRFieldType::OFTReal
-            } else {
-                OGRFieldType::OFTInteger
-            };
-            let definition = FieldDefn::new(&request.field_name, field_type).gdal()?;
-            definition.add_to_layer(&*layer).gdal()?;
-            // Appended, so it is the last one.
-            layer.defn().fields().count() - 1
-        }
+    let field_type = if float {
+        OGRFieldType::OFTReal
+    } else {
+        OGRFieldType::OFTInteger
     };
+    let field = ensure_field(&*layer, &request.field_name, field_type)?;
 
     let mut options = CslStringList::new();
     if request.connectedness == 8 {
@@ -377,6 +365,176 @@ pub fn polygonize(
                 std::ptr::null_mut(),
             )
         }
+    };
+    cpl_result(class)
+}
+
+#[napi(object)]
+#[derive(Debug, Clone, Default)]
+pub struct ContourGenerateOptions {
+    /// Elevations to draw contours at, e.g. `[0, 100, 200]`. Give this or
+    /// `interval`, not both.
+    pub levels: Option<Vec<f64>>,
+    /// Spacing between contours. Give this or `levels`, not both.
+    pub interval: Option<f64>,
+    /// Elevation the interval is counted from. Default 0, and only read alongside
+    /// `interval`.
+    pub base: Option<f64>,
+    /// Field the elevations are written to. Default `ELEV`, created when the layer
+    /// does not have it.
+    pub elev_field: Option<String>,
+    /// Field to write each contour's id into. No ids are written unless this names
+    /// one — it is `gdal_contour`'s `-i`.
+    pub id_field: Option<String>,
+    /// Anything else `GDALContourGenerateEx` takes, passed through as written:
+    /// `USE_NODATA`, `POLYGONIZE`, `SMOOTHING`, ...
+    pub options: Option<Value>,
+}
+
+/// `ContourGenerateOptions` resolved and checked.
+///
+/// The level options are built here; the two field options are not, because
+/// `GDALContourGenerateEx` wants field *indexes* rather than names — GDAL parses
+/// them with `atoi` — so they can only be filled in once the layer is in hand.
+#[derive(Debug, Clone)]
+pub struct ContourGenerateRequest {
+    levels: Vec<(String, String)>,
+    elev_field: String,
+    id_field: Option<String>,
+    extra: Vec<(String, String)>,
+}
+
+pub fn contour_generate_request(
+    options: Option<ContourGenerateOptions>,
+) -> Result<ContourGenerateRequest> {
+    let options = options.unwrap_or_default();
+
+    let elev_field = options.elev_field.unwrap_or_else(|| "ELEV".to_string());
+    if elev_field.is_empty() {
+        return Err(bad_argument("the elevation field needs a name"));
+    }
+    if let Some(id_field) = &options.id_field
+        && id_field.is_empty()
+    {
+        return Err(bad_argument("the id field needs a name"));
+    }
+
+    let mut levels: Vec<(String, String)> = Vec::new();
+    match (&options.levels, options.interval) {
+        (Some(_), Some(_)) => {
+            return Err(bad_argument(
+                "give either levels or an interval, not both: they say different things",
+            ));
+        }
+        (Some(fixed), None) => {
+            if fixed.is_empty() {
+                return Err(bad_argument("a contour level list cannot be empty"));
+            }
+            if let Some(odd) = fixed.iter().find(|level| !level.is_finite()) {
+                return Err(bad_argument(format!(
+                    "contour levels have to be numbers, and {odd} is not"
+                )));
+            }
+            levels.push((
+                "FIXED_LEVELS".to_string(),
+                fixed
+                    .iter()
+                    .map(f64::to_string)
+                    .collect::<Vec<_>>()
+                    .join(","),
+            ));
+        }
+        (None, Some(interval)) => {
+            if !(interval.is_finite() && interval > 0.0) {
+                return Err(bad_argument(format!(
+                    "a contour interval has to be a positive number, not {interval}"
+                )));
+            }
+            let base = options.base.unwrap_or(0.0);
+            if !base.is_finite() {
+                return Err(bad_argument(format!(
+                    "the elevation an interval counts from has to be a number, not {base}"
+                )));
+            }
+            levels.push(("LEVEL_INTERVAL".to_string(), interval.to_string()));
+            levels.push(("LEVEL_BASE".to_string(), base.to_string()));
+        }
+        (None, None) => {
+            return Err(bad_argument(
+                "give levels or an interval: contours are drawn at one or the other",
+            ));
+        }
+    }
+
+    Ok(ContourGenerateRequest {
+        levels,
+        elev_field,
+        id_field: options.id_field,
+        extra: option_pairs(options.options.as_ref())?,
+    })
+}
+
+/// Add `name` to the layer unless it is already there, and answer with its index.
+fn ensure_field(
+    layer: &gdal::vector::Layer<'_>,
+    name: &str,
+    field_type: OGRFieldType::Type,
+) -> Result<usize> {
+    match layer.defn().fields().position(|field| field.name() == name) {
+        Some(index) => Ok(index),
+        None => {
+            let definition = FieldDefn::new(name, field_type).gdal()?;
+            definition.add_to_layer(layer).gdal()?;
+            // Appended, so it is the last one.
+            Ok(layer.defn().fields().count() - 1)
+        }
+    }
+}
+
+/// Draw contour lines for a band into `layer`. `GDALContourGenerateEx`, the call
+/// behind `gdal_contour`.
+///
+/// The band wants a geotransform, and the layer is the one that carries the CRS —
+/// the lines are written in the layer's coordinate system.
+pub fn contour_generate(
+    band: &RasterBand<'_>,
+    layer: &mut gdal::vector::Layer<'_>,
+    request: &ContourGenerateRequest,
+) -> Result<()> {
+    // The fields have to exist before GDAL is asked to fill them, and `gdal_contour`
+    // creates them rather than asking the caller to — so do the same.
+    let elev = ensure_field(&*layer, &request.elev_field, OGRFieldType::OFTReal)?;
+    let id = match &request.id_field {
+        Some(id_field) => Some(ensure_field(&*layer, id_field, OGRFieldType::OFTInteger)?),
+        None => None,
+    };
+
+    let mut options = CslStringList::new();
+    for (name, value) in &request.levels {
+        options.add_name_value(name, value).gdal()?;
+    }
+    // These two are field *indexes*, not names: GDAL parses them with `atoi`, and
+    // `gdal_contour` hands it an index as well.
+    options
+        .add_name_value("ELEV_FIELD", &elev.to_string())
+        .gdal()?;
+    if let Some(id) = id {
+        options.add_name_value("ID_FIELD", &id.to_string()).gdal()?;
+    }
+    // The pass-through goes last on purpose: GDAL takes the first match for a name,
+    // so what this binding filled in wins over an accidental duplicate.
+    for (name, value) in &request.extra {
+        options.add_name_value(name, value).gdal()?;
+    }
+
+    let class = unsafe {
+        gdal_sys::GDALContourGenerateEx(
+            band.c_rasterband(),
+            layer.c_layer(),
+            options.as_ptr(),
+            None,
+            std::ptr::null_mut(),
+        )
     };
     cpl_result(class)
 }
@@ -444,6 +602,65 @@ mod tests {
             })
             .is_err()
         );
+    }
+
+    #[test]
+    fn contours_take_levels_or_an_interval_but_not_both() {
+        let fixed = contour_generate_request(Some(ContourGenerateOptions {
+            levels: Some(vec![0.0, 12.5, 25.0]),
+            ..Default::default()
+        }))
+        .unwrap();
+        assert_eq!(
+            fixed.levels,
+            vec![("FIXED_LEVELS".to_string(), "0,12.5,25".to_string())]
+        );
+        assert_eq!(fixed.elev_field, "ELEV");
+        assert_eq!(fixed.id_field, None);
+
+        // An interval brings its base along, and the field names are the caller's.
+        let interval = contour_generate_request(Some(ContourGenerateOptions {
+            levels: None,
+            interval: Some(10.0),
+            base: Some(5.0),
+            elev_field: Some("height".to_string()),
+            id_field: Some("id".to_string()),
+            options: None,
+        }))
+        .unwrap();
+        assert_eq!(
+            interval.levels,
+            vec![
+                ("LEVEL_INTERVAL".to_string(), "10".to_string()),
+                ("LEVEL_BASE".to_string(), "5".to_string()),
+            ]
+        );
+        assert_eq!(interval.elev_field, "height");
+        assert_eq!(interval.id_field.as_deref(), Some("id"));
+
+        // Neither or both is a mistake, and so is an interval that draws nothing.
+        for bad in [
+            ContourGenerateOptions::default(),
+            ContourGenerateOptions {
+                levels: Some(vec![1.0]),
+                interval: Some(1.0),
+                ..Default::default()
+            },
+            ContourGenerateOptions {
+                levels: Some(Vec::new()),
+                ..Default::default()
+            },
+            ContourGenerateOptions {
+                interval: Some(0.0),
+                ..Default::default()
+            },
+            ContourGenerateOptions {
+                interval: Some(f64::NAN),
+                ..Default::default()
+            },
+        ] {
+            assert!(contour_generate_request(Some(bad)).is_err());
+        }
     }
 
     #[test]

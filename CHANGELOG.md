@@ -63,6 +63,15 @@ First working cut — everything here is new.
   reached under one lock — a `with_two` helper that exists because the process-wide
   GDAL lock is not reentrant, so two datasets cannot be opened through two
   `with_exclusive` calls.
+- `RasterBand.contourGenerate()` / `contourGenerateSync()` draws contour lines into
+  a layer — `GDALContourGenerateEx`, the call behind `gdal_contour`. Give `levels`
+  or an `interval` (with an optional `base`), not both; the elevations land in
+  `elevField` (default `ELEV`) and `idField` names a field for a per-line id when one
+  is wanted, both created when the layer does not have them. One detail worth
+  recording because it is not guessable: `ELEV_FIELD` and `ID_FIELD` are field
+  *indexes* rather than names — GDAL parses them with `atoi`, and `gdal_contour`
+  passes an index too — so the names are resolved against the layer here and the
+  indexes are what GDAL sees.
 - Programs: `translate` / `translateSync`, `warp` / `warpSync`, `vectorTranslate` /
   `vectorTranslateSync` — `gdal_translate`, `gdalwarp` and `ogr2ogr`, each taking
   that tool's own command-line arguments. `warp` and `vectorTranslate` take a list

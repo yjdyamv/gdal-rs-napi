@@ -268,6 +268,19 @@ band, `Integer` otherwise, because the field has to match the samples. The layer
 will usually belong to a **different** dataset from the band, which is fine: both are
 held under one lock, and the layer's dataset has to be writable.
 
+And a sixth draws contour lines from a raster surface — the `gdal_contour` case:
+
+```js
+band.contourGenerateSync(layer, { levels: [0, 100, 200, 300] })
+await band.contourGenerate(layer, { interval: 50, base: 0, idField: 'id' })
+```
+
+Give `levels` or an `interval` (with an optional `base`), not both. The elevations go
+into `elevField` (default `ELEV`), and `idField` names a field to put a per-line id in
+if you want one; both are created when the layer does not have them. The band wants a
+geotransform, and the **layer** carries the CRS, so the lines come out in the layer's
+coordinate system.
+
 Two things that save confusion: `width` / `height` come straight from GDAL and
 are only meaningful when there are bands, so check `bandCount` before trusting
 them on a vector dataset; and `IMAGE_STRUCTURE` lives on the **dataset**, not on
