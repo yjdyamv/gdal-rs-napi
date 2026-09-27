@@ -77,5 +77,19 @@ const result = spawnSync(process.execPath, args, {
   cwd: repoRoot,
   env: { ...process.env, PATH: buildPath },
 })
+if (result.status !== 0) process.exit(result.status ?? 1)
 
-process.exit(result.status ?? 1)
+// Staging is invoked from here rather than as a second command in the npm
+// script, and that is load-bearing: `npm run build -- --target <triple>` appends
+// those arguments to the end of the *script string*. With
+// `build.mjs ... && stage-assets.mjs`, `--target` reached stage-assets.mjs
+// instead of napi, which then built for the host — and on the two musl legs,
+// whose runners are not their target, that produced a tarball labelled
+// linux-x64-gnu and quietly ate a release asset. One command, so the arguments
+// arrive where they are meant to.
+const stage = spawnSync(process.execPath, [join(repoRoot, 'scripts', 'stage-assets.mjs')], {
+  stdio: 'inherit',
+  cwd: repoRoot,
+  env: { ...process.env, PATH: buildPath },
+})
+process.exit(stage.status ?? 1)

@@ -40,8 +40,8 @@
     ]
   },
   "scripts": {
-    "build": "node scripts/build.mjs --platform --release --js binding.js --dts binding.d.ts && node scripts/stage-assets.mjs",
-    "build:debug": "node scripts/build.mjs --platform --js binding.js --dts binding.d.ts && node scripts/stage-assets.mjs",
+    "build": "node scripts/build.mjs --platform --release --js binding.js --dts binding.d.ts",
+    "build:debug": "node scripts/build.mjs --platform --js binding.js --dts binding.d.ts",
     "pack": "node scripts/pack-platform.mjs",
     "test": "node --test",
     "gdalinfo": "node examples/gdalinfo.mjs",
