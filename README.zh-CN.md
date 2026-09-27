@@ -404,18 +404,34 @@ Ninja 是按翻译单元并行的。
 |---|---|
 | GDAL | 3.12.1，静态，`GDAL_USE_INTERNAL_LIBS=ON`，`GDAL_USE_EXTERNAL_LIBS=OFF` |
 | PROJ | 9.6.x，`bundled_proj`，静态 |
-| 驱动 | `internal_drivers` + `driver_sqlite` + `driver_gpkg` + `driver_vfk` |
+| 驱动 | `gdal-src/all_drivers` —— 共 148 个，见下文 |
 | GEOS | **不链接** —— LGPL，静态链接会让整个产物变成 LGPL |
 
-因为 `gdal-src` 不点名就关闭所有驱动，Cargo 的 `bundled` feature 列表**就是**发布的驱动集合。
+因为 `gdal-src` 不点名就关闭所有驱动，Cargo 的 `bundled` feature 列表**就是**发布的驱动集合 ——
+现在它写的是 `gdal-src/all_drivers`，也就是那个 crate 能构建的全部。
 
-共注册 **131 个驱动**，`drivers()` 是权威列表。其中包含 GTiff、COG、PNG、JPEG、
-GIF、BMP、VRT、MEM、MRF、HFA、GRIB、XYZ、AAIGrid、DTED、ESRI Shapefile、GeoJSON、
-GeoJSONSeq、TopoJSON、FlatGeobuf、GPKG、SQLite、OpenFileGDB、MapInfo File、DXF、
-DGN、S57、VFK、CSV、GTFS、KMLSUPEROVERLAY、STACIT/STACTA、PGDUMP 等。
+共注册 **148 个驱动**，`drivers()` 是权威列表。在支撑 GTiff/COG 的内部
+libtiff / libgeotiff / libjpeg / libpng 之外，还包括：HDF5 与 netCDF（连同它们所需的 HDF5，
+全部静态链接）、curl 系的网络驱动（WMS、WMTS、WCS、OGCAPI、PLMOSAIC、Carto、Elasticsearch、
+NGW、AmigoCloud）、PostgreSQL 与 PostGIS、GRIB、STACIT/STACTA、FlatGeobuf、
+GeoJSON / GeoJSONSeq / TopoJSON / ESRIJSON、GPKG、SQLite、OpenFileGDB、ESRI Shapefile、
+MapInfo、DXF、DGN、CAD、S57、VDV、VFK、CSV、GTFS、Selafin、KMLSUPEROVERLAY、PGDUMP，
+以及一长串各国测绘与科学数据格式。
 
-**不含**：KML、GML、GPX（需要 libexpat）、LIBKML、HDF5、NetCDF、PostgreSQL，
-以及网络驱动（WMS/WMTS/OGCAPI，需要 curl）。要加就得改 `bundled` feature 列表并重新构建。
+**故意不含**的：
+
+- **GEOS**，以及它实现的那批 OGR 几何运算 —— `ST_Intersects`、`ST_Buffer`、`-simplify` 等。
+  GEOS 是 LGPL，静态链接它会让整份产物的许可证改变。它在 `gdal-src` 里是独立 feature，
+  想改可以改，但那时你发布的就不再只是 MIT 了。
+- **需要本构建未链接的 XML 库的格式** —— KML、GML、GPX、GMLAS、LIBKML、XLSX/XLS、DWG 等 ——
+  以及依赖厂商 SDK 的 FileGDB / Oracle / MySQL，和 JPEG2000 / WebP / HEIF / AVIF 系列。
+- **`PDS`**，这是本包唯一完全无法提供的驱动：`gdal-src` 发布的 crate 里没有
+  `frmts/pds/data`，打开它会让 GDAL 的 configure 直接失败。`all_drivers` 把它排除掉正是这个原因。
+
+以上全部静态链接，所以装好的包依然**不需要宿主机有任何 GDAL**。代价是体积：
+`.node` 约 35 MB（131 驱动时是 28 MB），tarball 压缩后约 15 MB（12.7 MB），
+加上几分钟额外的构建时间。想瘦身，就把 `bundled` 里的 `gdal-src/all_drivers` 换成你真正需要的
+那些 `gdal-src/driver_*`。
 
 `openThreadSafe()` 需要 GDAL ≥ 3.10，bundled 构建满足。链接 3.10 以前的系统 GDAL
 （`--no-default-features`）**仍然能编译**，只是没有这个方法：`build.rs` 读取 `gdal-sys`

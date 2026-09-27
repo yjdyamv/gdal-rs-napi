@@ -540,23 +540,41 @@ machine. Ninja parallelises per translation unit.
 |---|---|
 | GDAL | 3.12.1, static, `GDAL_USE_INTERNAL_LIBS=ON`, `GDAL_USE_EXTERNAL_LIBS=OFF` |
 | PROJ | 9.6.x, `bundled_proj`, static |
-| Drivers | `internal_drivers` + `driver_sqlite` + `driver_gpkg` + `driver_vfk` |
+| Drivers | `gdal-src/all_drivers` — 148 of them, see below |
 | GEOS | **not linked** — it is LGPL, and static linking would relicense the artifact |
 
-Because `gdal-src` disables every driver unless it is named explicitly, the
-Cargo `bundled` feature list *is* the shipped driver set. Add drivers there.
+Because `gdal-src` turns every driver off unless it is named, the Cargo `bundled`
+feature list *is* the shipped driver set — and it names `gdal-src/all_drivers`, so
+the package carries everything that crate can build.
 
-The build registers **131 drivers** — `drivers()` is the authoritative list.
-Among them: GTiff, COG, PNG, JPEG, GIF, BMP, PNM, TGA, VRT, MEM, MRF, HFA, GRIB,
-XYZ, AAIGrid, DTED, SRTMHGT, USGSDEM, ESRI Shapefile, GeoJSON, GeoJSONSeq,
-TopoJSON, ESRIJSON, FlatGeobuf, GPKG, SQLite, OpenFileGDB, MapInfo File, DXF,
-DGN, CAD, S57, VDV, VFK, CSV, GTFS, Selafin, KMLSUPEROVERLAY, STACIT/STACTA,
-PGDUMP, on top of the internal libtiff / libgeotiff / libjpeg / libpng stack that
-backs GTiff and COG.
+The build registers **148 drivers** — `drivers()` is the authoritative list. On
+top of the internal libtiff / libgeotiff / libjpeg / libpng stack that backs GTiff
+and COG, that includes HDF5 and netCDF (with the HDF5 they need, all statically
+linked), the curl-backed network drivers — WMS, WMTS, WCS, OGCAPI, PLMOSAIC,
+Carto, Elasticsearch, NGW, AmigoCloud — PostgreSQL and PostGIS, GRIB,
+STACIT/STACTA, FlatGeobuf, GeoJSON / GeoJSONSeq / TopoJSON / ESRIJSON, GPKG,
+SQLite, OpenFileGDB, ESRI Shapefile, MapInfo, DXF, DGN, CAD, S57, VDV, VFK, CSV,
+GTFS, Selafin, KMLSUPEROVERLAY, PGDUMP, and the long tail of national and
+scientific raster formats.
 
-**Not** included: KML, GML and GPX (they need libexpat), LIBKML, HDF5, NetCDF,
-PostgreSQL, and the network drivers (WMS/WMTS/OGCAPI — they need curl). Enabling
-any of them means editing the `bundled` feature list and rebuilding.
+What is deliberately *not* there:
+
+- **GEOS**, and with it the OGR geometry predicates it implements — `ST_Intersects`,
+  `ST_Buffer`, `-simplify` and the rest. GEOS is LGPL, and linking it statically
+  would relicense this whole artifact. It is a separate `gdal-src` feature if you
+  want to change that, but then what you ship is no longer MIT alone.
+- **Formats needing an XML library this build does not link** — KML, GML, GPX,
+  GMLAS, LIBKML, XLSX/XLS and DWG among them — plus the ones behind a vendor SDK
+  (FileGDB, Oracle, MySQL) and the JPEG2000 / WebP / HEIF / AVIF family.
+- **`PDS`**, the one driver this package cannot offer at all: `gdal-src`'s
+  published crate does not ship `frmts/pds/data`, so switching it on fails GDAL's
+  configure step. That is why `all_drivers` leaves it out.
+
+All of it is statically linked, so an installed package still needs nothing on the
+host. The price is size — the `.node` is about 35 MB (a 131-driver build was 28 MB)
+and a tarball about 15 MB compressed (12.7 MB), plus a few minutes of extra build
+time. To trim it, swap `gdal-src/all_drivers` for the individual
+`gdal-src/driver_*` features you actually want.
 
 `openThreadSafe()` needs GDAL ≥ 3.10, which the bundled build satisfies. Linking a
 system GDAL older than that (`--no-default-features`) still compiles — the method

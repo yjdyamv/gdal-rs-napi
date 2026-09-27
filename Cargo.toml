@@ -31,15 +31,22 @@ default = ["bundled"]
 bundled = [
   "dep:gdal-src",
   "gdal-sys/bundled",
-  # gdal-src turns every driver OFF unless it is named explicitly, so this list
-  # *is* the shipped driver set. internal_drivers covers GTiff, PNG, JPEG, GIF,
-  # VRT, MEM and the OGR shapefile/GeoJSON/KML family; sqlite adds
-  # SQLite/GPKG/VFK. GEOS is deliberately absent: it is LGPL, and statically
-  # linking it would relicense this whole artifact.
-  "gdal-src/internal_drivers",
-  "gdal-src/driver_sqlite",
-  "gdal-src/driver_gpkg",
-  "gdal-src/driver_vfk",
+  # Everything gdal-src can switch on, which is what this package ships: the
+  # internal drivers (GTiff, PNG, JPEG, VRT, MEM, the shapefile/GeoJSON family…),
+  # sqlite/GPKG/VFK, HDF5 and netCDF, the curl-backed network drivers, and
+  # PostgreSQL. Their dependencies are all static or bundled, so an installed
+  # package still needs no GDAL on the host.
+  #
+  # GEOS is deliberately not here. It is a separate feature in gdal-src, and
+  # statically linking an LGPL library would relicense this whole artifact; with
+  # `geos` unset, gdal-src's build.rs defines GDAL_USE_GEOS=OFF. The cost is the
+  # OGR geometry predicates (ST_Intersects, ST_Buffer, -simplify) — a capability
+  # gap by choice, not an oversight.
+  "gdal-src/all_drivers",
+  # `driver_pds` is not here even though gdal-src's build.rs wires it up: the
+  # published crate does not ship frmts/pds/data, so enabling it fails the
+  # configure step on two missing files. That is why all_drivers leaves it out,
+  # and it is the one driver this package cannot offer.
 ]
 
 [profile.release]

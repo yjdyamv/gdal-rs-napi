@@ -48,8 +48,20 @@ First working cut — everything here is new.
 - GDAL 3.12.1 and PROJ 9.6.x are compiled from source and linked statically, so an
   installed package needs no GDAL on the host. The PROJ and GDAL data files travel
   inside the package (~12 MB) and are wired up automatically by `index.js`.
-- Driver set is `internal_drivers` + sqlite/gpkg/vfk: 131 drivers. GEOS is
-  deliberately absent — it is LGPL, and static linking would relicense the artifact.
+- The driver set is `gdal-src/all_drivers`: **148 drivers** instead of 131.
+  HDF5, netCDF, the curl-backed network drivers (WMS, WMTS, WCS, OGCAPI, PLMOSAIC,
+  Carto, Elasticsearch, NGW, AmigoCloud), PostgreSQL/PostGIS and GRIB are in.
+  Their libraries — HDF5, netCDF, curl, libpq — are compiled in statically, so an
+  installed package still needs nothing on the host.
+- What that costs: the `.node` grew from 28 MB to 35 MB and a tarball from 12.7 MB
+  to 15.2 MB compressed, with a few minutes more build time and the C surface of
+  four more libraries. Trim it by swapping `all_drivers` for individual
+  `gdal-src/driver_*` features.
+- GEOS stays out, so the OGR geometry predicates it implements (`ST_Intersects`,
+  `ST_Buffer`, `-simplify`) are still unavailable — a licence decision, not an
+  oversight. `PDS` is the one driver that cannot be built at all: gdal-src's
+  published crate omits `frmts/pds/data`, so switching it on fails the configure
+  step, which is why `all_drivers` leaves it out.
 - Requires Ninja (`CMAKE_GENERATOR`) and a `sqlite3` CLI from outside MSYS2. MSYS2
   must stay off `PATH` or GDAL's configure aborts; see the README for why.
 - CI builds six targets on native runners and attaches one self-contained tarball

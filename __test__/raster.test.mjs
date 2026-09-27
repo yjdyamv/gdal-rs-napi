@@ -9,12 +9,61 @@ test('version() and drivers() report the statically linked build', () => {
   assert.match(version.proj, /^\d+\.\d+/)
 
   const drivers = gdal.drivers()
-  assert.ok(drivers.length > 20, `expected a real driver set, got ${drivers.length}`)
+  // The all-drivers build. The floor is a regression guard: dropping back to the
+  // internal set alone lands at 131.
+  assert.ok(drivers.length >= 140, `expected the full driver set, got ${drivers.length}`)
+
   const names = new Set(drivers.map((d) => d.name))
-  for (const expected of ['GTiff', 'MEM', 'VRT', 'GeoJSON', 'GPKG', 'ESRI Shapefile']) {
+  for (const expected of [
+    // The internal set.
+    'GTiff',
+    'MEM',
+    'VRT',
+    'GeoJSON',
+    'GPKG',
+    'ESRI Shapefile',
+    // Each of these needs a library that only the full build links in, so they
+    // also prove the static HDF5/netCDF/curl/libpq chain came together.
+    'HDF5',
+    'netCDF',
+    'WMS',
+    'WMTS',
+    'WCS',
+    'OGCAPI',
+    'PLMOSAIC',
+    'PostgreSQL',
+  ]) {
     assert.ok(names.has(expected), `${expected} is missing from the driver list`)
   }
+
+  // PDS is the one driver the package cannot offer: gdal-src does not ship
+  // frmts/pds/data, so enabling it fails GDAL's configure step.
+  assert.equal(names.has('PDS'), false)
+
   assert.ok(drivers.every((d) => typeof d.longName === 'string'))
+})
+
+test('a driver the full build adds works end to end, not just in the list', () => {
+  // netCDF reads and writes through a library the internal-only build does not
+  // link, so a round trip is the honest proof that the driver arrived.
+  const path = tmp('netcdf-roundtrip.nc')
+  const values = ramp(8, 4)
+
+  const created = gdal.createSync(path, {
+    driver: 'netCDF',
+    width: 8,
+    height: 4,
+    bandCount: 1,
+  })
+  created.band(0).writePixelsSync(bytesOf(values))
+  created.close()
+
+  const reopened = gdal.openSync(path)
+  assert.equal(reopened.driver, 'netCDF')
+  assert.equal(reopened.width, 8)
+  assert.equal(reopened.height, 4)
+  assert.deepEqual(Array.from(reopened.band(0).readPixelsSync()), Array.from(values))
+  reopened.close()
 })
 
 test('diagnostics() finds the packaged CRS database', () => {
