@@ -154,18 +154,24 @@ First working cut — everything here is new.
   must stay off `PATH` or GDAL's configure aborts; see the README for why.
 - CI builds six targets on native runners and attaches one self-contained tarball
   per platform to a GitHub Release. **Nothing is published to npm.**
-- The two musl legs are marked experimental (`continue-on-error`), and they run
-  their tests inside a `node:24-alpine` container rather than on the runner:
-  napi's cross toolchain links musl dynamically, so the runner's glibc Node
-  cannot load the addon at all. The container is also the honest place for it —
-  the generated loader resolves to musl there, so the suite exercises the real
-  artifact instead of a host build wearing a musl label.
-- The musl legs cross-build through napi's `--use-cross` (cross-rs) rather than
-  its zig-based `--cross-compile`. `all_drivers` pulls in vendored C libraries —
-  HDF5, netCDF, curl, libpq — whose CMake and configure steps need a real musl
-  sysroot, and under `zig cc` they fail to configure, so those two legs never got
-  past the build. With the internal-only driver set there was nothing outside
-  GDAL's own CMake build, which is why they built before.
+- The two musl legs are marked experimental (`continue-on-error`). They build —
+  and test — inside a musl-native Alpine container (`docker/musl.Dockerfile`) on a
+  runner of their own architecture, so the container's own toolchain already
+  targets the musl triple cargo is asked for: an ordinary native build, with no
+  cross toolchain, no sysroot and no emulation. The suite has to run in there
+  because napi links musl dynamically, so the runner's glibc Node cannot load the
+  addon at all — one process, two libcs.
+- Getting there took three attempts, and the container is the first that holds.
+  The vendored C libraries `all_drivers` pulls in (HDF5, netCDF, curl, libpq) never
+  configured under napi's zig-based `--cross-compile`; napi's cross-rs
+  `--use-cross` resolves its toolchain to an x86_64 host triple whatever machine it
+  is on (cross-rs #1649), so on an arm64 runner it died two seconds in; and cross's
+  images ship `make` but not `ninja`, which `.cargo/config.toml` pins for MSVC. A
+  container we control has all of it, and being musl-native removes the crossover
+  entirely.
+- That container also builds OpenSSL from source, linked statically
+  (curl-sys's `static-ssl`), because under musl there is no system OpenSSL to link
+  — while the four native legs go on using theirs.
 - Every leg asserts its own platform label, and the release job refuses duplicate
   tarball names. The v0.1.0 release shipped four assets instead of six because the
   two musl legs were building for their host: `npm run build -- --target <triple>`

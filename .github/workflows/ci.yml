@@ -21,9 +21,11 @@ jobs:
     # A cold run compiles PROJ and GDAL from source. On a 4-core runner that is
     # far slower than on a 16-core workstation, hence the generous ceiling.
     timeout-minutes: 180
-    # The musl targets are cross-built in a cross-rs container (napi's
-    # `--use-cross`) and are the least settled part of the matrix. They are
-    # allowed to fail without turning the whole run red while that is shaken out.
+    # The two musl legs build inside a musl-native Alpine container (see
+    # docker/musl.Dockerfile) on a runner of their own architecture, so the
+    # container's toolchain already targets the musl triple cargo is asked for and
+    # the whole build is native. They remain the least settled part of the matrix
+    # and are allowed to fail without turning the whole run red.
     continue-on-error: ${{ matrix.experimental || false }}
     strategy:
       fail-fast: false
@@ -39,11 +41,11 @@ jobs:
             runs-on: ubuntu-24.04-arm
           - target: x86_64-unknown-linux-musl
             runs-on: ubuntu-latest
-            cross: true
+            musl_container: true
             experimental: true
           - target: aarch64-unknown-linux-musl
             runs-on: ubuntu-24.04-arm
-            cross: true
+            musl_container: true
             experimental: true
     steps:
       - uses: actions/checkout@v4
@@ -86,19 +88,6 @@ jobs:
           cmake --version
           ninja --version
 
-      # The musl legs build through napi's `--use-cross`, which shells out to
-      # cross-rs, so that has to be on PATH (and a container engine has to be
-      # present, which the GitHub Linux runners have). cross is what makes the
-      # vendored C libraries the all-drivers set pulls in — HDF5, netCDF, curl,
-      # libpq — cross-configure at all: it drives a real musl sysroot, so the
-      # CMake and configure steps those libraries run get a toolchain instead of
-      # a bare `zig cc`.
-      - name: Install cross (musl cross builds)
-        if: matrix.cross
-        uses: taiki-e/install-action@v2
-        with:
-          tool: cross
-
       - uses: Swatinem/rust-cache@v2
         with:
           # The GDAL/PROJ objects live under target/, so this cache is the
@@ -106,13 +95,9 @@ jobs:
           # manifests means a driver-set change starts a clean build instead of
           # silently reusing stale objects.
           #
-          # `prefix-key` carries the runner architecture, which the shared part of
-          # a rust-cache key does not. Without it a restore that misses its exact
-          # key falls back to another leg's cache — and on the arm64 runner that
-          # can bring in an x86_64 rustup default toolchain, after which every
-          # `cargo` invocation tries to install `stable-x86_64-unknown-linux-gnu`
-          # and dies, which is how the aarch64-musl leg has been failing two
-          # seconds into the build.
+          # The architecture is part of `prefix-key` because a restore that misses
+          # its exact key falls back to another leg's cache, and one built for
+          # another architecture is at best useless.
           prefix-key: v0-rust-${{ runner.arch }}
           key: ${{ matrix.target }}-${{ hashFiles('Cargo.toml', 'Cargo.lock') }}
           cache-on-failure: true
@@ -139,14 +124,29 @@ jobs:
       # PATH, verifies sqlite3 is reachable, then drives `napi build` and stages
       # the PROJ/GDAL data files into assets/.
       - name: Build
-        run: npm run build -- --target ${{ matrix.target }} ${{ matrix.cross && '--use-cross' || '' }}
+        if: ${{ !matrix.musl_container }}
+        run: npm run build -- --target ${{ matrix.target }}
+
+      # The musl container is musl-native, so inside it this is an ordinary native
+      # build: no cross toolchain, no sysroot, and no `--use-cross`/`--cross-compile`
+      # for napi to hand a wrong host triple to. `npm ci` runs in there as well, so
+      # the dependency tree matches the container's libc and architecture rather
+      # than the runner's.
+      - name: Build the musl container
+        if: matrix.musl_container
+        run: docker build -f docker/musl.Dockerfile -t gdal-rs-napi-musl .
+
+      - name: Build (musl container)
+        if: matrix.musl_container
+        run: docker run --rm -v "$PWD:/work" -w /work gdal-rs-napi-musl sh -c "npm ci && npm run build -- --target ${{ matrix.target }}"
 
       # `pack-platform.mjs` takes the platform label from the built `.node`
       # filename, so a leg that quietly builds for its host instead of its target
       # produces a tarball that collides with another leg's — which is how the
-      # v0.1.0 release ended up with four assets instead of six. On the native
-      # runners host and target are the same thing, so only the two musl legs
-      # could hide it. Assert the label before anything else runs.
+      # v0.1.0 release ended up with four assets instead of six. Every leg now
+      # builds on a runner of its own architecture, but a container or a cross
+      # toolchain could still turn out a host build, so assert the label before
+      # anything else runs.
       - name: Check the built platform
         shell: bash
         run: |
@@ -171,23 +171,20 @@ jobs:
             exit 1
           fi
 
-      # Run the suite only where the runner can load what it built. napi's cross
-      # toolchain deliberately links musl dynamically (it appends
-      # `-C target-feature=-crt-static` for any musl target), so this addon needs
-      # musl's own libc at load time — and the Node on this runner is a glibc
-      # binary. Two libcs in one process is not a thing, so the gnu Node cannot
-      # dlopen it. That is a property of the artifact, not a reason to skip it.
+      # The runner's Node is a glibc binary and napi links musl dynamically (it
+      # appends `-C target-feature=-crt-static` for any musl target), so a musl
+      # addon cannot be dlopen'd here — one process, two libcs. That is a property
+      # of the artifact, not a reason to skip it.
       - name: Test
-        if: ${{ !matrix.cross }}
+        if: ${{ !matrix.musl_container }}
         run: npm test
 
-      # So test it where musl is the native libc. Inside the container the
-      # generated loader also resolves to musl, so this runs the real artifact
-      # rather than a host build wearing a musl label — which is what these legs
-      # were doing before, quietly passing every test against a glibc binary.
+      # So a musl leg tests inside its own container, where musl is the native libc
+      # and the generated loader resolves to what was just built rather than to a
+      # host build wearing a musl label.
       - name: Test (musl)
-        if: matrix.cross
-        run: docker run --rm -v "$PWD:/work" -w /work node:24-alpine npm test
+        if: matrix.musl_container
+        run: docker run --rm -v "$PWD:/work" -w /work gdal-rs-napi-musl npm test
 
       # One installable tarball per platform: root package files + assets/ + the
       # binary, with os/cpu/libc set so npm refuses a mismatched machine. Run

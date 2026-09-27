@@ -676,11 +676,13 @@ Two things worth knowing about that matrix:
   trouble, so the arm64 Linux leg uses GitHub's arm64 runner rather than a cross
   toolchain.
 - **The musl legs are marked `experimental`** (`continue-on-error`). They build
-  through napi's `--use-cross`, which hands the whole compile to a cross-rs
-  container: the all-drivers set pulls in vendored C libraries (HDF5, netCDF,
-  curl, libpq) whose CMake and configure steps need a real musl sysroot rather
-  than a bare `zig cc`. It is the least settled part of the picture, so a failure
-  there is reported but does not fail the run. Treat it as a work in progress.
+  inside a musl-native Alpine container (`docker/musl.Dockerfile`) on a runner of
+  their own architecture, so the container's own toolchain already targets the musl
+  triple cargo is asked for and the whole build is native — no cross toolchain, no
+  sysroot, no emulation. What makes them the least settled part of the matrix is
+  the vendored C libraries `all_drivers` pulls in (HDF5, netCDF, curl, libpq) and
+  their CMake and configure steps, so a failure there is reported but does not fail
+  the run. The suite runs in the same image, where musl is the native libc.
 
 Intel macOS is not built. If you need it, add a `macos-13` leg — the build itself
 needs no changes.
@@ -814,12 +816,12 @@ switches it on where `gdal::ThreadSafeDataset` exists.
 
 CI builds six targets, the ones in the table under "Prebuilt binaries":
 `win32-x64-msvc`, `darwin-arm64`, `linux-x64-gnu`, `linux-arm64-gnu`, and the two
-musl ones. The musl legs are `continue-on-error` — they cross-build through
-napi's `--use-cross` (a cross-rs container), which is the least certain link in
-the chain — so a release can ship without them. 32-bit targets are not built.
+musl ones. The musl legs are `continue-on-error` — they build in a musl-native
+Alpine container, which is the least certain link in the chain — so a release can
+ship without them. 32-bit targets are not built.
 
-Those two legs run their test suite in a `node:24-alpine` container rather than on
-the runner, because napi links musl dynamically (it adds
+Those two legs run their test suite in that same container rather than on the
+runner, because napi links musl dynamically (it adds
 `-C target-feature=-crt-static`) and the runner's glibc Node cannot load such an
 addon at all — one process, two libcs. The container is the honest place for it:
 the generated loader resolves to musl there, so the suite exercises the real
