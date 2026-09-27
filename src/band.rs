@@ -946,6 +946,25 @@ impl JsRasterBand {
         let options = self.block_window(x, y)?;
         self.write_sync(data.as_ref(), &options)
     }
+
+    /// This band's overview levels, as they were built — `[]` when there are none.
+    ///
+    /// Indexing the array is the `overviews.get(i)` of the GDAL API. A level is not a
+    /// view of this band: it is the decimation that was recorded, at its own size,
+    /// and reading it gives the pixels that were stored rather than a fresh
+    /// resampling — `readPixels({ outWidth, outHeight })` makes GDAL *pick* a level
+    /// and resample through it instead.
+    #[napi(getter)]
+    pub fn overviews(&self) -> Result<Vec<JsBandOverview>> {
+        self.dataset.with_exclusive(|dataset| {
+            with_band(dataset, self.index, |band| {
+                let count = band.overview_count().gdal()?;
+                (0..count as usize)
+                    .map(|level| overview_level(band, &self.dataset, self.index, level))
+                    .collect()
+            })
+        })
+    }
 }
 
 /// The rectangle of the block that holds `(x, y)`, clipped to the band.
@@ -986,6 +1005,165 @@ fn window(x: u32, y: u32, width: u32, height: u32) -> ReadOptions {
         height: Some(height),
         ..ReadOptions::default()
     }
+}
+
+/// One overview level of a band — see `band.overviews`.
+///
+/// Reading one is raw `GDALRasterIO`, in the glue below. The `gdal` crate's readers
+/// start from a dataset and a band number, and an overview has neither: it hangs off
+/// a band rather than off the dataset, and no band number reaches it.
+#[napi(js_name = "BandOverview")]
+pub struct JsBandOverview {
+    dataset: DatasetRef,
+    index: usize,
+    level: usize,
+    width: u32,
+    height: u32,
+    data_type: DataType,
+}
+
+#[napi]
+impl JsBandOverview {
+    /// **0-based**, as GDAL counts a band's overviews.
+    #[napi(getter)]
+    pub fn index(&self) -> u32 {
+        self.level as u32
+    }
+
+    /// Size of the level in pixels: `[width, height]`.
+    #[napi(getter)]
+    pub fn size(&self) -> Vec<u32> {
+        vec![self.width, self.height]
+    }
+
+    /// The level's sample type, which is the band's.
+    #[napi(getter)]
+    pub fn data_type(&self) -> DataType {
+        self.data_type
+    }
+
+    /// Read the whole level, in its own sample type, as raw bytes.
+    #[napi]
+    pub fn read_sync(&self) -> Result<Buffer> {
+        let bytes = self.dataset.with_exclusive(|dataset| {
+            with_band(dataset, self.index, |band| {
+                read_overview_bytes(band, self.level)
+            })
+        })?;
+        Ok(bytes.into())
+    }
+
+    /// The same read on the thread pool. A level is small next to its band, but it is
+    /// still every pixel in it.
+    #[napi(ts_return_type = "Promise<Buffer>")]
+    pub fn read(&self) -> AsyncTask<ReadOverviewTask> {
+        AsyncTask::new(ReadOverviewTask {
+            dataset: self.dataset.clone(),
+            index: self.index,
+            level: self.level,
+        })
+    }
+}
+
+pub struct ReadOverviewTask {
+    dataset: DatasetRef,
+    index: usize,
+    level: usize,
+}
+
+impl Task for ReadOverviewTask {
+    type Output = OpResult<Vec<u8>>;
+    type JsValue = Buffer;
+
+    fn compute(&mut self) -> napi::Result<Self::Output> {
+        let ReadOverviewTask {
+            dataset,
+            index,
+            level,
+        } = self;
+        Ok(op(dataset.with_exclusive(|dataset| {
+            with_band(dataset, *index, |band| read_overview_bytes(band, *level))
+        })))
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
+        output
+            .map(Buffer::from)
+            .map_err(|(code, reason)| into_status_error(code, reason))
+    }
+}
+
+/// Describe one overview level of `band`.
+fn overview_level(
+    band: &mut RasterBand<'_>,
+    dataset: &DatasetRef,
+    index: usize,
+    level: usize,
+) -> Result<JsBandOverview> {
+    let overview = overview_band(band, level)?;
+    let (width, height) = unsafe {
+        (
+            gdal_sys::GDALGetRasterBandXSize(overview) as u32,
+            gdal_sys::GDALGetRasterBandYSize(overview) as u32,
+        )
+    };
+    Ok(JsBandOverview {
+        dataset: dataset.clone(),
+        index,
+        level,
+        width,
+        height,
+        // A level is built with its band's sample type — GDAL has no way to make one
+        // with a different type — so the band's own is the level's, and it is already
+        // the binding's `DataType` rather than a raw GDAL enum value.
+        data_type: DataType::from_gdal(band.band_type()),
+    })
+}
+
+/// The level's band handle. GDAL owns it, so it is looked up per call rather than
+/// held — which also means nothing here has to outlive the dataset that owns it.
+fn overview_band(band: &mut RasterBand<'_>, level: usize) -> Result<gdal_sys::GDALRasterBandH> {
+    let overview = unsafe { gdal_sys::GDALGetOverview(band.c_rasterband(), level as i32) };
+    if overview.is_null() {
+        return Err(bad_argument(format!(
+            "this band has no overview level {level}"
+        )));
+    }
+    Ok(overview)
+}
+
+/// Read one level whole, in the level's own sample type.
+fn read_overview_bytes(band: &mut RasterBand<'_>, level: usize) -> Result<Vec<u8>> {
+    let overview = overview_band(band, level)?;
+    let (width, height) = unsafe {
+        (
+            gdal_sys::GDALGetRasterBandXSize(overview),
+            gdal_sys::GDALGetRasterBandYSize(overview),
+        )
+    };
+    let data_type = unsafe { gdal_sys::GDALGetRasterDataType(overview) };
+    let sample_bytes =
+        crate::dtype::bytes_per_sample(DataType::from_gdal(band.band_type())) as usize;
+
+    let mut bytes = vec![0u8; width as usize * height as usize * sample_bytes];
+    let class = unsafe {
+        gdal_sys::GDALRasterIO(
+            overview,
+            gdal_sys::GDALRWFlag::GF_Read,
+            0,
+            0,
+            width,
+            height,
+            bytes.as_mut_ptr().cast(),
+            width,
+            height,
+            data_type,
+            0,
+            0,
+        )
+    };
+    crate::raster_tools::cpl_result(class)?;
+    Ok(bytes)
 }
 
 /// The ten sample types a band can have, and the two conversions a single sample

@@ -614,6 +614,51 @@ test('contourGenerate takes an interval and an id field', async () => {
   raster.close()
 })
 
+test('a band lists its overview levels, and each one reads whole', async () => {
+  const path = tmp('overview-levels.tif')
+  const dataset = gdal.createSync(path, {
+    driver: 'GTiff',
+    width: 16,
+    height: 16,
+    bandCount: 1,
+    dataType: 'Uint8',
+  })
+  const band = dataset.band(0)
+  band.fill(3)
+
+  // Nothing is there until something builds it.
+  assert.deepEqual(band.overviews, [])
+
+  dataset.buildOverviewsSync({ levels: [2, 4] })
+
+  // The getter asks GDAL, so it sees levels that were built after the band object
+  // was made.
+  const levels = band.overviews
+  assert.deepEqual(
+    levels.map((level) => level.size),
+    [
+      [8, 8],
+      [4, 4],
+    ],
+  )
+  assert.deepEqual(
+    levels.map((level) => level.index),
+    [0, 1],
+  )
+  assert.equal(levels[0].dataType, 'Uint8')
+
+  // A level reads at its own size, in its own type: the stored decimation rather
+  // than a fresh resampling.
+  const values = Uint8Array.from(levels[1].readSync())
+  assert.equal(values.length, 4 * 4)
+  assert.ok(values.every((value) => value === 3))
+
+  const asynchronously = Uint8Array.from(await levels[0].read())
+  assert.equal(asynchronously.length, 8 * 8)
+
+  dataset.close()
+})
+
 test('the pixel accessors take single samples, windows and blocks', () => {
   const path = tmp('pixel-accessors.tif')
   const dataset = gdal.createSync(path, {

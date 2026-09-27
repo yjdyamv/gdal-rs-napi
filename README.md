@@ -389,6 +389,23 @@ Closing a dataset is idempotent, and afterwards every object derived from it
 
 ## Statistics and overviews
 
+**`band.overviews`** is the pyramid a band already has: one entry per level, with
+`index`, `size` and `dataType`, and `readSync()` / `read()` for that level's own
+pixels. The getter asks GDAL each time, so a level built after the band object came
+into being still shows up.
+
+```js
+dataset.buildOverviewsSync({ levels: [2, 4] })
+
+const [first] = band.overviews
+first.size          // [8, 8] for a 16x16 band
+first.readSync()    // the stored decimation, at its own size
+```
+
+That is not the same as `readPixels({ outWidth, outHeight })`, which makes GDAL *pick*
+a level and resample through it — reading the level itself gives the decimation that
+was actually recorded.
+
 ```js
 const band = gdal.openSync('dem.tif').band(0)
 

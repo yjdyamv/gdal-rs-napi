@@ -105,6 +105,14 @@ First working cut — everything here is new.
   not in the prelude at all. So the view stays where this binding has always put it, one
   line on the JS side: `new Float32Array(bytes.buffer, bytes.byteOffset,
   bytes.byteLength / 4)`.
+- `band.overviews` lists the pyramids a band already has: one entry per level, each
+  with `index` (0-based), `size`, `dataType`, and `readSync()` / `read()` for the whole
+  level in its own sample type. This is the query GDAL offers and the binding did not:
+  `readPixels({ outWidth, outHeight })` makes GDAL *pick* a level and resample through
+  it, while a level read this way is the decimation that was actually stored. The
+  getter asks GDAL every time, so a level built after the band object was created shows
+  up. Levels are read with raw `GDALRasterIO`: the `gdal` crate's readers start from a
+  dataset and a band number, and an overview hangs off a band with no number of its own.
 - `open()` / `openSync()` take a `Buffer` as well as a path, which is where the
   in-memory pipeline starts. The bytes go to a `/vsimem/` file, that file becomes the
   dataset's `path`, and closing the dataset unlinks it — so bytes written to in place

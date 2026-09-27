@@ -304,6 +304,21 @@ await raster.reprojectImage(dest, { dstWkt: gdal.epsgToWkt(3857) })
 
 ## 统计与金字塔（overviews）
 
+**`band.overviews`** 是波段已有的金字塔：每层一个对象，带 `index`、`size`、`dataType`，
+以及 `readSync()` / `read()` 读取该层自己的像素。这个 getter 每次都去问 GDAL，所以波段对象
+建好之后才建出来的层也看得到。
+
+```js
+dataset.buildOverviewsSync({ levels: [2, 4] })
+
+const [first] = band.overviews
+first.size          // 16x16 的波段这里是 [8, 8]
+first.readSync()    // 真正存下来的那次抽样，按它自己的尺寸读
+```
+
+这与 `readPixels({ outWidth, outHeight })` 不是一回事：后者是让 GDAL 自己**挑**一层并从中
+重采样；直接读某一层拿到的是实际记录下来的那一次抽样。
+
 ```js
 const band = gdal.openSync('dem.tif').band(0)
 
