@@ -27,6 +27,11 @@ First working cut — everything here is new.
 - `Layer`: `featuresSync`, `feature`, `openCursor`, `setAttributeFilter`,
   `setSpatialFilterRect`, `clearSpatialFilter`, `createFeature`, `updateFeature`,
   `deleteFeature`, `fields`, `extent`, `spatialRefWkt`, `spatialRef`.
+- `createLayer` takes `fields` — `FieldDefinition` objects with a name, a type from
+  the same vocabulary `fields` reports, and optional width and precision. A declared
+  type beats inference (`count: 5` no longer becomes an `Integer64`), and a declared
+  `StringList` is how to get a real list column. Undeclared properties are still
+  inferred alongside them.
 - `FeatureCursor`: `read` (async) / `readSync`, `batchSize`, `finished`, `close`.
   It pages a layer, so a large one costs a batch of memory instead of all of it,
   and each batch holds exactly what `featuresSync` would have returned for those
@@ -138,7 +143,8 @@ First working cut — everything here is new.
 - No terrain algorithms beyond the ones `gdaldem` itself offers.
 - Reading a layer in batches is a cursor rather than a JS async iterator, and GDAL
   keeps the reading position on the layer, so one reader per layer at a time.
-- Array-valued properties are written as comma-joined text rather than list fields.
+- Array-valued properties are written as comma-joined text rather than list fields,
+  unless the field is declared as a list one — see `FieldDefinition`.
 - Generated `.d.ts` types the async methods as `Promise<unknown>`, because `napi`
   cannot resolve `Task::JsValue`. The sync signatures are exact and the values
   returned at runtime are right; only the annotation is lost.

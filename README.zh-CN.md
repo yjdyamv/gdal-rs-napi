@@ -236,6 +236,29 @@ dataset.close()
 `deleteLayer(name)` 按名字删掉整个图层（删除会让索引位移，所以名字才是安全的句柄）。
 并非所有驱动都支持删除：GeoPackage 可以，Shapefile 不行，GDAL 会直接告诉你。
 
+### 声明式 schema
+
+推断只是便利，不是唯一方式。给 `createLayer` 传 `fields`，schema 就在任何要素写入之前存在，
+而且每个类型是**选定**的而不是猜的：
+
+```js
+dataset.createLayer({
+  name: 'places',
+  geometryType: 'Point',
+  epsg: 4326,
+  fields: [
+    { name: 'label', fieldType: 'String', width: 64 },
+    { name: 'count', fieldType: 'Integer' },
+    { name: 'tags', fieldType: 'StringList' },
+  ],
+})
+```
+
+声明的类型**总是**压过推断：`count: 5` 本来会被推成 `Integer64`；声明成 `StringList`
+才能拿到真正的列表列，而不是推断写出的逗号连接文本。`width` / `precision` 交给驱动，
+它可能保留也可能忽略 —— GeoPackage 保留 width 而丢弃 precision，因为 SQLite 没有定点数。
+未声明的属性依然会照常被推断出字段，与声明的一起共存。
+
 ### 按批读取
 
 `featuresSync()` 会把整层物化；`openCursor()` 改成一次读一批，于是图层的代价是**一批**而不是全部：

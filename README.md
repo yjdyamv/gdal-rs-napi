@@ -335,6 +335,32 @@ an unknown property rather than adding a column, and treats a `null` geometry as
 a name is the safe handle. Not every driver can do either: GeoPackage can, an ESRI
 Shapefile cannot, and GDAL says so.
 
+### Declaring the schema
+
+Inference is a convenience, not the only way. Pass `fields` to `createLayer` and
+the schema exists before any feature does, with each type chosen rather than
+guessed:
+
+```js
+dataset.createLayer({
+  name: 'places',
+  geometryType: 'Point',
+  epsg: 4326,
+  fields: [
+    { name: 'label', fieldType: 'String', width: 64 },
+    { name: 'count', fieldType: 'Integer' },
+    { name: 'tags', fieldType: 'StringList' },
+  ],
+})
+```
+
+A declared type always wins over inference: `count: 5` would otherwise become an
+`Integer64`, and a declared `StringList` is how you get a real list column rather
+than the comma-joined text inference writes. `width` and `precision` are handed to
+the driver, which may keep them or not — GeoPackage keeps the width and drops the
+precision, because SQLite has no fixed-point numbers. Properties still get inferred
+fields alongside the declared ones.
+
 ### Reading in batches
 
 `featuresSync()` materialises the whole layer. `openCursor()` reads it a batch at a

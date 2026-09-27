@@ -3,6 +3,65 @@ import { test } from 'node:test'
 
 import { gdal, tmp } from './helpers.mjs'
 
+test('createLayer can declare the schema, so a type is chosen rather than inferred', () => {
+  const path = tmp('declared-fields.gpkg')
+  const dataset = gdal.createVectorSync(path, 'GPKG')
+
+  const layer = dataset.createLayer({
+    name: 'declared',
+    geometryType: 'Point',
+    fields: [
+      { name: 'label', fieldType: 'String', width: 32 },
+      { name: 'count', fieldType: 'Integer' },
+      { name: 'ratio', fieldType: 'Real', width: 10, precision: 3 },
+    ],
+  })
+
+  // A layer with a schema and no features: nothing had to be written to define it.
+  assert.equal(layer.featureCount, 0)
+  assert.deepEqual(
+    layer.fields.map((field) => [field.name, field.fieldType]),
+    [
+      ['label', 'String'],
+      ['count', 'Integer'],
+      ['ratio', 'Real'],
+    ],
+  )
+
+  const declared = Object.fromEntries(layer.fields.map((field) => [field.name, field]))
+  assert.equal(declared.label.width, 32, 'the declared width is reported')
+  // GeoPackage keeps the width but not the precision: SQLite has no fixed-point
+  // numbers, so there is nothing for a precision to describe.
+  assert.equal(typeof declared.ratio.precision, 'number')
+
+  // `count: 5` would infer Integer64 and `ratio: 1.5` Real — the declared types
+  // have to win, which is the whole point of declaring them.
+  layer.createFeature(
+    { type: 'Point', coordinates: [1, 2] },
+    { label: 'a', count: 5, ratio: 1.5, extra: 'inferred' },
+  )
+
+  const [feature] = layer.featuresSync()
+  assert.equal(feature.properties.count, 5)
+  assert.equal(feature.properties.ratio, 1.5)
+
+  const after = Object.fromEntries(layer.fields.map((field) => [field.name, field.fieldType]))
+  assert.equal(after.count, 'Integer', 'writing a JS number did not widen it to Integer64')
+  // An undeclared property is still added by inference, alongside the declared ones.
+  assert.equal(after.extra, 'String')
+
+  assert.throws(
+    () => dataset.createLayer({ name: 'bad', fields: [{ name: 'x', fieldType: 'Currency' }] }),
+    (error) => {
+      assert.match(error.message, /unknown field type/)
+      assert.match(error.message, /Integer64/, 'the alternatives are listed')
+      return true
+    },
+  )
+
+  dataset.close()
+})
+
 test('deleteFeature removes exactly the one asked for', () => {
   const path = tmp('delete-feature.gpkg')
   const dataset = gdal.createVectorSync(path, 'GPKG')

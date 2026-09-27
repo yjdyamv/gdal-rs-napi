@@ -36,6 +36,28 @@ pub struct FieldInfo {
     pub precision: i32,
 }
 
+/// A field to declare when creating a layer.
+///
+/// Declaring fields is how a layer gets a schema before it has any features, and
+/// how a type is *chosen* rather than inferred from whatever the first feature
+/// happened to carry — an `Integer` stays an `Integer` even though JS numbers
+/// would otherwise infer `Integer64`. A `StringList` field is also the way to get
+/// a real list column, since inference deliberately writes joined text instead.
+#[napi(object)]
+#[derive(Debug, Clone)]
+pub struct FieldDefinition {
+    pub name: String,
+    /// The same vocabulary `fields` reports: `String`, `Integer`, `Integer64`,
+    /// `Real`, `Date`, `DateTime`, `Time`, `Binary`, the `…List` forms and the
+    /// `WideString` pair.
+    pub field_type: String,
+    /// Driver-dependent, and left alone when omitted. GeoPackage keeps the width
+    /// and ignores the precision, because SQLite stores every number as a float
+    /// and has nothing for a precision to describe.
+    pub width: Option<i32>,
+    pub precision: Option<i32>,
+}
+
 /// A feature, copied out of GDAL.
 ///
 /// `fid` and `geometry` are `Value` rather than `Option` so that "absent" is an
@@ -172,6 +194,63 @@ fn field_type_name(field_type: gdal_sys::OGRFieldType::Type) -> String {
         other => return format!("Unknown({other})"),
     };
     name.to_string()
+}
+
+/// Every field type name this binding understands, in the spelling
+/// [`field_type_name`] produces.
+pub(crate) const FIELD_TYPE_NAMES: [&str; 14] = [
+    "Integer",
+    "IntegerList",
+    "Integer64",
+    "Integer64List",
+    "Real",
+    "RealList",
+    "String",
+    "StringList",
+    "WideString",
+    "WideStringList",
+    "Binary",
+    "Date",
+    "Time",
+    "DateTime",
+];
+
+/// Map a field type name onto GDAL's enum — the inverse of [`field_type_name`].
+///
+/// Compared the way `geometry_type_from_name` compares: case, spaces, underscores
+/// and hyphens are ignored, so `integer 64` and `Integer64` are the same request.
+pub(crate) fn field_type_from_name(name: &str) -> Result<OGRFieldType::Type> {
+    use OGRFieldType as OFT;
+
+    let normalised: String = name
+        .chars()
+        .filter(|c| !matches!(c, ' ' | '_' | '-'))
+        .flat_map(char::to_lowercase)
+        .collect();
+
+    let field_type = match normalised.as_str() {
+        "integer" => OFT::OFTInteger,
+        "integerlist" => OFT::OFTIntegerList,
+        "integer64" => OFT::OFTInteger64,
+        "integer64list" => OFT::OFTInteger64List,
+        "real" => OFT::OFTReal,
+        "reallist" => OFT::OFTRealList,
+        "string" => OFT::OFTString,
+        "stringlist" => OFT::OFTStringList,
+        "widestring" => OFT::OFTWideString,
+        "widestringlist" => OFT::OFTWideStringList,
+        "binary" => OFT::OFTBinary,
+        "date" => OFT::OFTDate,
+        "time" => OFT::OFTTime,
+        "datetime" => OFT::OFTDateTime,
+        other => {
+            return Err(bad_argument(format!(
+                "unknown field type {other:?}; expected one of {}",
+                FIELD_TYPE_NAMES.join(", ")
+            )));
+        }
+    };
+    Ok(field_type)
 }
 
 /// Canonical name for a geometry type.
@@ -1028,6 +1107,39 @@ mod tests {
             "{}",
             err.reason
         );
+    }
+
+    #[test]
+    fn field_type_names_round_trip() {
+        // The pair has to be exact inverses, or a name read off a layer cannot be
+        // fed back into createLayer.
+        for name in FIELD_TYPE_NAMES {
+            let field_type = field_type_from_name(name).expect(name);
+            assert_eq!(field_type_name(field_type), name, "{name} did not survive");
+        }
+    }
+
+    #[test]
+    fn field_type_names_tolerate_spacing_and_case() {
+        for spelling in [
+            "integer64",
+            "INTEGER64",
+            "Integer64",
+            "integer 64",
+            "integer_64",
+            "Integer-64",
+        ] {
+            assert_eq!(
+                field_type_from_name(spelling).unwrap(),
+                OGRFieldType::OFTInteger64,
+                "{spelling}"
+            );
+        }
+
+        let err = field_type_from_name("currency").unwrap_err();
+        assert!(err.reason.contains("unknown field type"), "{}", err.reason);
+        // The alternatives come back with the complaint.
+        assert!(err.reason.contains("Integer64"), "{}", err.reason);
     }
 
     #[test]

@@ -14,7 +14,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use gdal::ThreadSafeDataset;
 use gdal::cpl::CslStringList;
 use gdal::spatial_ref::SpatialRef;
-use gdal::vector::{LayerAccess, LayerOptions, OGRwkbGeometryType};
+use gdal::vector::{FieldDefn, LayerAccess, LayerOptions, OGRFieldType, OGRwkbGeometryType};
 use gdal::{Dataset as GdalDataset, DatasetOptions, DriverManager, GdalOpenFlags, Metadata};
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
@@ -29,7 +29,7 @@ use crate::raster_io::{
 };
 use crate::runtime::{ensure_initialized, lock_gdal, lock_gdal_shared};
 use crate::spatial_ref::JsSpatialRef;
-use crate::vector::JsLayer;
+use crate::vector::{FieldDefinition, JsLayer};
 
 pub struct DatasetHandle {
     /// `None` once closed. That is what makes `close()` idempotent and turns any
@@ -266,6 +266,10 @@ pub struct CreateLayerOptions {
     pub wkt: Option<String>,
     /// Driver creation options, e.g. `{ SPATIAL_INDEX: 'YES' }`.
     pub options: Option<Value>,
+    /// Fields to declare up front — see `FieldDefinition`. Optional: without it,
+    /// `createFeature` adds fields as it meets them, inferring each type from the
+    /// first value it sees.
+    pub fields: Option<Vec<FieldDefinition>>,
 }
 
 fn open_gdal(path: &str, update: bool) -> Result<GdalDataset> {
@@ -651,6 +655,22 @@ impl JsDataset {
             (None, None) => None,
         };
 
+        // Declared fields are checked here, before the lock, so a typo is thrown by
+        // the call rather than half-way through creating the layer.
+        let declared_fields: Vec<(String, OGRFieldType::Type, Option<i32>, Option<i32>)> = options
+            .fields
+            .unwrap_or_default()
+            .into_iter()
+            .map(|field| {
+                Ok((
+                    field.name,
+                    crate::vector::field_type_from_name(&field.field_type)?,
+                    field.width,
+                    field.precision,
+                ))
+            })
+            .collect::<Result<_>>()?;
+
         // GDAL takes layer creation options as `name=value` strings.
         let layer_options: Vec<String> = crate::json::option_pairs(options.options.as_ref())?
             .into_iter()
@@ -662,7 +682,7 @@ impl JsDataset {
             // A driver is free to name the layer differently, so record the
             // position rather than assuming it lands at the end.
             let index = dataset.layer_count();
-            dataset
+            let layer = dataset
                 .create_layer(LayerOptions {
                     name: &options.name,
                     srs: srs.as_ref(),
@@ -674,6 +694,20 @@ impl JsDataset {
                     },
                 })
                 .gdal()?;
+
+            // Declared fields go in while the layer is in hand, so the schema
+            // exists before the first feature does — and so a field keeps the type
+            // it was declared with rather than the one inference would have picked.
+            for (name, field_type, width, precision) in &declared_fields {
+                let definition = FieldDefn::new(name, *field_type).gdal()?;
+                if let Some(width) = width {
+                    definition.set_width(*width);
+                }
+                if let Some(precision) = precision {
+                    definition.set_precision(*precision);
+                }
+                definition.add_to_layer(&layer).gdal()?;
+            }
             Ok(index)
         })?;
 
