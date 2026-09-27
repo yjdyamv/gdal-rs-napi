@@ -255,6 +255,67 @@ pub fn create_dataset(
     }
 }
 
+/// The default `-minsize` for overview levels: keep building while the raster is
+/// at least this long on its longer side. The same value `gdaladdo` uses when no
+/// explicit levels are given.
+pub const MIN_OVERVIEW_SIZE: usize = 256;
+
+/// The decimation factors to build when the caller does not name them.
+///
+/// Follows `gdaladdo`'s documented rule: powers of two, until the smallest
+/// overview is *smaller* than [`MIN_OVERVIEW_SIZE`]. Worked out here rather than
+/// left to the driver, so which levels you get does not depend on who is writing
+/// the file.
+pub fn overview_levels(width: usize, height: usize) -> Vec<i32> {
+    let (mut width, mut height) = (width, height);
+    let mut levels = Vec::new();
+    let mut level = 1;
+
+    while width.max(height) >= MIN_OVERVIEW_SIZE {
+        width = width.div_ceil(2);
+        height = height.div_ceil(2);
+        level *= 2;
+        levels.push(level);
+    }
+    levels
+}
+
+/// The kernels `gdaladdo -r` accepts.
+///
+/// Deliberately not the read path's `ResampleAlg`: `rms` and `average_magphase`
+/// exist only for overview generation.
+pub const OVERVIEW_RESAMPLING: [&str; 10] = [
+    "nearest",
+    "average",
+    "rms",
+    "gauss",
+    "bilinear",
+    "cubic",
+    "cubicspline",
+    "lanczos",
+    "average_magphase",
+    "mode",
+];
+
+/// Validate an overview resampling name, returning it in GDAL's spelling.
+///
+/// Checked before GDAL sees it, so a typo reads as
+/// `unknown overview resampling "cubicc"; expected one of …` rather than a screen
+/// of driver output followed by something unhelpful.
+pub fn overview_resampling(name: &str) -> Result<&'static str> {
+    let lowered = name.to_ascii_lowercase();
+    OVERVIEW_RESAMPLING
+        .iter()
+        .copied()
+        .find(|candidate| *candidate == lowered)
+        .ok_or_else(|| {
+            bad_argument(format!(
+                "unknown overview resampling {name:?}; expected one of {}",
+                OVERVIEW_RESAMPLING.join(", ")
+            ))
+        })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -347,5 +408,50 @@ mod tests {
         // `write_window` is what rejects a short buffer; the converter itself
         // just takes whatever whole samples are there.
         assert_eq!(bytes_to_samples::<u16>(&[1, 0, 2]), vec![1u16]);
+    }
+
+    #[test]
+    fn overview_levels_follow_the_documented_minsize_rule() {
+        // Powers of two until the smallest overview is *below* 256, so 4096 gets
+        // five levels and ends at 128 — not four ending exactly on 256.
+        assert_eq!(overview_levels(4096, 4096), vec![2, 4, 8, 16, 32]);
+        assert_eq!(overview_levels(2048, 2048), vec![2, 4, 8, 16]);
+        assert_eq!(overview_levels(512, 512), vec![2, 4]);
+        assert_eq!(overview_levels(256, 256), vec![2]);
+
+        // Already below the floor: nothing to build, which is not an error.
+        assert_eq!(overview_levels(255, 255), Vec::<i32>::new());
+        assert_eq!(overview_levels(1, 1), Vec::<i32>::new());
+
+        // The longer side decides, so a wide strip keeps halving until that one
+        // is small enough.
+        assert_eq!(overview_levels(4096, 64), vec![2, 4, 8, 16, 32]);
+
+        // 1000 halves to 500, then 250, which is below the floor.
+        assert_eq!(overview_levels(1000, 1000), vec![2, 4]);
+    }
+
+    #[test]
+    fn overview_resampling_accepts_the_gdaladdo_names() {
+        assert_eq!(overview_resampling("nearest").unwrap(), "nearest");
+        // Case is irrelevant, and the value comes back in GDAL's spelling.
+        assert_eq!(overview_resampling("CUBIC").unwrap(), "cubic");
+        assert_eq!(
+            overview_resampling("Average_MagPhase").unwrap(),
+            "average_magphase"
+        );
+        // Both of these exist only for overviews, which is why the read path's
+        // `ResampleAlg` cannot be reused for them.
+        assert_eq!(overview_resampling("rms").unwrap(), "rms");
+        assert_eq!(overview_resampling("mode").unwrap(), "mode");
+
+        let err = overview_resampling("cubicc").unwrap_err();
+        assert!(
+            err.reason.contains("unknown overview resampling"),
+            "{}",
+            err.reason
+        );
+        // The message lists the alternatives, so a typo does not need a doc lookup.
+        assert!(err.reason.contains("cubicspline"), "{}", err.reason);
     }
 }

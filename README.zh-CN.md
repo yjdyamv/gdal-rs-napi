@@ -94,6 +94,40 @@ cog.close(); source.close()
 （矢量 GPKG 也会返回一个数字），用之前先看 `bandCount`；`IMAGE_STRUCTURE`
 元数据挂在 **dataset** 上而不是 band 上。
 
+## 统计与金字塔（overviews）
+
+```js
+const band = gdal.openSync('dem.tif').band(0)
+
+// min / max / mean / stdDev。`force: false` 只读 GDAL 已有的缓存，没有就返回 null
+const stats = await band.statistics()
+
+// 指定区间与桶数的直方图
+const histogram = await band.histogram({ min: stats.min, max: stats.max, buckets: 256 })
+
+// 金字塔：让降分辨率读取不再逐像素扫
+const dataset = gdal.openSync('dem.tif', { update: true })
+dataset.band(0).overviewCount // 0
+await dataset.buildOverviews()
+dataset.band(0).overviewCount // 1024x1024 的栅格会建 3 层
+```
+
+几点值得知道：
+
+- **`statistics()` 默认会真算**。大栅格上这等于把该波段完整读一遍 —— 所以有异步版本，也有
+  `approx: true`（让 GDAL 借助 overview 求近似）。`{ force: false }` 是便宜的那条路：
+  只报缓存，没有则 `null`。
+- **`buildOverviews()` 是本绑定里最慢的调用**。设 `GDAL_NUM_THREADS=ALL_CPUS` 可让 GDAL
+  并行计算各层，稍大的栅格值得加。
+- **层数默认按 `gdaladdo` 的规则**：2 的幂，直到最小一层在较长边上小于 256 像素。要明确就传
+  `levels`。构建是**增量**的，与 `gdaladdo` 一致 —— 已存在的层原地重算，其它层不动。
+- **落在哪里取决于打开方式**：`{ update: true }` 写进文件内部；只读打开则生成旁边的外部
+  `.ovr`。这就是 `gdaladdo` 与 `gdaladdo -ro` 的区别。
+- **`resampling` 用 `gdaladdo` 的名字** —— `nearest`（默认）、`average`、`rms`、`gauss`、
+  `bilinear`、`cubic`、`cubicspline`、`lanczos`、`average_magphase`、`mode`。拼错会直接报错
+  并列出候选，不会丢给 GDAL。
+- **GTiff 只支持一次性为所有波段建 overview**，`bands` 是为那些接受子集的驱动预留的透传。
+
 ## 矢量
 
 ```js

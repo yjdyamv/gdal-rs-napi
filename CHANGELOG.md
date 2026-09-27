@@ -18,11 +18,12 @@ First working cut — everything here is new.
 - `Dataset`: `open` / `openSync`, `create` / `createSync`, `createVector` /
   `createVectorSync`, `createCopy` / `createCopySync`, `band`, `bands`, `layer`,
   `layerByName`, `layers`, `createLayer`, `metadata`, `setMetadataItem`,
-  `setGeoTransform`, `setProjection`, `flush` / `flushSync`, `close`, plus a
-  `threadSafe` getter.
+  `setGeoTransform`, `setProjection`, `buildOverviews` / `buildOverviewsSync`,
+  `flush` / `flushSync`, `close`, plus a `threadSafe` getter.
 - `RasterBand`: `readPixels` / `readAs` (async and sync), `writePixels`,
+  `statistics` / `statisticsSync`, `histogram` / `histogramSync`,
   `noDataValue`, `setNoDataValue`, `size`, `blockSize`, `colorInterpretation`,
-  `metadata`.
+  `metadata`, `overviewCount`.
 - `Layer`: `featuresSync`, `feature`, `setAttributeFilter`,
   `setSpatialFilterRect`, `clearSpatialFilter`, `createFeature`, `updateFeature`,
   `fields`, `extent`, `spatialRefWkt`.
@@ -79,7 +80,10 @@ First working cut — everything here is new.
 ### Known gaps
 
 - No `SpatialRef` class; constructing a CRS is limited to `epsgToWkt`.
-- No `statistics()` or `buildOverviews()`.
+- Overviews can be built but not removed (`GDALBuildOverviews` with `NONE`), and
+  statistics and histograms can be read but not written back into a dataset.
+- `buildOverviews({ bands })` is passed through, but GTiff — the only writable
+  overview driver compiled in — refuses anything short of every band.
 - The programs have no progress callbacks (GDAL's `*OptionsSetProgress` is not
   wired up), and `vectorTranslate` has no `-overwrite`, which is a command-line
   feature rather than part of `GDALVectorTranslate`.

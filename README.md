@@ -156,6 +156,48 @@ the band, so read it as `dataset.metadata('IMAGE_STRUCTURE')`.
 Closing a dataset is idempotent, and afterwards every object derived from it
 (`band`, `dataset.bandCount`, ...) throws instead of touching freed memory.
 
+## Statistics and overviews
+
+```js
+const band = gdal.openSync('dem.tif').band(0)
+
+// min / max / mean / stdDev. `force: false` only reads what GDAL has already
+// cached and gives back null when there is nothing.
+const stats = await band.statistics()
+
+// Counts per bucket over a range, for a contrast stretch or similar.
+const histogram = await band.histogram({ min: stats.min, max: stats.max, buckets: 256 })
+
+// A pyramid, so reduced-resolution reads stop touching every pixel.
+const dataset = gdal.openSync('dem.tif', { update: true })
+dataset.band(0).overviewCount // 0
+await dataset.buildOverviews()
+dataset.band(0).overviewCount // 3, for a 1024x1024 raster
+```
+
+Worth knowing:
+
+- **`statistics()` computes by default.** On a large raster that is a full read of
+  the band — hence the async form, and `approx: true`, which lets GDAL lean on
+  overviews instead of every pixel. `{ force: false }` is the cheap one: it
+  reports the cache, or `null`.
+- **`buildOverviews()` is the slowest call in this binding.** Setting
+  `GDAL_NUM_THREADS=ALL_CPUS` has GDAL compute the levels in parallel, which is
+  worth doing for anything sizeable.
+- **Levels default to what `gdaladdo` would choose**: powers of two until the
+  smallest overview is below 256 pixels on its longer side. Pass `levels` to be
+  explicit. Building is *additive*, exactly as in `gdaladdo` — levels that already
+  exist are recomputed in place and the others are left alone.
+- **Where they land follows how you opened the dataset.** `{ update: true }` puts
+  them inside the file; a read-only dataset gets an external `.ovr` beside it. That
+  is the same split as `gdaladdo` versus `gdaladdo -ro`.
+- **`resampling` takes `gdaladdo`'s names** — `nearest` (the default), `average`,
+  `rms`, `gauss`, `bilinear`, `cubic`, `cubicspline`, `lanczos`,
+  `average_magphase`, `mode`. A typo is rejected with that list rather than handed
+  to GDAL.
+- **GTiff builds overviews for every band at once**, so `bands` is passed through
+  for the drivers that accept a subset.
+
 ## Vector
 
 ```js

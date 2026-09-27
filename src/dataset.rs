@@ -24,7 +24,9 @@ use crate::band::JsRasterBand;
 use crate::dtype::DataType;
 use crate::error::{GdalErrorCode, IntoGdalResult, Result, bad_argument, into_status_error, split};
 use crate::programs;
-use crate::raster_io::{build_creation_options, create_dataset};
+use crate::raster_io::{
+    build_creation_options, create_dataset, overview_levels, overview_resampling,
+};
 use crate::runtime::{ensure_initialized, lock_gdal, lock_gdal_shared};
 use crate::vector::JsLayer;
 
@@ -334,6 +336,89 @@ fn create_vector_gdal(path: &str, driver_name: &str) -> Result<GdalDataset> {
 
     let driver = DriverManager::get_driver_by_name(driver_name).gdal()?;
     driver.create_vector_only(path).gdal()
+}
+
+/// Build the pyramid. Takes `&mut Dataset` for two reasons: that is what
+/// `build_overviews` asks for, and it is what refuses a thread-safe dataset —
+/// which is read-only, so it could not write overviews anyway.
+fn write_overviews(dataset: &mut GdalDataset, request: &BuildOverviewsRequest) -> Result<()> {
+    let levels = match &request.levels {
+        Some(levels) => levels.clone(),
+        None => {
+            let (width, height) = dataset.raster_size();
+            overview_levels(width, height)
+        }
+    };
+
+    dataset
+        .build_overviews(request.resampling, &levels, &request.bands)
+        .gdal()
+}
+
+#[napi(object)]
+#[derive(Debug, Clone, Default)]
+pub struct BuildOverviewsOptions {
+    /// Decimation factors to build, e.g. `[2, 4, 8]`. Default: powers of two
+    /// until the smallest overview is below 256 pixels on its longer side, the
+    /// rule `gdaladdo` documents. An empty list asks for no overviews at all.
+    pub levels: Option<Vec<i32>>,
+    /// One of `nearest` (default), `average`, `rms`, `gauss`, `bilinear`, `cubic`,
+    /// `cubicspline`, `lanczos`, `average_magphase`, `mode`.
+    pub resampling: Option<String>,
+    /// Bands to build for, **0-based**. Default: every band. Note that GTiff —
+    /// the only writable-overview driver compiled in here — refuses a partial
+    /// list ("only supported when operating on all bands"), so this is handed to
+    /// GDAL for the drivers that do accept it rather than quietly dropped.
+    pub bands: Option<Vec<u32>>,
+}
+
+/// `BuildOverviewsOptions` with the resampling name checked and the band indices
+/// translated. The levels are left as written, because the default depends on the
+/// raster's size and that is only known once the dataset is in hand.
+#[derive(Debug, Clone)]
+pub struct BuildOverviewsRequest {
+    levels: Option<Vec<i32>>,
+    resampling: &'static str,
+    /// GDAL's 1-based band numbers.
+    bands: Vec<i32>,
+}
+
+pub fn build_overviews_request(
+    options: Option<BuildOverviewsOptions>,
+) -> Result<BuildOverviewsRequest> {
+    let options = options.unwrap_or_default();
+
+    let resampling = match options.resampling {
+        Some(name) => overview_resampling(&name)?,
+        None => "nearest",
+    };
+
+    if let Some(levels) = &options.levels
+        && let Some(invalid) = levels.iter().find(|level| **level < 2)
+    {
+        return Err(bad_argument(format!(
+            "overview levels are decimation factors, so each has to be at least 2, and {invalid} is not"
+        )));
+    }
+
+    // The one place 0-based meets 1-based. GDAL takes band numbers, this API takes
+    // indices, and an empty list means "all of them" on both sides.
+    let bands = options
+        .bands
+        .unwrap_or_default()
+        .into_iter()
+        .map(|index| {
+            i32::try_from(index)
+                .map(|index| index + 1)
+                .map_err(|_| bad_argument(format!("band index {index} is out of range")))
+        })
+        .collect::<Result<Vec<i32>>>()?;
+
+    Ok(BuildOverviewsRequest {
+        levels: options.levels,
+        resampling,
+        bands,
+    })
 }
 
 #[napi(js_name = "Dataset")]
@@ -660,6 +745,37 @@ impl JsDataset {
     #[napi]
     pub fn close(&self) -> Result<()> {
         self.dataset.close()
+    }
+
+    /// Build overviews — a pyramid of progressively smaller copies — so reads at
+    /// reduced resolution do not have to touch every pixel.
+    ///
+    /// This is the slowest call in the binding: it reads the raster and writes
+    /// lower-resolution versions of it. Use the async form. Setting
+    /// `GDAL_NUM_THREADS=ALL_CPUS` lets GDAL compute the levels in parallel, which
+    /// is worth doing for a large raster.
+    ///
+    /// Where the overviews land depends on how the dataset was opened: with
+    /// `{ update: true }` they go inside the file, while a read-only dataset gets
+    /// an external `.ovr` beside it. That mirrors `gdaladdo`, where the same
+    /// choice is `-ro`.
+    #[napi]
+    pub fn build_overviews_sync(&self, options: Option<BuildOverviewsOptions>) -> Result<()> {
+        let request = build_overviews_request(options)?;
+        self.dataset
+            .with_mut(|dataset| write_overviews(dataset, &request))
+    }
+
+    #[napi]
+    pub fn build_overviews(
+        &self,
+        options: Option<BuildOverviewsOptions>,
+    ) -> Result<AsyncTask<BuildOverviewsTask>> {
+        let request = build_overviews_request(options)?;
+        Ok(AsyncTask::new(BuildOverviewsTask {
+            dataset: self.dataset.clone(),
+            request,
+        }))
     }
 
     /// Run `gdal_translate` on this dataset.
@@ -1056,5 +1172,87 @@ impl Task for ProgramTask {
         output
             .map(|dataset| JsDataset::wrap(dataset, self.dest.clone()))
             .map_err(|(code, reason)| into_status_error(code, reason))
+    }
+}
+
+/// Building overviews reads the whole raster and writes smaller copies of it, so
+/// of everything this binding offers it is the one that most needs to be off the
+/// event loop.
+pub struct BuildOverviewsTask {
+    dataset: DatasetRef,
+    request: BuildOverviewsRequest,
+}
+
+impl Task for BuildOverviewsTask {
+    type Output = OpResult<()>;
+    type JsValue = ();
+
+    fn compute(&mut self) -> napi::Result<Self::Output> {
+        let BuildOverviewsTask { dataset, request } = self;
+        Ok(op(
+            dataset.with_mut(|source| write_overviews(source, request))
+        ))
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
+        output.map_err(|(code, reason)| into_status_error(code, reason))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Where this API's 0-based indices meet GDAL's 1-based band numbers. GTiff
+    /// will not take a partial band list, so this cannot be pinned from a test
+    /// against a real file — hence a unit test on the translation itself.
+    #[test]
+    fn overviews_translate_band_indices_to_gdals_numbering() {
+        let request = build_overviews_request(Some(BuildOverviewsOptions {
+            bands: Some(vec![0, 2]),
+            ..Default::default()
+        }))
+        .unwrap();
+        assert_eq!(request.bands, vec![1, 3]);
+
+        // No bands and no levels means "all bands" and "whatever suits this size",
+        // both of which are settled later, once the dataset is in hand.
+        let defaults = build_overviews_request(None).unwrap();
+        assert!(defaults.bands.is_empty());
+        assert!(defaults.levels.is_none());
+        assert_eq!(defaults.resampling, "nearest");
+    }
+
+    #[test]
+    fn overviews_take_their_options_as_written() {
+        let request = build_overviews_request(Some(BuildOverviewsOptions {
+            levels: Some(vec![2, 4]),
+            // Checked, and handed on in GDAL's own spelling.
+            resampling: Some("CUBIC".to_string()),
+            ..Default::default()
+        }))
+        .unwrap();
+        assert_eq!(request.levels, Some(vec![2, 4]));
+        assert_eq!(request.resampling, "cubic");
+
+        // A decimation factor of 1 would ask for an overview the size of the
+        // raster itself, which is not an overview.
+        let err = build_overviews_request(Some(BuildOverviewsOptions {
+            levels: Some(vec![4, 1]),
+            ..Default::default()
+        }))
+        .unwrap_err();
+        assert!(err.reason.contains("at least 2"), "{}", err.reason);
+
+        let err = build_overviews_request(Some(BuildOverviewsOptions {
+            resampling: Some("cubicc".to_string()),
+            ..Default::default()
+        }))
+        .unwrap_err();
+        assert!(
+            err.reason.contains("unknown overview resampling"),
+            "{}",
+            err.reason
+        );
     }
 }
