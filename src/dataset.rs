@@ -864,6 +864,9 @@ impl JsDataset {
         algorithm: String,
         args: Option<Vec<String>>,
         color_file: Option<String>,
+        on_progress: Option<
+            ThreadsafeFunction<ProgressUpdate, bool, ProgressUpdate, Status, false>,
+        >,
     ) -> Result<AsyncTask<DemTask>> {
         Ok(AsyncTask::new(DemTask {
             // Checked here so a typo is thrown by the call rather than by the worker.
@@ -872,9 +875,7 @@ impl JsDataset {
             color_file,
             sources: ProgramSources::Open(self.dataset.clone()),
             args: args.unwrap_or_default(),
-            // The method form has no `onProgress` yet; the module-level
-            // `gdal.demProcess` is where a caller can pass one.
-            progress: None,
+            progress: on_progress.map(Arc::new),
         }))
     }
 
@@ -965,12 +966,20 @@ impl JsDataset {
     }
 
     #[napi(ts_return_type = "Promise<Dataset>")]
-    pub fn translate(&self, dest: String, args: Option<Vec<String>>) -> AsyncTask<ProgramTask> {
+    pub fn translate(
+        &self,
+        dest: String,
+        args: Option<Vec<String>>,
+        on_progress: Option<
+            ThreadsafeFunction<ProgressUpdate, bool, ProgressUpdate, Status, false>,
+        >,
+    ) -> AsyncTask<ProgramTask> {
         program_task(
             programs::Program::Translate,
             dest,
             self.dataset.clone(),
             args,
+            on_progress.map(Arc::new),
         )
     }
 
@@ -985,8 +994,21 @@ impl JsDataset {
     }
 
     #[napi(ts_return_type = "Promise<Dataset>")]
-    pub fn warp(&self, dest: String, args: Option<Vec<String>>) -> AsyncTask<ProgramTask> {
-        program_task(programs::Program::Warp, dest, self.dataset.clone(), args)
+    pub fn warp(
+        &self,
+        dest: String,
+        args: Option<Vec<String>>,
+        on_progress: Option<
+            ThreadsafeFunction<ProgressUpdate, bool, ProgressUpdate, Status, false>,
+        >,
+    ) -> AsyncTask<ProgramTask> {
+        program_task(
+            programs::Program::Warp,
+            dest,
+            self.dataset.clone(),
+            args,
+            on_progress.map(Arc::new),
+        )
     }
 
     /// Run `GDALVectorTranslate` (ogr2ogr) with this dataset as its only source.
@@ -1012,12 +1034,16 @@ impl JsDataset {
         &self,
         dest: String,
         args: Option<Vec<String>>,
+        on_progress: Option<
+            ThreadsafeFunction<ProgressUpdate, bool, ProgressUpdate, Status, false>,
+        >,
     ) -> AsyncTask<ProgramTask> {
         program_task(
             programs::Program::VectorTranslate,
             dest,
             self.dataset.clone(),
             args,
+            on_progress.map(Arc::new),
         )
     }
 }
@@ -1246,15 +1272,14 @@ fn program_task(
     dest: String,
     dataset: DatasetRef,
     args: Option<Vec<String>>,
+    progress: Option<Arc<ProgressCallback>>,
 ) -> AsyncTask<ProgramTask> {
     AsyncTask::new(ProgramTask {
         program,
         dest,
         sources: ProgramSources::Open(dataset),
         args: args.unwrap_or_default(),
-        // The method form has no `onProgress` yet; the module-level functions are
-        // where a caller can pass one.
-        progress: None,
+        progress,
     })
 }
 

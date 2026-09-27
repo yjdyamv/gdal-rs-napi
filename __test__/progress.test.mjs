@@ -67,6 +67,25 @@ test('warp reports progress as well, through the path-based entry point', async 
   assert.ok(last > 0 && last <= 1, `complete should climb to 1, finished at ${last}`)
 })
 
+test('the method form on an open dataset takes onProgress too', async () => {
+  const source = tmp('progress-method-source.tif')
+  const dest = tmp('progress-method-dest.tif')
+  ramp(source, 1024)
+
+  const dataset = gdal.openSync(source)
+  const seen = []
+  const written = await dataset.warp(dest, ['-t_srs', 'EPSG:3857'], (progress) => {
+    seen.push(progress.complete)
+  })
+  written.close()
+  dataset.close()
+
+  // The other branch of `ProgramTask`: the source is a dataset we already hold,
+  // rather than paths GDAL opens itself.
+  assert.ok(seen.length > 0, 'the method form reported progress')
+  assert.ok(seen.at(-1) > 0, `complete should climb, finished at ${seen.at(-1)}`)
+})
+
 test('returning false cancels, and says so rather than reporting a failure', async () => {
   const source = tmp('cancel-source.tif')
   const dest = tmp('cancel-dest.tif')
