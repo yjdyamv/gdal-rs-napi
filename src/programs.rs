@@ -484,7 +484,11 @@ mod tests {
 
     #[test]
     fn overwrite_is_pulled_out_of_the_arguments() {
-        let args = vec!["-f".to_string(), "-overwrite".to_string(), "GPKG".to_string()];
+        let args = vec![
+            "-f".to_string(),
+            "-overwrite".to_string(),
+            "GPKG".to_string(),
+        ];
         let (kept, overwrite) = split_overwrite(&args);
         assert!(overwrite);
         // GDAL never sees the flag; it only ever saw the destination disappearing.

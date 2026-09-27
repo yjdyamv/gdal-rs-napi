@@ -215,6 +215,7 @@ webMercator.linearUnit  // { name: 'metre', factor: 1 }
 const toMercator = new gdal.CoordinateTransform(wgs84, webMercator)
 toMercator.transformPoint(13.4, 52.5) // Berlin, in metres
 toMercator.transformPoints(new Float64Array([13.4, 52.5, 2.35, 48.85]))
+toMercator.transformGeometry(polygon) // GeoJSON in, GeoJSON out
 toMercator.transformBounds([13.0, 52.0, 13.8, 53.0])
 ```
 
