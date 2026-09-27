@@ -72,6 +72,23 @@ First working cut — everything here is new.
   *indexes* rather than names — GDAL parses them with `atoi`, and `gdal_contour`
   passes an index too — so the names are resolved against the layer here and the
   indexes are what GDAL sees.
+- `Dataset.suggestedWarpOutput()` / `suggestedWarpOutputSync()` answers what
+  `gdalwarp` would make of a dataset — `geoTransform`, `width`, `height` and
+  `extent` — without doing the warp. `dstWkt` names the CRS to warp to; with none it
+  reports the grid the dataset already has. It is how a destination gets sized for
+  `reprojectImage()`, which is `GDALReprojectImage` on two datasets that are already
+  open: `srcWkt`/`dstWkt` supply or override the two CRSes, and `resampling` takes
+  the readers' names except `gauss`, which is a `RasterIO` kernel and not one
+  `GDALReprojectImage` has.
+- `gdal.buildVrt()` / `buildVrtSync()` is `gdalbuildvrt`: one source wraps a raster
+  as a VRT, several merge, and the tool's own arguments are passed through as
+  written. An empty destination builds it in memory, as `translate` does. Worth
+  knowing: `GDALBuildVRT` skips inputs that carry no georeferencing at all, and with
+  nothing left to reference it fails — which is what a raw test raster looks like.
+- `cpl_result` — the error path behind every raw `GDAL*` call in `raster_tools` —
+  now resets GDAL's error state after reading it, the way the `gdal` crate does. That
+  keeps the promise `lastError` documents: a failure that became an exception is gone
+  from there, and what remains is the errors that never did.
 - Programs: `translate` / `translateSync`, `warp` / `warpSync`, `vectorTranslate` /
   `vectorTranslateSync` — `gdal_translate`, `gdalwarp` and `ogr2ogr`, each taking
   that tool's own command-line arguments. `warp` and `vectorTranslate` take a list

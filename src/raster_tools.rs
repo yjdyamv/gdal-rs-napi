@@ -5,16 +5,18 @@
 //! surface, and the raw glue sits in one place. Nothing here takes the global GDAL
 //! lock; the callers do.
 
-use std::ffi::c_int;
+use std::ffi::{CString, c_int};
 
+use gdal::Dataset as GdalDataset;
 use gdal::cpl::CslStringList;
 use gdal::errors::GdalError;
 use gdal::raster::RasterBand;
 use gdal::vector::{FieldDefn, LayerAccess, OGRFieldType};
+use napi::bindgen_prelude::Error;
 use napi_derive::napi;
 use serde_json::Value;
 
-use crate::error::{IntoGdalResult, Result, bad_argument, gdal_error};
+use crate::error::{GdalErrorCode, IntoGdalResult, Result, bad_argument, gdal_error};
 use crate::json::option_pairs;
 use crate::raster_io::ReadOptions;
 use crate::runtime::c_string;
@@ -24,16 +26,39 @@ use crate::runtime::c_string;
 /// The `gdal` crate reads GDAL's last error and then resets it inside helpers that
 /// are not reachable from here, so this reads the class, number and message by hand
 /// and builds the same `GdalError` — which is what gives the sync surface its
-/// `err.code`.
+/// `err.code`. The reset is deliberate and matches the crate: it keeps the
+/// documented promise that a failure which *became* an exception is gone from
+/// `lastError()`, which is left for the errors that never did.
 pub fn cpl_result(class: gdal_sys::CPLErr::Type) -> Result<()> {
     if class == gdal_sys::CPLErr::CE_None {
         return Ok(());
     }
-    Err(gdal_error(GdalError::CplError {
+    let error = gdal_error(GdalError::CplError {
         class,
         number: unsafe { gdal_sys::CPLGetLastErrorNo() },
         msg: c_string(unsafe { gdal_sys::CPLGetLastErrorMsg() }),
-    }))
+    });
+    unsafe { gdal_sys::CPLErrorReset() };
+    Err(error)
+}
+
+/// The error GDAL leaves behind when it answers a failure with a null pointer
+/// instead of a `CPLErr`.
+fn null_pointer(method_name: &'static str) -> Error<GdalErrorCode> {
+    let error = gdal_error(GdalError::NullPointer {
+        method_name,
+        msg: c_string(unsafe { gdal_sys::CPLGetLastErrorMsg() }),
+    });
+    unsafe { gdal_sys::CPLErrorReset() };
+    error
+}
+
+/// A WKT string as something GDAL can be handed, or `None` for "leave it alone".
+fn optional_c_string(text: Option<&str>, what: &str) -> Result<Option<CString>> {
+    text.map(|text| {
+        CString::new(text).map_err(|_| bad_argument(format!("a {what} cannot contain a NUL byte")))
+    })
+    .transpose()
 }
 
 /// The options a checksum takes: the window, and nothing else.
@@ -539,6 +564,233 @@ pub fn contour_generate(
     cpl_result(class)
 }
 
+#[napi(object)]
+#[derive(Debug, Clone, Default)]
+pub struct ReprojectImageOptions {
+    /// CRS to warp *from*, as WKT, when the source dataset does not carry one (or
+    /// carries the wrong one). Default: whatever the source says.
+    pub src_wkt: Option<String>,
+    /// CRS to warp *to*, as WKT. Default: whatever the destination says.
+    pub dst_wkt: Option<String>,
+    /// One of `nearest` (the default, as in `gdalwarp`), `bilinear`, `cubic`,
+    /// `cubicspline`, `lanczos`, `average`, `mode`. There is no `gauss` here: that
+    /// is a `RasterIO` kernel, and `GDALReprojectImage` does not take it.
+    pub resampling: Option<String>,
+    /// Largest error tolerated, in pixels, in approximating the transformation.
+    /// Default 0, which means exact.
+    pub max_error: Option<f64>,
+    /// Memory the warp may use, in bytes. Default 0, which lets GDAL use its cache
+    /// size.
+    pub memory_limit: Option<f64>,
+}
+
+/// `ReprojectImageOptions` resolved and checked.
+#[derive(Debug, Clone)]
+pub struct ReprojectImageRequest {
+    src_wkt: Option<String>,
+    dst_wkt: Option<String>,
+    resampling: gdal_sys::GDALResampleAlg::Type,
+    max_error: f64,
+    memory_limit: f64,
+}
+
+pub fn reproject_image_request(
+    options: Option<ReprojectImageOptions>,
+) -> Result<ReprojectImageRequest> {
+    let options = options.unwrap_or_default();
+    let resampling = match options.resampling.as_deref() {
+        None => gdal_sys::GDALResampleAlg::GRA_NearestNeighbour,
+        Some(name) => reproject_alg(name)?,
+    };
+    Ok(ReprojectImageRequest {
+        src_wkt: options.src_wkt,
+        dst_wkt: options.dst_wkt,
+        resampling,
+        max_error: warp_error(options.max_error.unwrap_or(0.0))?,
+        memory_limit: overlap_budget(options.memory_limit.unwrap_or(0.0))?,
+    })
+}
+
+/// The resampling names `GDALReprojectImage` takes — nearly the readers'
+/// vocabulary, except that `gauss` is a `RasterIO` kernel and so is not one of
+/// these.
+fn reproject_alg(name: &str) -> Result<gdal_sys::GDALResampleAlg::Type> {
+    Ok(match name.to_ascii_lowercase().as_str() {
+        "nearest" => gdal_sys::GDALResampleAlg::GRA_NearestNeighbour,
+        "bilinear" => gdal_sys::GDALResampleAlg::GRA_Bilinear,
+        "cubic" => gdal_sys::GDALResampleAlg::GRA_Cubic,
+        "cubicspline" => gdal_sys::GDALResampleAlg::GRA_CubicSpline,
+        "lanczos" => gdal_sys::GDALResampleAlg::GRA_Lanczos,
+        "average" => gdal_sys::GDALResampleAlg::GRA_Average,
+        "mode" => gdal_sys::GDALResampleAlg::GRA_Mode,
+        _ => {
+            return Err(bad_argument(format!(
+                "unknown resampling {name:?}: one of nearest, bilinear, cubic, cubicspline, lanczos, average, mode"
+            )));
+        }
+    })
+}
+
+/// A warp's error tolerance, which is a number of pixels and cannot be negative.
+fn warp_error(max_error: f64) -> Result<f64> {
+    if !(max_error.is_finite() && max_error >= 0.0) {
+        return Err(bad_argument(format!(
+            "a warp error is a number of pixels and cannot be negative, but it is {max_error}"
+        )));
+    }
+    Ok(max_error)
+}
+
+/// A warp's memory budget in bytes, where 0 means "whatever GDAL's cache allows".
+fn overlap_budget(memory_limit: f64) -> Result<f64> {
+    if !(memory_limit.is_finite() && memory_limit >= 0.0) {
+        return Err(bad_argument(format!(
+            "a warp memory limit is a number of bytes and cannot be negative, but it is {memory_limit}"
+        )));
+    }
+    Ok(memory_limit)
+}
+
+/// Warp one dataset into another, both already open — `GDALReprojectImage`.
+///
+/// The destination has to exist: this reads the source and writes the destination,
+/// and `suggested_warp_output` is what says how large the destination should be.
+pub fn reproject_image(
+    source: &GdalDataset,
+    dest: &GdalDataset,
+    request: &ReprojectImageRequest,
+) -> Result<()> {
+    let src_wkt = optional_c_string(request.src_wkt.as_deref(), "source CRS")?;
+    let dst_wkt = optional_c_string(request.dst_wkt.as_deref(), "destination CRS")?;
+
+    let class = unsafe {
+        gdal_sys::GDALReprojectImage(
+            source.c_dataset(),
+            src_wkt
+                .as_ref()
+                .map_or(std::ptr::null(), |wkt| wkt.as_ptr()),
+            dest.c_dataset(),
+            dst_wkt
+                .as_ref()
+                .map_or(std::ptr::null(), |wkt| wkt.as_ptr()),
+            request.resampling,
+            request.memory_limit,
+            request.max_error,
+            None,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+        )
+    };
+    cpl_result(class)
+}
+
+#[napi(object)]
+#[derive(Debug, Clone, Default)]
+pub struct SuggestedWarpOptions {
+    /// CRS to warp *from*, as WKT, when the dataset does not carry one. Default:
+    /// the dataset's own.
+    pub src_wkt: Option<String>,
+    /// CRS to warp *to*, as WKT. Default: the dataset's own, which reports the grid
+    /// it already has rather than a reprojected one.
+    pub dst_wkt: Option<String>,
+    /// Largest error tolerated, in pixels, in approximating the transformation.
+    /// Default 0, which means exact.
+    pub max_error: Option<f64>,
+}
+
+#[napi(object)]
+#[derive(Debug, Clone)]
+pub struct SuggestedWarpOutput {
+    /// The geotransform the warped raster would have.
+    pub geo_transform: Vec<f64>,
+    /// Its size, in pixels.
+    pub width: u32,
+    pub height: u32,
+    /// Its extent as `[minX, minY, maxX, maxY]`.
+    pub extent: Vec<f64>,
+}
+
+/// `SuggestedWarpOptions` resolved and checked.
+#[derive(Debug, Clone, Default)]
+pub struct SuggestedWarpRequest {
+    src_wkt: Option<String>,
+    dst_wkt: Option<String>,
+    max_error: f64,
+}
+
+pub fn suggested_warp_request(
+    options: Option<SuggestedWarpOptions>,
+) -> Result<SuggestedWarpRequest> {
+    let options = options.unwrap_or_default();
+    Ok(SuggestedWarpRequest {
+        src_wkt: options.src_wkt,
+        dst_wkt: options.dst_wkt,
+        max_error: warp_error(options.max_error.unwrap_or(0.0))?,
+    })
+}
+
+/// What `gdalwarp` would make of this dataset: the geotransform, size and extent of
+/// the warped output, worked out without doing the warp.
+pub fn suggested_warp_output(
+    source: &GdalDataset,
+    request: &SuggestedWarpRequest,
+) -> Result<SuggestedWarpOutput> {
+    let mut options = CslStringList::new();
+    if let Some(dst_wkt) = &request.dst_wkt {
+        options.add_name_value("DST_SRS", dst_wkt).gdal()?;
+    }
+    if let Some(src_wkt) = &request.src_wkt {
+        options.add_name_value("SRC_SRS", src_wkt).gdal()?;
+    }
+    if request.max_error > 0.0 {
+        options
+            .add_name_value("MAX_ERROR", &request.max_error.to_string())
+            .gdal()?;
+    }
+
+    // The transformer carries the two CRSes: there is no destination dataset, so
+    // both come from the options above.
+    let transform = unsafe {
+        gdal_sys::GDALCreateGenImgProjTransformer2(
+            source.c_dataset(),
+            std::ptr::null_mut(),
+            options.as_ptr(),
+        )
+    };
+    if transform.is_null() {
+        return Err(null_pointer("GDALCreateGenImgProjTransformer2"));
+    }
+
+    let mut geo_transform = [0.0f64; 6];
+    let mut width: c_int = 0;
+    let mut height: c_int = 0;
+    let mut extent = [0.0f64; 4];
+    let class = unsafe {
+        gdal_sys::GDALSuggestedWarpOutput2(
+            source.c_dataset(),
+            // The transformer GDAL just built is itself the function to call.
+            Some(gdal_sys::GDALGenImgProjTransform),
+            transform,
+            geo_transform.as_mut_ptr(),
+            &mut width,
+            &mut height,
+            extent.as_mut_ptr(),
+            // Four entries in the extent array, which is what GDAL asks to be told.
+            4,
+        )
+    };
+    // The transformer is ours to free, whether or not the call worked.
+    unsafe { gdal_sys::GDALDestroyGenImgProjTransformer(transform) };
+    cpl_result(class)?;
+
+    Ok(SuggestedWarpOutput {
+        geo_transform: geo_transform.to_vec(),
+        width: width as u32,
+        height: height as u32,
+        extent: extent.to_vec(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -600,6 +852,41 @@ mod tests {
                 threshold: 0,
                 connectedness: None
             })
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn reprojection_takes_the_readers_resampling_names() {
+        let defaults = reproject_image_request(None).unwrap();
+        assert_eq!(
+            defaults.resampling,
+            gdal_sys::GDALResampleAlg::GRA_NearestNeighbour
+        );
+        assert_eq!(defaults.max_error, 0.0);
+        assert_eq!(defaults.memory_limit, 0.0);
+
+        let named = reproject_image_request(Some(ReprojectImageOptions {
+            resampling: Some("AVERAGE".to_string()),
+            max_error: Some(0.5),
+            ..Default::default()
+        }))
+        .unwrap();
+        assert_eq!(named.resampling, gdal_sys::GDALResampleAlg::GRA_Average);
+        assert_eq!(named.max_error, 0.5);
+
+        assert!(
+            reproject_image_request(Some(ReprojectImageOptions {
+                resampling: Some("not-a-kernel".to_string()),
+                ..Default::default()
+            }))
+            .is_err()
+        );
+        assert!(
+            reproject_image_request(Some(ReprojectImageOptions {
+                max_error: Some(-1.0),
+                ..Default::default()
+            }))
             .is_err()
         );
     }

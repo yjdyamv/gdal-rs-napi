@@ -281,6 +281,32 @@ if you want one; both are created when the layer does not have them. The band wa
 geotransform, and the **layer** carries the CRS, so the lines come out in the layer's
 coordinate system.
 
+And when the warp itself is the point, rather than a tool to shell into — ask what it
+would produce, then produce it:
+
+```js
+const { geoTransform, width, height } = raster.suggestedWarpOutputSync({
+  dstWkt: gdal.epsgToWkt(3857),
+})
+
+const dest = gdal.createSync('warped.tif', {
+  driver: 'GTiff', width, height, bandCount: raster.bandCount, dataType: 'Float32',
+})
+dest.setGeoTransform(geoTransform)
+dest.setProjection(gdal.epsgToWkt(3857))
+
+await raster.reprojectImage(dest, { dstWkt: gdal.epsgToWkt(3857) })
+```
+
+`suggestedWarpOutput` is the arithmetic `gdalwarp` does before any pixel moves — size,
+geotransform and `extent` — so it is also the answer to "how big would my output be".
+`reprojectImage` is `GDALReprojectImage`, which warps one open dataset into another
+that has to exist already; that is the pair. `srcWkt` / `dstWkt` on either call supply
+or override the two CRSes, so a dataset with no projection is still usable, and
+`resampling` takes `nearest` (the default, as in `gdalwarp`), `bilinear`, `cubic`,
+`cubicspline`, `lanczos`, `average`, `mode` — there is no `gauss`, which is a
+`RasterIO` kernel and not one reprojection has.
+
 Two things that save confusion: `width` / `height` come straight from GDAL and
 are only meaningful when there are bands, so check `bandCount` before trusting
 them on a vector dataset; and `IMAGE_STRUCTURE` lives on the **dataset**, not on
@@ -577,6 +603,18 @@ Worth knowing:
   dataset or `gdal.demProcess` by path: `hillshade`, `slope`, `aspect`,
   `color-relief`, `tri`, `tpi` and `roughness`. They want a geotransform, and the
   ones that measure slope want a CRS in metres.
+- **`gdalbuildvrt` is as well**, as `buildVrt` / `buildVrtSync`:
+
+  ```js
+  gdal.buildVrtSync('merged.vrt', ['a.tif', 'b.tif'], ['-separate'])
+  const inMemory = await gdal.buildVrt('', ['a.tif'])   // an empty destination
+  ```
+
+  One source is the "wrap this raster as a VRT without copying it" case, several are
+  merged, and `args` are `gdalbuildvrt`'s own — `-separate`, `-resolution`, `-te`.
+  What comes back is a `Dataset` like any other. One thing to know: **`GDALBuildVRT`
+  refuses inputs with no georeferencing at all**, and with every input skipped the
+  call fails.
 
 ### Progress and cancelling
 

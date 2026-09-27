@@ -614,6 +614,98 @@ test('contourGenerate takes an interval and an id field', async () => {
   raster.close()
 })
 
+test('buildVrt wraps rasters without copying them', async () => {
+  const first = tmp('vrt-a.tif')
+  const second = tmp('vrt-b.tif')
+  for (const [path, value] of [
+    [first, 1],
+    [second, 2],
+  ]) {
+    const dataset = gdal.createSync(path, { driver: 'GTiff', width: 2, height: 2, bandCount: 1 })
+    // `GDALBuildVRT` refuses ungeoreferenced inputs, so both get one footprint.
+    dataset.setGeoTransform([0, 1, 0, 0, 0, -1])
+    dataset.setProjection(gdal.epsgToWkt(4326))
+    dataset.band(0).fill(value)
+    dataset.close()
+  }
+
+  // `-separate` gives each source its own band, which is the predictable shape.
+  const path = tmp('merged.vrt')
+  const built = gdal.buildVrtSync(path, [first, second], ['-separate'])
+  assert.equal(built.driver, 'VRT')
+  assert.equal(built.bandCount, 2)
+  assert.equal(built.band(0).readPixelsSync()[0], 1)
+  assert.equal(built.band(1).readPixelsSync()[0], 2)
+  built.close()
+
+  // A VRT describes the sources rather than holding a copy of them.
+  const reopened = gdal.openSync(path)
+  assert.equal(reopened.driver, 'VRT')
+  assert.equal(reopened.bandCount, 2)
+  reopened.close()
+
+  // An empty destination is an in-memory VRT, and the async form agrees.
+  const memory = await gdal.buildVrt('', [first])
+  assert.equal(memory.driver, 'VRT')
+  memory.close()
+
+  assert.throws(() => gdal.buildVrtSync(path, []), /at least one source/)
+})
+
+test('suggestedWarpOutput says what a warp would produce, and reprojectImage does it', async () => {
+  // A small raster in degrees, so warping it to metres is a real change of CRS.
+  const source = gdal.createSync(tmp('warp-src.tif'), {
+    driver: 'GTiff',
+    width: 4,
+    height: 4,
+    bandCount: 1,
+    dataType: 'Float32',
+  })
+  source.setGeoTransform([10, 0.1, 0, 50, 0, -0.1])
+  source.setProjection(gdal.epsgToWkt(4326))
+  source.band(0).fill(7)
+
+  const webMercator = gdal.epsgToWkt(3857)
+  const suggested = source.suggestedWarpOutputSync({ dstWkt: webMercator })
+
+  assert.equal(suggested.geoTransform.length, 6)
+  assert.ok(suggested.width > 0 && suggested.height > 0)
+  // The extent is in metres now, and 10°E is about 1.11 million of them.
+  assert.ok(
+    Math.abs(suggested.extent[0] - 10 * 111319.49) < 1000,
+    `the extent should be in Web Mercator metres, got ${suggested.extent}`,
+  )
+  // The pool answers the same as the call does.
+  assert.deepEqual(await source.suggestedWarpOutput({ dstWkt: webMercator }), suggested)
+
+  // Now warp into a destination that is the size the suggestion asked for.
+  const dest = gdal.createSync(tmp('warp-dst.tif'), {
+    driver: 'GTiff',
+    width: suggested.width,
+    height: suggested.height,
+    bandCount: 1,
+    dataType: 'Float32',
+  })
+  dest.setGeoTransform(suggested.geoTransform)
+  dest.setProjection(webMercator)
+
+  source.reprojectImageSync(dest, { dstWkt: webMercator })
+
+  const samples = Array.from(asTypedArray(dest.band(0).readPixelsSync(), Float32Array))
+  assert.equal(samples.length, suggested.width * suggested.height)
+  // The source is one value everywhere, so most of the destination is that value.
+  // The corners of the suggested box fall outside the warped quad, and those stay
+  // at the driver's default.
+  const filled = samples.filter((value) => Math.abs(value - 7) < 1e-3).length
+  assert.ok(filled > samples.length / 2, `only ${filled} of ${samples.length} samples came through`)
+
+  // `gauss` is a RasterIO kernel, and reprojection does not take it.
+  assert.throws(() => source.reprojectImageSync(dest, { resampling: 'gauss' }), /unknown resampling/)
+
+  dest.close()
+  source.close()
+})
+
 test('the async twins of the band tools do the same thing', async () => {
   const dataset = await gdal.create(tmp('async-tools.tif'), {
     driver: 'GTiff',

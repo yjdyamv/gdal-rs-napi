@@ -209,6 +209,29 @@ await band.contourGenerate(layer, { interval: 50, base: 0, idField: 'id' })
 想要每条线一个 id 就给 `idField` 起个名 —— 两个字段图层没有就会被建出来。波段需要有 geotransform，
 而**图层**才携带 CRS，所以线出来是在图层自己的坐标系里。
 
+而当重投影本身就是目的，而不是去调一个外部命令时 —— 先问它会产出什么，再产出：
+
+```js
+const { geoTransform, width, height } = raster.suggestedWarpOutputSync({
+  dstWkt: gdal.epsgToWkt(3857),
+})
+
+const dest = gdal.createSync('warped.tif', {
+  driver: 'GTiff', width, height, bandCount: raster.bandCount, dataType: 'Float32',
+})
+dest.setGeoTransform(geoTransform)
+dest.setProjection(gdal.epsgToWkt(3857))
+
+await raster.reprojectImage(dest, { dstWkt: gdal.epsgToWkt(3857) })
+```
+
+`suggestedWarpOutput` 就是 `gdalwarp` 在动任何像素之前算的那笔账 —— 尺寸、geotransform
+和 `extent`，所以它也是「输出会有多大」的答案。`reprojectImage` 是 `GDALReprojectImage`：
+把一个已打开的数据集重投影进另一个**必须已经存在**的数据集 —— 这两个是一对。两者的
+`srcWkt` / `dstWkt` 都能给出或覆盖两个 CRS，所以没有投影信息的数据集也能用；`resampling`
+收 `nearest`（默认，与 `gdalwarp` 一致）、`bilinear`、`cubic`、`cubicspline`、`lanczos`、
+`average`、`mode` —— 没有 `gauss`，那是 `RasterIO` 的核，重投影不收。
+
 两个容易踩的点：`width`/`height` 是 GDAL 原样返回的，**只对栅格数据集有意义**
 （矢量 GPKG 也会返回一个数字），用之前先看 `bandCount`；`IMAGE_STRUCTURE`
 元数据挂在 **dataset** 上而不是 band 上。
@@ -444,6 +467,17 @@ dataset.warpSync('out-3857.tif', ['-t_srs', 'EPSG:3857', '-r', 'cubic'])
 - **`gdaldem` 也提供了**：数据集上的 `demProcess` / `demProcessSync`，或按路径的
   `gdal.demProcess`，支持 `hillshade`、`slope`、`aspect`、`color-relief`、`tri`、`tpi`、
   `roughness`。它们需要 geotransform，而计算坡度的那些需要以米为单位的 CRS。
+- **`gdalbuildvrt` 也提供了**，即 `buildVrt` / `buildVrtSync`：
+
+  ```js
+  gdal.buildVrtSync('merged.vrt', ['a.tif', 'b.tif'], ['-separate'])
+  const inMemory = await gdal.buildVrt('', ['a.tif'])   // 目标为空则建在内存里
+  ```
+
+  一个源就是「把这个栅格包成 VRT、不复制像素」的用法，多个源则合并；`args` 是
+  `gdalbuildvrt` 自己的参数（`-separate`、`-resolution`、`-te`）。返回的就是普通
+  `Dataset`。有一点要知道：**`GDALBuildVRT` 会拒绝完全没有地理参考的输入**，全都
+  被跳过时这次调用就失败。
 
 ### 进度回调与取消
 

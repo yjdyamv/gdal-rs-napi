@@ -8,11 +8,13 @@
 //! call.
 
 use std::collections::HashMap;
+use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard};
 
 #[cfg(gd_thread_safe)]
 use gdal::ThreadSafeDataset;
 use gdal::cpl::CslStringList;
+use gdal::programs::raster::{BuildVRTOptions, build_vrt as gdal_build_vrt};
 use gdal::spatial_ref::SpatialRef;
 use gdal::vector::{FieldDefn, LayerAccess, LayerOptions, OGRFieldType, OGRwkbGeometryType};
 use gdal::{Dataset as GdalDataset, DatasetOptions, DriverManager, GdalOpenFlags, Metadata};
@@ -29,7 +31,11 @@ use crate::progress::{JsProgressSink, ProgressCallback, ProgressUpdate};
 use crate::raster_io::{
     build_creation_options, create_dataset, overview_levels, overview_resampling,
 };
-use crate::raster_tools::{RasterizeOptions, RasterizeRequest, rasterize, rasterize_request};
+use crate::raster_tools::{
+    RasterizeOptions, RasterizeRequest, ReprojectImageOptions, ReprojectImageRequest,
+    SuggestedWarpOptions, SuggestedWarpOutput, SuggestedWarpRequest, rasterize, rasterize_request,
+    reproject_image, reproject_image_request, suggested_warp_output, suggested_warp_request,
+};
 use crate::runtime::{ensure_initialized, lock_gdal, lock_gdal_shared};
 use crate::spatial_ref::JsSpatialRef;
 use crate::vector::{FieldDefinition, JsLayer};
@@ -494,6 +500,12 @@ impl JsDataset {
     fn wrap(dataset: GdalDataset, path: String) -> Self {
         Self::wrap_ref(DatasetRef::serialised(dataset), path)
     }
+
+    /// The handle behind this dataset, for the operations that need two datasets at
+    /// once — see [`with_two`]. The same shape as `JsLayer::dataset`.
+    pub(crate) fn dataset(&self) -> &DatasetRef {
+        &self.dataset
+    }
 }
 
 #[napi]
@@ -850,6 +862,66 @@ impl JsDataset {
             dataset: self.dataset.clone(),
             geometries,
             request,
+        }))
+    }
+
+    /// What `gdalwarp` would make of this dataset: the geotransform, size and extent
+    /// of the warped output, worked out without doing the warp itself.
+    ///
+    /// `dstWkt` is the CRS to warp to. With no `dstWkt` this reports the grid the
+    /// dataset already has, so the interesting call names one — and the answer is
+    /// what `reprojectImage` needs for the destination it is given.
+    #[napi]
+    pub fn suggested_warp_output_sync(
+        &self,
+        options: Option<SuggestedWarpOptions>,
+    ) -> Result<SuggestedWarpOutput> {
+        let request = suggested_warp_request(options)?;
+        self.dataset
+            .with_exclusive(|dataset| suggested_warp_output(dataset, &request))
+    }
+
+    #[napi(ts_return_type = "Promise<SuggestedWarpOutput>")]
+    pub fn suggested_warp_output(
+        &self,
+        options: Option<SuggestedWarpOptions>,
+    ) -> Result<AsyncTask<SuggestedWarpOutputTask>> {
+        Ok(AsyncTask::new(SuggestedWarpOutputTask {
+            dataset: self.dataset.clone(),
+            request: suggested_warp_request(options)?,
+        }))
+    }
+
+    /// Warp this dataset into another one, both open — GDAL's `GDALReprojectImage`.
+    ///
+    /// The destination has to exist already, with the size and geotransform you want
+    /// — `suggestedWarpOutput` is what says what those should be for a given
+    /// `dstWkt`. `srcWkt` and `dstWkt` supply (or override) the two CRSes, so a
+    /// dataset with no projection is still usable.
+    #[napi]
+    pub fn reproject_image_sync(
+        &self,
+        dest: &JsDataset,
+        options: Option<ReprojectImageOptions>,
+    ) -> Result<()> {
+        let request = reproject_image_request(options)?;
+        with_two(&self.dataset, dest.dataset(), |source, target| {
+            reproject_image(source, target, &request)
+        })
+    }
+
+    /// The same, on the thread pool: a warp reads the source and writes the
+    /// destination.
+    #[napi(ts_return_type = "Promise<void>")]
+    pub fn reproject_image(
+        &self,
+        dest: &JsDataset,
+        options: Option<ReprojectImageOptions>,
+    ) -> Result<AsyncTask<ReprojectImageTask>> {
+        Ok(AsyncTask::new(ReprojectImageTask {
+            dataset: self.dataset.clone(),
+            dest: dest.dataset().clone(),
+            request: reproject_image_request(options)?,
         }))
     }
 
@@ -1349,6 +1421,68 @@ pub fn vector_translate_sync(
     Ok(JsDataset::wrap(dataset, dest))
 }
 
+/// `gdalbuildvrt <args> sources... dest`, as one call.
+///
+/// One source is the "wrap this raster as a VRT without copying it" case; several
+/// are merged into a single VRT. An empty `dest` builds it in memory, as
+/// `translate` does.
+#[napi(ts_return_type = "Promise<Dataset>")]
+pub fn build_vrt(
+    dest: String,
+    sources: Vec<String>,
+    args: Option<Vec<String>>,
+) -> AsyncTask<BuildVrtTask> {
+    AsyncTask::new(BuildVrtTask {
+        dest,
+        sources,
+        args: args.unwrap_or_default(),
+    })
+}
+
+#[napi]
+pub fn build_vrt_sync(
+    dest: String,
+    sources: Vec<String>,
+    args: Option<Vec<String>>,
+) -> Result<JsDataset> {
+    let dataset = build_vrt_with_paths(&dest, &sources, &args.unwrap_or_default())?;
+    Ok(JsDataset::wrap(dataset, dest))
+}
+
+/// Open the sources and build the VRT, holding the lock throughout — the shape
+/// `dem_with_paths` has, and for the same reason: `GDALBuildVRT` takes datasets
+/// rather than paths.
+fn build_vrt_with_paths(dest: &str, sources: &[String], args: &[String]) -> Result<GdalDataset> {
+    ensure_initialized();
+    let _guard = lock_gdal();
+
+    if sources.is_empty() {
+        return Err(bad_argument("a VRT needs at least one source"));
+    }
+    let opened = sources
+        .iter()
+        .map(|path| {
+            GdalDataset::open_ex(
+                path,
+                DatasetOptions {
+                    open_flags: GdalOpenFlags::GDAL_OF_RASTER,
+                    ..DatasetOptions::default()
+                },
+            )
+            .gdal()
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    let options = if args.is_empty() {
+        None
+    } else {
+        Some(BuildVRTOptions::new(args.to_vec()).gdal()?)
+    };
+    // An empty destination means an in-memory VRT.
+    let path = (!dest.is_empty()).then(|| Path::new(dest));
+    gdal_build_vrt(path, &opened, options).gdal()
+}
+
 fn program_task(
     program: programs::Program,
     dest: String,
@@ -1697,6 +1831,83 @@ impl Task for RasterizeTask {
 
     fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
         output.map_err(|(code, reason)| into_status_error(code, reason))
+    }
+}
+
+/// Computing a suggested warp output walks the source's edges through a
+/// transformation, which on a large raster is not free — so it goes on the pool.
+pub struct SuggestedWarpOutputTask {
+    dataset: DatasetRef,
+    request: SuggestedWarpRequest,
+}
+
+impl Task for SuggestedWarpOutputTask {
+    type Output = OpResult<SuggestedWarpOutput>;
+    type JsValue = SuggestedWarpOutput;
+
+    fn compute(&mut self) -> napi::Result<Self::Output> {
+        let SuggestedWarpOutputTask { dataset, request } = self;
+        Ok(op(dataset.with_exclusive(|dataset| {
+            suggested_warp_output(dataset, request)
+        })))
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
+        output.map_err(|(code, reason)| into_status_error(code, reason))
+    }
+}
+
+/// A warp reads the source and writes the destination, so it belongs on the pool.
+pub struct ReprojectImageTask {
+    dataset: DatasetRef,
+    dest: DatasetRef,
+    request: ReprojectImageRequest,
+}
+
+impl Task for ReprojectImageTask {
+    type Output = OpResult<()>;
+    type JsValue = ();
+
+    fn compute(&mut self) -> napi::Result<Self::Output> {
+        let ReprojectImageTask {
+            dataset,
+            dest,
+            request,
+        } = self;
+        Ok(op(with_two(dataset, dest, |source, target| {
+            reproject_image(source, target, request)
+        })))
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
+        output.map_err(|(code, reason)| into_status_error(code, reason))
+    }
+}
+
+/// Building a VRT opens every source and reads their headers, so it is on the pool
+/// for the same reason a program is.
+pub struct BuildVrtTask {
+    dest: String,
+    sources: Vec<String>,
+    args: Vec<String>,
+}
+
+impl Task for BuildVrtTask {
+    type Output = OpResult<GdalDataset>;
+    type JsValue = JsDataset;
+
+    fn compute(&mut self) -> napi::Result<Self::Output> {
+        Ok(op(build_vrt_with_paths(
+            &self.dest,
+            &self.sources,
+            &self.args,
+        )))
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
+        output
+            .map(|dataset| JsDataset::wrap(dataset, self.dest.clone()))
+            .map_err(|(code, reason)| into_status_error(code, reason))
     }
 }
 
