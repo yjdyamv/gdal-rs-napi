@@ -44,3 +44,14 @@ ENV RUSTUP_HOME=/usr/local/rustup \
     PATH=/usr/local/cargo/bin:$PATH
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
       | sh -s -- -y --profile minimal --default-toolchain stable --no-modify-path
+
+# napi pins a linker name for one target in its own table —
+# `aarch64-unknown-linux-musl` gets `aarch64-linux-musl-gcc`, which is the name a
+# *cross* gcc would have. Nothing here is cross, so hand that name to the
+# container's own compiler rather than making the CI pass a variable to undo it.
+# `apk --print-arch` gives the same prefix napi's table uses (`x86_64`,
+# `aarch64`), so this stays honest whichever musl leg is being built.
+RUN set -eux; \
+    arch="$(apk --print-arch)"; \
+    ln -sf "$(command -v gcc)" "/usr/local/bin/${arch}-linux-musl-gcc"; \
+    ln -sf "$(command -v g++)" "/usr/local/bin/${arch}-linux-musl-g++"
