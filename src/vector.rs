@@ -556,6 +556,12 @@ fn delete_feature(layer: &gdal::vector::Layer<'_>, fid: u64) -> Result<()> {
     }))
 }
 
+/// A column name GDAL reports, where its empty string means "there is none".
+fn named_column(value: *const std::ffi::c_char) -> Option<String> {
+    let name = crate::runtime::c_string(value);
+    (!name.is_empty()).then_some(name)
+}
+
 #[napi]
 impl JsLayer {
     /// Position of this layer in the dataset, 0-based.
@@ -570,6 +576,51 @@ impl JsLayer {
         self.dataset.with_exclusive(|dataset| {
             let layer = dataset.layer(self.index).gdal()?;
             Ok(layer.name())
+        })
+    }
+
+    /// The field the layer stores its feature ids in, or `null` when it has none and
+    /// GDAL generates them — the catalogue calls this the `FIDColumn`.
+    #[napi(getter)]
+    pub fn fid_column(&self) -> Result<Option<String>> {
+        ensure_initialized();
+        self.dataset.with_exclusive(|dataset| {
+            let layer = dataset.layer(self.index).gdal()?;
+            Ok(named_column(unsafe {
+                gdal_sys::OGR_L_GetFIDColumn(layer.c_layer())
+            }))
+        })
+    }
+
+    /// The field the layer keeps its geometry in, or `null` for a layer with none —
+    /// GDAL's `GeometryColumn`, empty exactly when there is no geometry.
+    #[napi(getter)]
+    pub fn geom_column(&self) -> Result<Option<String>> {
+        ensure_initialized();
+        self.dataset.with_exclusive(|dataset| {
+            let layer = dataset.layer(self.index).gdal()?;
+            Ok(named_column(unsafe {
+                gdal_sys::OGR_L_GetGeometryColumn(layer.c_layer())
+            }))
+        })
+    }
+
+    /// Whether the layer can do `capability`, using GDAL's own capability names —
+    /// `FastFeatureCount`, `FastGetExtent`, `RandomRead`, `SequentialWrite`,
+    /// `DeleteFeature`, `Transactions`, `CreateField`, `CreateGeomField`, ...
+    ///
+    /// A name GDAL does not know answers `false` rather than throwing: the call is a
+    /// question, and "no" is one of its answers.
+    #[napi]
+    pub fn test_capability(&self, capability: String) -> Result<bool> {
+        ensure_initialized();
+        self.dataset.with_exclusive(|dataset| {
+            let layer = dataset.layer(self.index).gdal()?;
+            let capability = std::ffi::CString::new(capability)
+                .map_err(|_| bad_argument("a capability name cannot contain a NUL byte"))?;
+            let answer =
+                unsafe { gdal_sys::OGR_L_TestCapability(layer.c_layer(), capability.as_ptr()) };
+            Ok(answer != 0)
         })
     }
 

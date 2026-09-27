@@ -113,6 +113,13 @@ First working cut — everything here is new.
   getter asks GDAL every time, so a level built after the band object was created shows
   up. Levels are read with raw `GDALRasterIO`: the `gdal` crate's readers start from a
   dataset and a band number, and an overview hangs off a band with no number of its own.
+- `layer.fidColumn`, `layer.geomColumn` and `layer.testCapability(name)` — what GDAL
+  says about where a layer keeps its feature ids and its geometry, and what the driver
+  can actually do. The capability names are GDAL's own (`FastFeatureCount`,
+  `RandomRead`, `SequentialWrite`, `DeleteFeature`, `Transactions`, `CreateField`, ...),
+  and a name it does not know answers `false` rather than throwing: the call is a
+  question, and "no" is one of its answers. A layer with no FID column, or none with
+  geometry, reports an empty string; those become `null` here, as elsewhere.
 - `band.readChunksSync(options, onChunk)` walks a band in horizontal strips, handing
   each one to a callback and reading the next only once that call has come back. The
   answer is the backpressure: `false` ends the walk, which is the contract `onProgress`
