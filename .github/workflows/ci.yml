@@ -135,9 +135,39 @@ jobs:
       - name: Pack
         run: npm run pack
 
+      # `pack-platform.mjs` takes the platform label from the built `.node`
+      # filename, so a leg that quietly builds for its host instead of its target
+      # produces a tarball that collides with another leg's. On the native runners
+      # host and target are the same, which is exactly why only the two musl legs
+      # can hide that. Assert the label here: it turns a silently missing release
+      # asset into a failed step.
+      - name: Check the built platform
+        shell: bash
+        run: |
+          case "${{ matrix.target }}" in
+            x86_64-pc-windows-msvc)    expected=win32-x64-msvc ;;
+            aarch64-apple-darwin)      expected=darwin-arm64 ;;
+            x86_64-unknown-linux-gnu)  expected=linux-x64-gnu ;;
+            aarch64-unknown-linux-gnu) expected=linux-arm64-gnu ;;
+            x86_64-unknown-linux-musl) expected=linux-x64-musl ;;
+            aarch64-unknown-linux-musl) expected=linux-arm64-musl ;;
+            *) echo "no expected platform known for ${{ matrix.target }}" >&2; exit 1 ;;
+          esac
+
+          actual=$(basename "$(ls ./*.node)" .node)
+          actual=${actual#gdal-rs-napi.}
+          echo "target=${{ matrix.target }} expected=$expected actual=$actual"
+          ls -l ./*.node dist/*.tgz
+          echo "PLATFORM=$actual" >> "$GITHUB_ENV"
+
+          if [ "$actual" != "$expected" ]; then
+            echo "::error::the binary is labelled $actual but ${{ matrix.target }} should give $expected"
+            exit 1
+          fi
+
       - uses: actions/upload-artifact@v5
         with:
-          name: gdal-rs-napi-${{ matrix.target }}
+          name: gdal-rs-napi-${{ matrix.target }}-${{ env.PLATFORM }}
           path: |
             *.node
             dist/*.tgz
@@ -155,9 +185,14 @@ jobs:
       # That is also why GH_REPO has to be set below — `gh` infers the repository
       # from the git remote, and without a checkout there is none to infer from,
       # so `gh release create` fails immediately.
+      #
+      # `merge-multiple: false` keeps each artifact in its own directory. Merging
+      # them would silently overwrite a tarball whose name another leg produced,
+      # which is how a release can end up quietly missing an asset.
       - uses: actions/download-artifact@v5
         with:
           path: artifacts
+          merge-multiple: false
 
       - name: Publish the tarballs as release assets
         env:
@@ -167,10 +202,21 @@ jobs:
           tag="$GITHUB_REF_NAME"
           gh release view "$tag" >/dev/null 2>&1 \
             || gh release create "$tag" --title "$tag" --generate-notes
+
           count=$(find artifacts -name '*.tgz' | wc -l)
           if [ "$count" -eq 0 ]; then
             echo "no tarballs were downloaded, so there is nothing to publish" >&2
             exit 1
           fi
           echo "publishing $count tarball(s)"
+
+          # Two legs producing the same tarball name means one of them built the
+          # wrong target. Refuse rather than let `--clobber` pick a winner.
+          duplicates=$(find artifacts -name '*.tgz' -printf '%f\n' | sort | uniq -d)
+          if [ -n "$duplicates" ]; then
+            echo "these tarball names came from more than one leg:" >&2
+            echo "$duplicates" >&2
+            exit 1
+          fi
+
           find artifacts -name '*.tgz' -print -exec gh release upload "$tag" {} --clobber \;
