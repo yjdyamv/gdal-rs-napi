@@ -416,6 +416,59 @@ test('sieveFilter drops regions below the threshold', () => {
   dataset.close()
 })
 
+test('rasterize burns GeoJSON into a band, in the raster own coordinates', () => {
+  const dataset = gdal.createSync(tmp('rasterize.tif'), {
+    driver: 'GTiff',
+    width: 8,
+    height: 8,
+    bandCount: 2,
+    dataType: 'Float32',
+  })
+
+  // With no geotransform, geometry speaks pixel coordinates, so a ring over
+  // pixels 2..6 lands there — no reprojection happens, on purpose.
+  const square = { type: 'Polygon', coordinates: [[[2, 2], [6, 2], [6, 6], [2, 6], [2, 2]]] }
+  dataset.rasterizeSync([square], { burnValues: [1] })
+
+  const samples = (index) =>
+    Array.from(asTypedArray(dataset.band(index).readPixelsSync(), Float32Array))
+  assert.equal(samples(0)[2 * 8 + 2], 1, 'inside the ring')
+  assert.equal(samples(0)[5 * 8 + 5], 1, 'still inside it')
+  assert.equal(samples(0)[0], 0, 'outside the ring')
+  assert.equal(samples(0)[7 * 8 + 7], 0)
+
+  // The second band is only touched when it is named.
+  assert.deepEqual(samples(1), Array(64).fill(0))
+
+  // `MERGE_ALG` is GDAL's own option name, passed through as written.
+  dataset.rasterizeSync([square], { burnValues: [1], options: { MERGE_ALG: 'ADD' } })
+  assert.equal(samples(0)[2 * 8 + 2], 2)
+
+  // The burn values are positional, so a short list is a mistake rather than
+  // something to pad.
+  assert.throws(
+    () => dataset.rasterizeSync([square, square], { burnValues: [1] }),
+    /burn value per geometry/,
+  )
+  dataset.close()
+})
+
+test('rasterize runs on the pool too', async () => {
+  const dataset = await gdal.create(tmp('rasterize-async.tif'), {
+    driver: 'GTiff',
+    width: 4,
+    height: 4,
+    bandCount: 1,
+    dataType: 'Float32',
+  })
+
+  await dataset.rasterize([{ type: 'Point', coordinates: [1.5, 1.5] }], { burnValues: [9] })
+  const samples = Array.from(asTypedArray(dataset.band(0).readPixelsSync(), Float32Array))
+  assert.equal(samples[1 * 4 + 1], 9, 'the pixel the point falls in')
+  assert.equal(samples[0], 0)
+  dataset.close()
+})
+
 test('the async twins of the band tools do the same thing', async () => {
   const dataset = await gdal.create(tmp('async-tools.tif'), {
     driver: 'GTiff',

@@ -241,6 +241,20 @@ value, and says so rather than guessing which pixels are holes. **`checksum`
 refuses `resampling` / `outWidth` / `outHeight`**: it is a fingerprint of the
 samples as they are, and resampling into it would only change the number.
 
+A fourth burns geometry into a dataset:
+
+```js
+const square = { type: 'Polygon', coordinates: [[[2, 2], [6, 2], [6, 6], [2, 6], [2, 2]]] }
+dataset.rasterizeSync([square], { burnValues: [1] })
+await dataset.rasterize([square], { burnValues: [1], options: { ALL_TOUCHED: true } })
+```
+
+`burnValues` is one value per geometry, positionally, and `bands` picks the bands by
+0-based index (default: the first). Everything else in `options` is GDAL's own —
+`ALL_TOUCHED`, `MERGE_ALG`, `INIT_DEST` — passed through as written. **It does not
+reproject**: the geometry has to already be in the raster's coordinate system, and
+`warp` is the tool when it is not.
+
 Two things that save confusion: `width` / `height` come straight from GDAL and
 are only meaningful when there are bands, so check `bandCount` before trusting
 them on a vector dataset; and `IMAGE_STRUCTURE` lives on the **dataset**, not on

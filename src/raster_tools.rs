@@ -7,11 +7,14 @@
 
 use std::ffi::c_int;
 
+use gdal::cpl::CslStringList;
 use gdal::errors::GdalError;
 use gdal::raster::RasterBand;
 use napi_derive::napi;
+use serde_json::Value;
 
-use crate::error::{Result, bad_argument, gdal_error};
+use crate::error::{IntoGdalResult, Result, bad_argument, gdal_error};
+use crate::json::option_pairs;
 use crate::raster_io::ReadOptions;
 use crate::runtime::c_string;
 
@@ -168,6 +171,105 @@ pub fn sieve_filter(band: &RasterBand<'_>, request: SieveFilterRequest) -> Resul
     cpl_result(class)
 }
 
+#[napi(object)]
+#[derive(Debug, Clone, Default)]
+pub struct RasterizeOptions {
+    /// Bands to burn into, **0-based**. Default: the first band. GDAL's own C
+    /// parameter is 1-based, so this is translated like every other band index in
+    /// this binding.
+    pub bands: Option<Vec<u32>>,
+    /// One burn value per geometry. Required, and it has to match: GDAL reads it
+    /// positionally.
+    pub burn_values: Vec<f64>,
+    /// `GDALRasterizeGeometries` options, passed through as written: `ALL_TOUCHED`,
+    /// `MERGE_ALG`, `CHUNKYSIZE`, `INIT_DEST`, `BURN_VALUE_FROM`, ...
+    pub options: Option<Value>,
+}
+
+/// `RasterizeOptions` resolved and checked.
+#[derive(Debug, Clone)]
+pub struct RasterizeRequest {
+    /// GDAL's 1-based band numbers.
+    bands: Vec<c_int>,
+    burn_values: Vec<f64>,
+    options: Vec<(String, String)>,
+}
+
+pub fn rasterize_request(
+    options: Option<RasterizeOptions>,
+    geometry_count: usize,
+) -> Result<RasterizeRequest> {
+    let options = options.unwrap_or_default();
+
+    if options.burn_values.len() != geometry_count {
+        return Err(bad_argument(format!(
+            "a burn value per geometry is needed: {geometry_count} geometries, {} burn value(s)",
+            options.burn_values.len()
+        )));
+    }
+
+    // 0-based here, 1-based in GDAL — the one place the two meet, as in
+    // `buildOverviews`.
+    let bands = match options.bands {
+        Some(bands) if !bands.is_empty() => bands
+            .into_iter()
+            .map(|index| {
+                i32::try_from(index)
+                    .map(|index| index + 1)
+                    .map_err(|_| bad_argument(format!("band index {index} is out of range")))
+            })
+            .collect::<Result<Vec<i32>>>()?,
+        // Nothing said means the first band, which is what `gdal_rasterize` does
+        // with no `-b` either.
+        _ => vec![1],
+    };
+
+    Ok(RasterizeRequest {
+        bands,
+        burn_values: options.burn_values,
+        options: option_pairs(options.options.as_ref())?,
+    })
+}
+
+/// Burn geometries into a dataset's bands. `GDALRasterizeGeometries`, the call
+/// behind `gdal_rasterize`.
+///
+/// The geometries are expected to be in the dataset's own coordinate system: this
+/// does not reproject, and `warp` is the tool that does.
+pub fn rasterize(
+    dataset: &gdal::Dataset,
+    geometries: &[gdal::vector::Geometry],
+    request: &RasterizeRequest,
+) -> Result<()> {
+    let mut options = CslStringList::new();
+    for (name, value) in &request.options {
+        options.add_name_value(name, value).gdal()?;
+    }
+
+    let handles: Vec<gdal_sys::OGRGeometryH> = geometries
+        .iter()
+        .map(|geometry| unsafe { geometry.c_geometry() })
+        .collect();
+
+    let class = unsafe {
+        gdal_sys::GDALRasterizeGeometries(
+            dataset.c_dataset(),
+            request.bands.len() as c_int,
+            request.bands.as_ptr(),
+            handles.len() as c_int,
+            handles.as_ptr(),
+            // No transformer: the geometries are already where they belong.
+            None,
+            std::ptr::null_mut(),
+            request.burn_values.as_ptr(),
+            options.as_ptr(),
+            None,
+            std::ptr::null_mut(),
+        )
+    };
+    cpl_result(class)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -229,6 +331,46 @@ mod tests {
                 threshold: 0,
                 connectedness: None
             })
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn rasterize_needs_a_burn_value_per_geometry_and_maps_the_bands() {
+        let request = rasterize_request(
+            Some(RasterizeOptions {
+                bands: Some(vec![0, 2]),
+                burn_values: vec![1.0, 2.0],
+                options: None,
+            }),
+            2,
+        )
+        .unwrap();
+        // 0-based indices here, GDAL's 1-based band numbers there.
+        assert_eq!(request.bands, vec![1, 3]);
+        assert_eq!(request.burn_values, vec![1.0, 2.0]);
+
+        // Saying nothing about bands means the first one, as in `gdal_rasterize`.
+        let defaults = rasterize_request(
+            Some(RasterizeOptions {
+                burn_values: vec![7.0],
+                ..Default::default()
+            }),
+            1,
+        )
+        .unwrap();
+        assert_eq!(defaults.bands, vec![1]);
+
+        // The burn values are positional, so a short list is a mistake rather than
+        // something to pad.
+        assert!(
+            rasterize_request(
+                Some(RasterizeOptions {
+                    burn_values: vec![1.0],
+                    ..Default::default()
+                }),
+                3
+            )
             .is_err()
         );
     }

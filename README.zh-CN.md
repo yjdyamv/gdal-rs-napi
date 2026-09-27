@@ -174,6 +174,18 @@ await band.sieveFilter({ threshold: 10 })  // 丢掉小于 10 像素的连通区
 `fillNoData` 还要求波段有 no-data 值，没有就直说，而不是猜哪些像素是洞。**`checksum` 会拒绝
 `resampling` / `outWidth` / `outHeight`**：它是"样本原样"的指纹，重采样进去只会让数字变了而已。
 
+第四个是把几何烧进数据集：
+
+```js
+const square = { type: 'Polygon', coordinates: [[[2, 2], [6, 2], [6, 6], [2, 6], [2, 2]]] }
+dataset.rasterizeSync([square], { burnValues: [1] })
+await dataset.rasterize([square], { burnValues: [1], options: { ALL_TOUCHED: true } })
+```
+
+`burnValues` 是"每个几何一个值"，按位置对应；`bands` 用 **0-based** 下标挑波段（默认第一个）。
+`options` 里其余的键都是 GDAL 自己的选项名（`ALL_TOUCHED`、`MERGE_ALG`、`INIT_DEST`），原样透传。
+**它不做重投影**：几何必须已经在栅格自己的坐标系里，要挪位置用 `warp`。
+
 两个容易踩的点：`width`/`height` 是 GDAL 原样返回的，**只对栅格数据集有意义**
 （矢量 GPKG 也会返回一个数字），用之前先看 `bandCount`；`IMAGE_STRUCTURE`
 元数据挂在 **dataset** 上而不是 band 上。

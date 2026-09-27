@@ -29,6 +29,7 @@ use crate::progress::{JsProgressSink, ProgressCallback, ProgressUpdate};
 use crate::raster_io::{
     build_creation_options, create_dataset, overview_levels, overview_resampling,
 };
+use crate::raster_tools::{RasterizeOptions, RasterizeRequest, rasterize, rasterize_request};
 use crate::runtime::{ensure_initialized, lock_gdal, lock_gdal_shared};
 use crate::spatial_ref::JsSpatialRef;
 use crate::vector::{FieldDefinition, JsLayer};
@@ -769,6 +770,55 @@ impl JsDataset {
         (0..layer_count as u32)
             .map(|index| self.layer(index))
             .collect()
+    }
+
+    /// Burn GeoJSON geometries into this dataset's bands — GDAL's
+    /// `GDALRasterizeGeometries`, the algorithm behind `gdal_rasterize`.
+    ///
+    /// The geometries have to be in the dataset's own coordinate system: this does
+    /// not reproject, so a geometry in WGS 84 aimed at a Web Mercator raster lands
+    /// in the wrong place rather than being moved. `warp` is the tool that moves
+    /// things.
+    ///
+    /// `options.burnValues` takes one value per geometry, positionally, and
+    /// `options.bands` picks the bands by **0-based** index (default: the first
+    /// one). Everything else in `options` is a `GDALRasterizeGeometries` option,
+    /// passed through as written — `ALL_TOUCHED`, `MERGE_ALG`, `INIT_DEST`, ...
+    ///
+    /// ```js
+    /// dataset.rasterizeSync([{ type: 'Polygon', coordinates: [ring] }], {
+    ///   burnValues: [1],
+    ///   options: { ALL_TOUCHED: true },
+    /// })
+    /// ```
+    #[napi]
+    pub fn rasterize_sync(&self, geometries: Vec<Value>, options: RasterizeOptions) -> Result<()> {
+        let request = rasterize_request(Some(options), geometries.len())?;
+        self.dataset.with_mut(|dataset| {
+            let geometries = geometries
+                .iter()
+                .map(crate::vector::from_geojson)
+                .collect::<Result<Vec<_>>>()?;
+            rasterize(dataset, &geometries, &request)
+        })
+    }
+
+    /// The same, on the thread pool: burning geometry means reading and writing the
+    /// raster.
+    #[napi(ts_return_type = "Promise<void>")]
+    pub fn rasterize(
+        &self,
+        geometries: Vec<Value>,
+        options: RasterizeOptions,
+    ) -> Result<AsyncTask<RasterizeTask>> {
+        // Resolved here, so a burn-value mismatch is thrown by the call rather than
+        // surfacing on the worker.
+        let request = rasterize_request(Some(options), geometries.len())?;
+        Ok(AsyncTask::new(RasterizeTask {
+            dataset: self.dataset.clone(),
+            geometries,
+            request,
+        }))
     }
 
     /// Write a copy of this dataset through another driver.
@@ -1575,6 +1625,42 @@ impl Task for BuildOverviewsTask {
         Ok(op(
             dataset.with_mut(|source| write_overviews(source, request))
         ))
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
+        output.map_err(|(code, reason)| into_status_error(code, reason))
+    }
+}
+
+/// Burning geometry into a raster reads it and writes it back, so it is the kind of
+/// operation that should not hold up the event loop.
+pub struct RasterizeTask {
+    dataset: DatasetRef,
+    geometries: Vec<Value>,
+    request: RasterizeRequest,
+}
+
+impl Task for RasterizeTask {
+    type Output = OpResult<()>;
+    type JsValue = ();
+
+    fn compute(&mut self) -> napi::Result<Self::Output> {
+        let RasterizeTask {
+            dataset,
+            geometries,
+            request,
+        } = self;
+
+        Ok(op(dataset.with_mut(|dataset| {
+            // Built here rather than on the JS thread: GDAL makes the geometries, so
+            // it happens under the lock either way, and this is where the pool is
+            // already paying for the work.
+            let geometries = geometries
+                .iter()
+                .map(crate::vector::from_geojson)
+                .collect::<Result<Vec<_>>>()?;
+            rasterize(dataset, &geometries, request)
+        })))
     }
 
     fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {

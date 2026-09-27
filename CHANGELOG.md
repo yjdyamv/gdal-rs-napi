@@ -47,6 +47,13 @@ First working cut — everything here is new.
   fill from; and `sieveFilter()` / `sieveFilterSync()` — `GDALSieveFilter`, in
   place, with a threshold in pixels and 4- or 8-connectedness. Each async form runs
   on the thread pool, like the readers and statistics do.
+- `Dataset.rasterize()` / `rasterizeSync()` burns GeoJSON geometry into the
+  dataset's bands — `GDALRasterizeGeometries`, the algorithm behind
+  `gdal_rasterize`. `burnValues` is one value per geometry, positionally; `bands`
+  picks them by **0-based** index (default: the first); every other entry in
+  `options` is GDAL's own and is passed through as written (`ALL_TOUCHED`,
+  `MERGE_ALG`, `INIT_DEST`, ...). It does not reproject, so the geometry has to be
+  in the raster's coordinate system already — `warp` is the tool that moves things.
 - Programs: `translate` / `translateSync`, `warp` / `warpSync`, `vectorTranslate` /
   `vectorTranslateSync` — `gdal_translate`, `gdalwarp` and `ogr2ogr`, each taking
   that tool's own command-line arguments. `warp` and `vectorTranslate` take a list
