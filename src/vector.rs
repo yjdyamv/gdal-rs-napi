@@ -20,6 +20,7 @@ use crate::dataset::DatasetRef;
 use crate::error::{IntoGdalResult, Result, bad_argument};
 use crate::json::{is_scalar, json_f64, json_i64, json_joined_text, json_text};
 use crate::runtime::{ensure_initialized, lock_gdal};
+use crate::spatial_ref::JsSpatialRef;
 
 /// One attribute of a layer.
 #[napi(object)]
@@ -509,6 +510,19 @@ impl JsLayer {
             let layer = dataset.layer(self.index).gdal()?;
             match layer.spatial_ref() {
                 Some(srs) => Ok(srs.to_wkt().ok()),
+                None => Ok(None),
+            }
+        })
+    }
+
+    /// The same CRS as `spatialRefWkt`, as an object.
+    #[napi(getter)]
+    pub fn spatial_ref(&self) -> Result<Option<JsSpatialRef>> {
+        ensure_initialized();
+        self.dataset.with_exclusive(|dataset| {
+            let layer = dataset.layer(self.index).gdal()?;
+            match layer.spatial_ref() {
+                Some(srs) => Ok(Some(JsSpatialRef::wrap(srs))),
                 None => Ok(None),
             }
         })

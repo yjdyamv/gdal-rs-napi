@@ -198,6 +198,50 @@ Worth knowing:
 - **GTiff builds overviews for every band at once**, so `bands` is passed through
   for the drivers that accept a subset.
 
+## Coordinate reference systems
+
+```js
+const wgs84 = gdal.SpatialRef.fromEpsg(4326)
+const webMercator = gdal.SpatialRef.fromEpsg(3857)
+
+wgs84.authority         // 'EPSG:4326'
+wgs84.isGeographic      // true
+webMercator.linearUnit  // { name: 'metre', factor: 1 }
+
+// Build the transform once and reuse it: working out the pipeline is the
+// expensive part.
+const toMercator = new gdal.CoordinateTransform(wgs84, webMercator)
+toMercator.transformPoint(13.4, 52.5) // Berlin, in metres
+toMercator.transformPoints(new Float64Array([13.4, 52.5, 2.35, 48.85]))
+toMercator.transformBounds([13.0, 52.0, 13.8, 53.0])
+```
+
+**Coordinates are longitude,latitude here. Read this before passing any.**
+
+GDAL 3 reads `EPSG:4326` as *latitude,longitude*, and nothing about the call makes
+it visible: under that order `transformPoint(13.4, 52.5)` returns a perfectly
+plausible coordinate for 13.4°N 52.5°E — the Gulf of Aden, not Berlin. GeoJSON, WKT
+and every other corner of this binding are longitude,latitude, so every
+`SpatialRef` built here uses that order (`axisMapping` reports `traditional`), and
+`withAxisMapping('authority')` is there for when you want GDAL's reading instead.
+
+Worth knowing:
+
+- **`fromDefinition` takes anything** `gdalinfo` would accept as a CRS:
+  `EPSG:4326`, a WKT string, PROJJSON, or a PROJ string. `fromEpsg`, `fromWkt` and
+  `fromProj4` are the specific doors.
+- **`equals` compares the definitions, not the spelling**: two differently written
+  WKTs for WGS 84 are equal.
+- **`identifyEpsg` returns a promise** because it searches the CRS database. A
+  description that cannot be parsed throws; one that parses but matches nothing
+  gives `null`.
+- **`dataset.spatialRef` and `layer.spatialRef`** hand back the CRS of something
+  you opened, and are `null` when it has none. `createLayer` now takes `wkt` as
+  well as `epsg`, so a CRS that did not come from a code is no longer unusable
+  there.
+- **Transformations are 2D and synchronous** — chunk a million points yourself
+  rather than blocking the loop on one call.
+
 ## Vector
 
 ```js

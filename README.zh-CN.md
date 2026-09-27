@@ -128,6 +128,42 @@ dataset.band(0).overviewCount // 1024x1024 的栅格会建 3 层
   并列出候选，不会丢给 GDAL。
 - **GTiff 只支持一次性为所有波段建 overview**，`bands` 是为那些接受子集的驱动预留的透传。
 
+## 坐标系（CRS）
+
+```js
+const wgs84 = gdal.SpatialRef.fromEpsg(4326)
+const webMercator = gdal.SpatialRef.fromEpsg(3857)
+
+wgs84.authority         // 'EPSG:4326'
+wgs84.isGeographic      // true
+webMercator.linearUnit  // { name: 'metre', factor: 1 }
+
+// 转换建一次反复用：算转换管线才是贵的那部分
+const toMercator = new gdal.CoordinateTransform(wgs84, webMercator)
+toMercator.transformPoint(13.4, 52.5) // 柏林，单位米
+toMercator.transformPoints(new Float64Array([13.4, 52.5, 2.35, 48.85]))
+toMercator.transformBounds([13.0, 52.0, 13.8, 53.0])
+```
+
+**这里的坐标是 经度,纬度。传参之前请先读这一段。**
+
+GDAL 3 把 `EPSG:4326` 读作 **纬度,经度**，而调用本身完全看不出这一点：按那个顺序，
+`transformPoint(13.4, 52.5)` 返回的是一个看着完全合理的坐标 —— 13.4°N 52.5°E，那在亚丁湾，
+不是柏林。GeoJSON、WKT 以及本包其它所有部分都是经度,纬度，所以这里构造的每个 `SpatialRef`
+都用这个顺序（`axisMapping` 会如实报 `traditional`）；想用 GDAL 的读法就
+`withAxisMapping('authority')`。
+
+几点值得知道：
+
+- **`fromDefinition` 什么都能收** —— 凡是 `gdalinfo` 认的 CRS 描述都行：`EPSG:4326`、WKT 字符串、
+  PROJJSON、PROJ 串。`fromEpsg` / `fromWkt` / `fromProj4` 只是更明确的入口。
+- **`equals` 比较的是定义本身，不是写法**：同一个 WGS 84 的两种 WKT 写法相等。
+- **`identifyEpsg` 返回 Promise**，因为它要查 CRS 数据库。无法解析的描述会抛错；
+  能解析但匹配不到的返回 `null`。
+- **`dataset.spatialRef` / `layer.spatialRef`** 直接给出已打开对象的 CRS，没有则为 `null`。
+  `createLayer` 现在也能收 `wkt` 了 —— 不是来自 EPSG 代码的 CRS 不再无处可用。
+- **坐标转换是 2D 且同步的** —— 上百万个点请自行分块，别用一次调用把事件循环堵住。
+
 ## 矢量
 
 ```js
@@ -439,9 +475,12 @@ MapInfo、DXF、DGN、CAD、S57、VDV、VFK、CSV、GTFS、Selafin、KMLSUPEROVE
 
 ## 已知缺口
 
-没有 `SpatialRef` 类（构造 CRS 只能用 `epsgToWkt`）；没有 `statistics()` 与
-`buildOverviews()`；读图层是整层物化，没有流式或异步迭代；`translate`/`warp`/`ogr2ogr`
-没有进度回调，也没有 `-overwrite` 兼容层；没有 `GDALDEMProcessing`（hillshade 等）。
+CRS 只做到点与包围盒的变换：几何对象本身不参与变换，`CoordTransformOptions`（指定转换管线、
+精度目标）没有暴露，且变换是同步的 —— 上百万个点需要调用方自行分块。
+
+读图层是整层物化，没有流式或异步迭代；`translate`/`warp`/`ogr2ogr` 没有进度回调，也没有
+`-overwrite` 兼容层；没有 `GDALDEMProcessing`（hillshade 等）；`statistics()` 与直方图只能读，
+不能写回数据集，overview 只能建不能删。
 
 一个构建系统层面的瑕疵：**异步方法的返回类型在 `.d.ts` 里是 `Promise<unknown>`**，
 因为 napi 无法从 `Task` 推导 `JsValue`。同步方法的类型是准确的，运行时返回的也确实是对应

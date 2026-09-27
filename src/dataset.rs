@@ -28,6 +28,7 @@ use crate::raster_io::{
     build_creation_options, create_dataset, overview_levels, overview_resampling,
 };
 use crate::runtime::{ensure_initialized, lock_gdal, lock_gdal_shared};
+use crate::spatial_ref::JsSpatialRef;
 use crate::vector::JsLayer;
 
 pub struct DatasetHandle {
@@ -258,8 +259,11 @@ pub struct CreateLayerOptions {
     /// `MultiLineString`, `MultiPolygon`, `GeometryCollection`, `Unknown`.
     /// Default `Unknown`.
     pub geometry_type: Option<String>,
-    /// EPSG code for the layer CRS. Default: no CRS.
+    /// EPSG code for the layer CRS. Default: no CRS. Give this or `wkt`, not both.
     pub epsg: Option<u32>,
+    /// CRS as WKT — a `SpatialRef`'s `wkt` getter is the usual source. Default: no
+    /// CRS. Give this or `epsg`, not both.
+    pub wkt: Option<String>,
     /// Driver creation options, e.g. `{ SPATIAL_INDEX: 'YES' }`.
     pub options: Option<Value>,
 }
@@ -518,6 +522,20 @@ impl JsDataset {
         })
     }
 
+    /// The same CRS as `projection`, as an object — ready to hand to
+    /// `CoordinateTransform`. `null` when the dataset has no projection.
+    #[napi(getter)]
+    pub fn spatial_ref(&self) -> Result<Option<JsSpatialRef>> {
+        ensure_initialized();
+        self.dataset.with_exclusive(|dataset| {
+            let wkt = dataset.projection();
+            if wkt.is_empty() {
+                return Ok(None);
+            }
+            Ok(Some(JsSpatialRef::wrap(SpatialRef::from_wkt(&wkt).gdal()?)))
+        })
+    }
+
     /// Key/value metadata for `domain` (default: the plain-string domain).
     ///
     /// `IMAGE_STRUCTURE` lives here rather than on a band, which is how you check
@@ -598,9 +616,23 @@ impl JsDataset {
             Some(name) => crate::vector::geometry_type_from_name(name)?,
             None => OGRwkbGeometryType::wkbUnknown,
         };
-        let srs = match options.epsg {
-            Some(code) => Some(SpatialRef::from_epsg(code).gdal()?),
-            None => None,
+        // A CRS given twice is ambiguity rather than redundancy, so refuse.
+        let srs = match (&options.wkt, options.epsg) {
+            (Some(_), Some(_)) => {
+                return Err(bad_argument(
+                    "give the layer a CRS with `epsg` or `wkt`, not both",
+                ));
+            }
+            (Some(wkt), None) => {
+                // Resolving a CRS reaches into GDAL, so it happens under the lock.
+                let _guard = lock_gdal();
+                Some(SpatialRef::from_wkt(wkt).gdal()?)
+            }
+            (None, Some(code)) => {
+                let _guard = lock_gdal();
+                Some(SpatialRef::from_epsg(code).gdal()?)
+            }
+            (None, None) => None,
         };
 
         // GDAL takes layer creation options as `name=value` strings.

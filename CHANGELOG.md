@@ -26,7 +26,24 @@ First working cut — everything here is new.
   `metadata`, `overviewCount`.
 - `Layer`: `featuresSync`, `feature`, `setAttributeFilter`,
   `setSpatialFilterRect`, `clearSpatialFilter`, `createFeature`, `updateFeature`,
-  `fields`, `extent`, `spatialRefWkt`.
+  `fields`, `extent`, `spatialRefWkt`, `spatialRef`.
+- `SpatialRef`: `fromEpsg` / `fromWkt` / `fromProj4` / `fromDefinition`, plus
+  `wkt`, `prettyWkt`, `proj4`, `projJson`, `name`, `authName`, `authCode`,
+  `authority`, `axisMapping`, `linearUnit`, `angularUnit`, `isGeographic`,
+  `isProjected`, `isCompound`, `isVertical`, `areaOfUse`, `equals` and
+  `withAxisMapping`. `dataset.spatialRef` and `layer.spatialRef` hand one back for
+  something already open, and `createLayer` takes `wkt` as well as `epsg`.
+- `CoordinateTransform` turns coordinates between two `SpatialRef`s:
+  `transformPoint`, `transformPoints` (a flat `Float64Array` in and out) and
+  `transformBounds`, which densifies the edges because transforming four corners
+  is wrong for any non-linear projection. `identifyEpsg(wkt)` resolves a CRS
+  description to an authority code, on the thread pool because it searches the
+  database.
+- Coordinates are **longitude,latitude** throughout. GDAL reads `EPSG:4326` the
+  other way round, under which `[13.4, 52.5]` is a valid coordinate in the Gulf of
+  Aden rather than Berlin — so every `SpatialRef` built here asks for the
+  `traditional` order explicitly, `axisMapping` reports which is in force, and
+  `withAxisMapping('authority')` opts into GDAL's reading.
 - Index convention: raster bands and layers are **0-based** in JS, unlike GDAL.
 - Every GDAL call is serialised behind one process-wide lock, because GDAL keeps
   its last-error state in process-global variables. The async methods keep the
@@ -91,7 +108,10 @@ First working cut — everything here is new.
 
 ### Known gaps
 
-- No `SpatialRef` class; constructing a CRS is limited to `epsgToWkt`.
+- CRS handling stops at points and bounding boxes: geometries are not transformed,
+  `CoordTransformOptions` (a specific pipeline, an accuracy target) is not exposed,
+  and the transformation is synchronous, so a million points has to be chunked by
+  the caller.
 - Overviews can be built but not removed (`GDALBuildOverviews` with `NONE`), and
   statistics and histograms can be read but not written back into a dataset.
 - `buildOverviews({ bands })` is passed through, but GTiff — the only writable

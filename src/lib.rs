@@ -27,6 +27,7 @@ mod json;
 mod programs;
 mod raster_io;
 mod runtime;
+mod spatial_ref;
 mod vector;
 
 use gdal::spatial_ref::SpatialRef;
@@ -37,9 +38,10 @@ use crate::runtime::lock_gdal;
 
 /// WKT for an EPSG code, ready to hand to `Dataset.setProjection`.
 ///
-/// There is no `SpatialRef` class yet, so this is the whole of the CRS
-/// construction API for writing. It needs the CRS database, so it fails if the
-/// packaged `assets/proj/proj.db` is missing — see `diagnostics`.
+/// Sugar for `SpatialRef.fromEpsg(code).wkt`, kept because it is the one-liner
+/// people reach for — and because both `setProjection` and `createLayer` want WKT.
+/// It needs the CRS database, so it fails if the packaged `assets/proj/proj.db`
+/// is missing — see `diagnostics`.
 #[napi]
 pub fn epsg_to_wkt(code: u32) -> crate::error::Result<String> {
     runtime::ensure_initialized();
