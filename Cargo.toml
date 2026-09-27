@@ -23,6 +23,17 @@ gdal-src = { version = "0.3", optional = true, default-features = false }
 proj-sys = "0.27"
 serde_json = "1"
 
+# The curl-backed drivers (WMS, WMTS, WCS, OGCAPI, PLMOSAIC, Carto,
+# Elasticsearch, NGW, AmigoCloud, DAAS, EEDA) need libcurl with TLS. On the four
+# native targets libcurl links the *system* OpenSSL, but there is nothing
+# linkable under musl — so build one and link it statically. `static-ssl` is
+# curl-sys's own switch for that: it flips `openssl-sys` to its `vendored`
+# feature, which compiles OpenSSL from source for the target. This direct
+# dependency exists only to turn that feature on, and only for musl, so the other
+# legs keep using their system OpenSSL exactly as before.
+[target.'cfg(target_env = "musl")'.dependencies]
+curl-sys = { version = "0.4.84", features = ["static-ssl"] }
+
 [build-dependencies]
 napi-build = "2"
 

@@ -254,6 +254,7 @@ dependencies = [
 name = "gdal-rs-napi"
 version = "0.1.0"
 dependencies = [
+ "curl-sys",
  "gdal",
  "gdal-src",
  "gdal-sys",

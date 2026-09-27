@@ -17,8 +17,12 @@
 # Installing ninja is cheaper and narrower than dropping the pin: the images are
 # Ubuntu, and the alternative — making the generator platform-conditional — would
 # also change how the four native legs build.
+#
+# `perl` is for the next thing cargo reaches: the curl driver family needs
+# libcurl with TLS, and under musl that OpenSSL is built from source (see the
+# `static-ssl` switch in Cargo.toml), whose Configure is a Perl script.
 [target.x86_64-unknown-linux-musl]
-pre-build = ["apt-get update && apt-get install -y --no-install-recommends ninja-build"]
+pre-build = ["apt-get update && apt-get install -y --no-install-recommends ninja-build perl"]
 
 [target.aarch64-unknown-linux-musl]
-pre-build = ["apt-get update && apt-get install -y --no-install-recommends ninja-build"]
+pre-build = ["apt-get update && apt-get install -y --no-install-recommends ninja-build perl"]
