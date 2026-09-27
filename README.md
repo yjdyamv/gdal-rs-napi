@@ -8,9 +8,10 @@ GDAL and PROJ are compiled **statically** into the addon, and the PROJ/GDAL data
 files travel with the npm package, so an installed package needs no GDAL on the
 host system.
 
-> **Status: early.** Raster and vector reading and writing all work. The
-> `gdalwarp` / `gdal_translate` style utilities and the packaging story land next
-> — see `~/.commandcode/plans/gdal-rs-napi.md` for the phased plan.
+> **Status: pre-1.0.** Raster and vector reading and writing, the
+> `gdal_translate` / `gdalwarp` / `ogr2ogr` / `gdaldem` wrappers, overviews, CRS
+> transforms and genuinely parallel reads all work. `CHANGELOG.md` lists the API
+> surface and the known gaps.
 
 ## Install
 
@@ -26,7 +27,7 @@ const gdal = require('gdal-rs-napi')
 gdal.version()
 // { gdal: 'GDAL 3.12.1 "Chicoutimi", released 2025/12/12', proj: '9.6.2' }
 
-gdal.drivers().length // 131
+gdal.drivers().length // 148
 
 // Which drivers do I actually have?
 const names = new Set(gdal.drivers().map((d) => d.name))
@@ -181,6 +182,11 @@ Worth knowing:
   the band — hence the async form, and `approx: true`, which lets GDAL lean on
   overviews instead of every pixel. `{ force: false }` is the cheap one: it
   reports the cache, or `null`.
+- **`setStatistics()` stores the numbers**, so the next reader gets them from
+  `{ force: false }` instead of a full pass. An update-mode dataset keeps them in
+  the file where the format can; a **read-only** handle does not fail — GDAL's PAM
+  layer writes a `<file>.aux.xml` beside the raster, so a call you thought was
+  read-only can still leave a file behind.
 - **`buildOverviews()` is the slowest call in this binding.** Setting
   `GDAL_NUM_THREADS=ALL_CPUS` has GDAL compute the levels in parallel, which is
   worth doing for anything sizeable.

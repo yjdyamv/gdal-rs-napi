@@ -15,7 +15,7 @@ GDAL 与 PROJ 被**静态编译**进插件，PROJ/GDAL 的数据文件随 npm �
 const gdal = require('gdal-rs-napi')
 
 gdal.version()          // { gdal: 'GDAL 3.12.1 "Chicoutimi", …', proj: '9.6.2' }
-gdal.drivers().length   // 131
+gdal.drivers().length   // 148
 
 // 出问题时先跑这个：它会告诉你 CRS 数据库有没有被找到、PROJ 被指到了哪里
 gdal.diagnostics()
@@ -117,6 +117,9 @@ dataset.band(0).overviewCount // 1024x1024 的栅格会建 3 层
 - **`statistics()` 默认会真算**。大栅格上这等于把该波段完整读一遍 —— 所以有异步版本，也有
   `approx: true`（让 GDAL 借助 overview 求近似）。`{ force: false }` 是便宜的那条路：
   只报缓存，没有则 `null`。
+- **`setStatistics()` 把统计量写回**，下一个读取者用 `{ force: false }` 直接拿到，不必再全波段扫一遍。
+  以 update 方式打开时会写进文件（格式支持的话）；**只读**句柄也不会报错 —— GDAL 的 PAM 层会在栅格
+  旁边生成 `<file>.aux.xml`，所以一个你以为只读的调用仍然可能留下文件。
 - **`buildOverviews()` 是本绑定里最慢的调用**。设 `GDAL_NUM_THREADS=ALL_CPUS` 可让 GDAL
   并行计算各层，稍大的栅格值得加。
 - **层数默认按 `gdaladdo` 的规则**：2 的幂，直到最小一层在较长边上小于 256 像素。要明确就传
@@ -535,7 +538,7 @@ CRS 只做到点与包围盒的变换：几何对象本身不参与变换，`Coo
 
 读图层可以按批读（游标），但那是游标而不是 JS 的 async iterator；且 GDAL 的读取位置在图层上，
 同一图层同时只能有一个读取者。`translate`/`warp`/`ogr2ogr`/`gdaldem` 都没有进度回调；
-`statistics()` 与直方图只能读，不能写回数据集。
+直方图只能读，不能写回数据集（统计量可以，见 `setStatistics()`）。
 
 Intel macOS 与 32 位目标未构建。
 

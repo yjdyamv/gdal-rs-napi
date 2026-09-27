@@ -270,3 +270,28 @@ test('a thread-safe dataset computes statistics but cannot build overviews', asy
 
   dataset.close()
 })
+
+test('setStatistics() writes numbers a later reader finds without recomputing', () => {
+  const path = tmp('stored-statistics.tif')
+
+  const created = gdal.createSync(path, { driver: 'GTiff', width: 4, height: 4 })
+  created.band(0).writePixelsSync(bytesOf(Uint8Array.from({ length: 16 }, (_, i) => i)))
+  // Nothing stored yet, and `force: false` says so instead of computing.
+  assert.equal(created.band(0).statisticsSync({ force: false }), null)
+  created.close()
+
+  const writable = gdal.openSync(path, { update: true })
+  writable.band(0).setStatistics({ min: 1, max: 7, mean: 4, stdDev: 2 })
+  writable.close()
+
+  // Deliberately not what these pixels would produce (0..15), so getting them
+  // back proves the stored numbers were read rather than recomputed.
+  const readOnly = gdal.openSync(path)
+  assert.deepEqual(readOnly.band(0).statisticsSync({ force: false }), {
+    min: 1,
+    max: 7,
+    mean: 4,
+    stdDev: 2,
+  })
+  readOnly.close()
+})

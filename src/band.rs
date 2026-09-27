@@ -387,6 +387,44 @@ impl JsRasterBand {
         }))
     }
 
+    /// Write statistics into the dataset, so a later reader does not have to
+    /// compute them: `statistics({ force: false })` then hands back exactly these
+    /// numbers, and other GDAL tools see them too.
+    ///
+    /// A dataset open for update stores them in the file when the driver keeps
+    /// band metadata there (GTiff, COG, GPKG, MEM). A read-only handle does not
+    /// fail: GDAL's PAM layer writes them to a `<file>.aux.xml` sidecar next to
+    /// the raster instead, which is worth knowing before pointing this at a
+    /// directory you thought was read-only.
+    #[napi]
+    pub fn set_statistics(&self, statistics: BandStatistics) -> Result<()> {
+        self.dataset.with_mut(|dataset| {
+            with_band(dataset, self.index, |band| {
+                unsafe {
+                    gdal_sys::GDALSetRasterStatistics(
+                        band.c_rasterband(),
+                        statistics.min,
+                        statistics.max,
+                        statistics.mean,
+                        statistics.std_dev,
+                    );
+                }
+
+                // GDALSetRasterStatistics returns nothing, so a driver that keeps
+                // nothing reports nothing. Reading the value back is the only
+                // reliable check — with `force` off that is a metadata lookup
+                // rather than a pass over the pixels.
+                if band.get_statistics(false, false).gdal()?.is_none() {
+                    return Err(bad_argument(
+                        "the driver did not keep the statistics — not every format stores band metadata",
+                    ));
+                }
+
+                Ok(())
+            })
+        })
+    }
+
     /// Read in the band's own sample type, with no conversion. The returned
     /// buffer is the raw little-endian bytes of `width * height` samples; use
     /// `bytesPerSample(band.dataType)` to view it as a typed array.

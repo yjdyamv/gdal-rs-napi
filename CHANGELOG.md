@@ -84,6 +84,10 @@ First working cut — everything here is new.
   `Promise<Buffer>`, `Promise<BandStatistics | null>` — instead of the
   `Promise<unknown>` napi produces when it cannot work out a `Task`'s `JsValue`. A
   test reads the generated file so the annotations cannot quietly disappear.
+- `RasterBand::setStatistics` writes min/max/mean/stdDev back, so a later reader
+  gets them from `statistics({ force: false })` instead of computing them. An
+  update-mode dataset stores them in the file; a read-only one gets a
+  `<file>.aux.xml` sidecar, because that is what GDAL's PAM layer does.
 - Errors carry a stable `err.code` (`GDAL_CPL_FAILURE`, `GDAL_BAD_ARGUMENT`, …) on
   the sync surface. `napi::Task` fixes its error type, so async methods throw the
   same token at the front of the message instead.
