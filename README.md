@@ -529,6 +529,12 @@ musl ones. The musl legs are `continue-on-error` — static C++ GDAL cross-linke
 under musl through napi's `--cross-compile` plus zig is the least certain link in
 the chain — so a release can ship without them. 32-bit targets are not built.
 
+Those two legs run their test suite in a `node:24-alpine` container rather than on
+the runner, because napi's cross toolchain links musl dynamically and the runner's
+glibc Node cannot load such an addon at all — one process, two libcs. The
+container is the honest place for it: the generated loader resolves to musl there,
+so the suite exercises the real artifact.
+
 ## Licence
 
 MIT. GDAL and PROJ are MIT/X11; see `LICENSE`.

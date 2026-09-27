@@ -126,21 +126,12 @@ jobs:
       - name: Build
         run: npm run build -- --target ${{ matrix.target }} ${{ matrix.cross && '--cross-compile' || '' }}
 
-      - name: Test
-        run: npm test
-
-      # One installable tarball per platform: root package files + assets/ + the
-      # binary, with os/cpu/libc set so npm refuses a mismatched machine. Run
-      # through npm so the script can find the npm CLI without a shell.
-      - name: Pack
-        run: npm run pack
-
       # `pack-platform.mjs` takes the platform label from the built `.node`
       # filename, so a leg that quietly builds for its host instead of its target
-      # produces a tarball that collides with another leg's. On the native runners
-      # host and target are the same, which is exactly why only the two musl legs
-      # can hide that. Assert the label here: it turns a silently missing release
-      # asset into a failed step.
+      # produces a tarball that collides with another leg's — which is how the
+      # v0.1.0 release ended up with four assets instead of six. On the native
+      # runners host and target are the same thing, so only the two musl legs
+      # could hide it. Assert the label before anything else runs.
       - name: Check the built platform
         shell: bash
         run: |
@@ -157,13 +148,37 @@ jobs:
           actual=$(basename "$(ls ./*.node)" .node)
           actual=${actual#gdal-rs-napi.}
           echo "target=${{ matrix.target }} expected=$expected actual=$actual"
-          ls -l ./*.node dist/*.tgz
+          ls -l ./*.node
           echo "PLATFORM=$actual" >> "$GITHUB_ENV"
 
           if [ "$actual" != "$expected" ]; then
             echo "::error::the binary is labelled $actual but ${{ matrix.target }} should give $expected"
             exit 1
           fi
+
+      # Run the suite only where the runner can load what it built. napi's cross
+      # toolchain deliberately links musl dynamically (it appends
+      # `-C target-feature=-crt-static` for any musl target), so this addon needs
+      # musl's own libc at load time — and the Node on this runner is a glibc
+      # binary. Two libcs in one process is not a thing, so the gnu Node cannot
+      # dlopen it. That is a property of the artifact, not a reason to skip it.
+      - name: Test
+        if: ${{ !matrix.cross }}
+        run: npm test
+
+      # So test it where musl is the native libc. Inside the container the
+      # generated loader also resolves to musl, so this runs the real artifact
+      # rather than a host build wearing a musl label — which is what these legs
+      # were doing before, quietly passing every test against a glibc binary.
+      - name: Test (musl)
+        if: matrix.cross
+        run: docker run --rm -v "$PWD:/work" -w /work node:24-alpine npm test
+
+      # One installable tarball per platform: root package files + assets/ + the
+      # binary, with os/cpu/libc set so npm refuses a mismatched machine. Run
+      # through npm so the script can find the npm CLI without a shell.
+      - name: Pack
+        run: npm run pack
 
       - uses: actions/upload-artifact@v5
         with:

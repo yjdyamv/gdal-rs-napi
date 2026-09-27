@@ -53,8 +53,19 @@ First working cut — everything here is new.
   must stay off `PATH` or GDAL's configure aborts; see the README for why.
 - CI builds six targets on native runners and attaches one self-contained tarball
   per platform to a GitHub Release. **Nothing is published to npm.**
-- The two musl legs are marked experimental (`continue-on-error`): cross-linking a
-  static C++ GDAL is the least settled part of the matrix.
+- The two musl legs are marked experimental (`continue-on-error`), and they run
+  their tests inside a `node:24-alpine` container rather than on the runner:
+  napi's cross toolchain links musl dynamically, so the runner's glibc Node
+  cannot load the addon at all. The container is also the honest place for it —
+  the generated loader resolves to musl there, so the suite exercises the real
+  artifact instead of a host build wearing a musl label.
+- Every leg asserts its own platform label, and the release job refuses duplicate
+  tarball names. The v0.1.0 release shipped four assets instead of six because the
+  two musl legs were building for their host: `npm run build -- --target <triple>`
+  appends its arguments to the end of the script string, and the script was
+  `build.mjs … && stage-assets.mjs`, so the target went to the wrong process.
+  Those three failures — the swallowed argument, the unchecked label, and the
+  merged duplicates — now each fail loudly.
 - `build.rs` reads the GDAL version that `gdal-sys` reports and switches
   `openThreadSafe` on only for GDAL ≥ 3.10, so linking an older system GDAL still
   compiles instead of failing on a missing type.
