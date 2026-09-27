@@ -517,6 +517,7 @@ pub fn run_with_paths(
     dest: &str,
     paths: &[String],
     args: &[String],
+    progress: Option<&dyn ProgressSink>,
 ) -> Result<GdalDataset> {
     ensure_initialized();
     let _guard = lock_gdal();
@@ -536,7 +537,7 @@ pub fn run_with_paths(
         .collect::<Result<Vec<_>>>()?;
     let sources: Vec<&GdalDataset> = opened.iter().collect();
 
-    run(program, dest, &sources, args)
+    run_with_progress(program, dest, &sources, args, progress)
 }
 
 #[cfg(test)]

@@ -326,6 +326,38 @@ dataset.warpSync('out-3857.tif', ['-t_srs', 'EPSG:3857', '-r', 'cubic'])
   `gdal.demProcess`，支持 `hillshade`、`slope`、`aspect`、`color-relief`、`tri`、`tpi`、
   `roughness`。它们需要 geotransform，而计算坡度的那些需要以米为单位的 CRS。
 
+### 进度回调与取消
+
+每个程序调用都可以传最后一个可选参数 `onProgress`。它跑在 **JS 线程**上（真正的工作在 worker 上），
+收到 `{ complete, message }`：
+
+```js
+await gdal.warp('out.tif', ['big.tif'], ['-t_srs', 'EPSG:3857'], (progress) => {
+  process.stdout.write(`\r${Math.round(progress.complete * 100)}%`)
+})
+```
+
+回调返回 `false` 即**取消**（这是 GDAL 一旦启动后唯一能被停下的方式），抛出的错误会明确说是被取消的，
+而不是看起来像一次失败：
+
+```js
+try {
+  await gdal.warp(dest, sources, args, (progress) => progress.complete < 0.5)
+} catch (error) {
+  if (error.message.includes('[GDAL_CANCELLED]')) console.log('已提前停止')
+}
+```
+
+三点值得知道：
+
+- **只有显式返回 `false` 才算取消**：返回 `undefined`（最常见的写法，比如只打日志）会继续执行。
+- **从 GDAL 的视角看这个回调是同步的**，所以回调慢就会拖慢整个转换。只做记录，别在里面干重活。
+- **不要在回调里回头调用本库**：worker 正在等你的答案，同时**攥着全局 GDAL 锁**，从回调里再调用会死锁。
+  在里面报告进度可以，**不要读数据**。
+
+同步入口（`*Sync`）**没有** `onProgress`，这是有意的：同步调用占着 JS 线程，而回调必须跑在那个线程上，
+永远没有机会执行。
+
 ## 异步语义（用之前请读）
 
 触碰 GDAL 的每个操作都会拿一把**进程级锁**：GDAL 的 last-error 是进程全局状态，

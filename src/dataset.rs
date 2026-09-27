@@ -1156,8 +1156,15 @@ pub fn translate(
     dest: String,
     source: String,
     args: Option<Vec<String>>,
+    on_progress: Option<ThreadsafeFunction<ProgressUpdate, bool, ProgressUpdate, Status, false>>,
 ) -> AsyncTask<ProgramTask> {
-    program_task_paths(programs::Program::Translate, dest, vec![source], args)
+    program_task_paths(
+        programs::Program::Translate,
+        dest,
+        vec![source],
+        args,
+        on_progress.map(Arc::new),
+    )
 }
 
 #[napi]
@@ -1167,7 +1174,8 @@ pub fn translate_sync(
     args: Option<Vec<String>>,
 ) -> Result<JsDataset> {
     let args = args.unwrap_or_default();
-    let dataset = programs::run_with_paths(programs::Program::Translate, &dest, &[source], &args)?;
+    let dataset =
+        programs::run_with_paths(programs::Program::Translate, &dest, &[source], &args, None)?;
     Ok(JsDataset::wrap(dataset, dest))
 }
 
@@ -1177,8 +1185,15 @@ pub fn warp(
     dest: String,
     sources: Vec<String>,
     args: Option<Vec<String>>,
+    on_progress: Option<ThreadsafeFunction<ProgressUpdate, bool, ProgressUpdate, Status, false>>,
 ) -> AsyncTask<ProgramTask> {
-    program_task_paths(programs::Program::Warp, dest, sources, args)
+    program_task_paths(
+        programs::Program::Warp,
+        dest,
+        sources,
+        args,
+        on_progress.map(Arc::new),
+    )
 }
 
 #[napi]
@@ -1188,7 +1203,7 @@ pub fn warp_sync(
     args: Option<Vec<String>>,
 ) -> Result<JsDataset> {
     let args = args.unwrap_or_default();
-    let dataset = programs::run_with_paths(programs::Program::Warp, &dest, &sources, &args)?;
+    let dataset = programs::run_with_paths(programs::Program::Warp, &dest, &sources, &args, None)?;
     Ok(JsDataset::wrap(dataset, dest))
 }
 
@@ -1198,8 +1213,15 @@ pub fn vector_translate(
     dest: String,
     sources: Vec<String>,
     args: Option<Vec<String>>,
+    on_progress: Option<ThreadsafeFunction<ProgressUpdate, bool, ProgressUpdate, Status, false>>,
 ) -> AsyncTask<ProgramTask> {
-    program_task_paths(programs::Program::VectorTranslate, dest, sources, args)
+    program_task_paths(
+        programs::Program::VectorTranslate,
+        dest,
+        sources,
+        args,
+        on_progress.map(Arc::new),
+    )
 }
 
 #[napi]
@@ -1209,8 +1231,13 @@ pub fn vector_translate_sync(
     args: Option<Vec<String>>,
 ) -> Result<JsDataset> {
     let args = args.unwrap_or_default();
-    let dataset =
-        programs::run_with_paths(programs::Program::VectorTranslate, &dest, &sources, &args)?;
+    let dataset = programs::run_with_paths(
+        programs::Program::VectorTranslate,
+        &dest,
+        &sources,
+        &args,
+        None,
+    )?;
     Ok(JsDataset::wrap(dataset, dest))
 }
 
@@ -1225,6 +1252,9 @@ fn program_task(
         dest,
         sources: ProgramSources::Open(dataset),
         args: args.unwrap_or_default(),
+        // The method form has no `onProgress` yet; the module-level functions are
+        // where a caller can pass one.
+        progress: None,
     })
 }
 
@@ -1233,12 +1263,14 @@ fn program_task_paths(
     dest: String,
     sources: Vec<String>,
     args: Option<Vec<String>>,
+    progress: Option<Arc<ProgressCallback>>,
 ) -> AsyncTask<ProgramTask> {
     AsyncTask::new(ProgramTask {
         program,
         dest,
         sources: ProgramSources::Paths(sources),
         args: args.unwrap_or_default(),
+        progress,
     })
 }
 
@@ -1460,6 +1492,8 @@ pub struct ProgramTask {
     dest: String,
     sources: ProgramSources,
     args: Vec<String>,
+    /// See `DemTask::progress`: present only when the caller asked for progress.
+    progress: Option<Arc<ProgressCallback>>,
 }
 
 impl Task for ProgramTask {
@@ -1472,13 +1506,23 @@ impl Task for ProgramTask {
             dest,
             sources,
             args,
+            progress,
         } = self;
 
+        let sink = progress
+            .as_ref()
+            .map(|callback| JsProgressSink::new(Arc::clone(callback)));
+        let progress = sink
+            .as_ref()
+            .map(|sink| sink as &dyn programs::ProgressSink);
+
         Ok(op(match sources {
-            ProgramSources::Paths(paths) => programs::run_with_paths(*program, dest, paths, args),
-            ProgramSources::Open(dataset) => {
-                dataset.with_exclusive(|source| programs::run(*program, dest, &[source], args))
+            ProgramSources::Paths(paths) => {
+                programs::run_with_paths(*program, dest, paths, args, progress)
             }
+            ProgramSources::Open(dataset) => dataset.with_exclusive(|source| {
+                programs::run_with_progress(*program, dest, &[source], args, progress)
+            }),
         }))
     }
 

@@ -84,12 +84,15 @@ First working cut — everything here is new.
   `Promise<Buffer>`, `Promise<BandStatistics | null>` — instead of the
   `Promise<unknown>` napi produces when it cannot work out a `Task`'s `JsValue`. A
   test reads the generated file so the annotations cannot quietly disappear.
-- `gdal.demProcess` takes an `onProgress` callback: it runs on the JS thread while
-  the work happens on a worker, and is handed `{ complete, message }`. Returning
-  `false` cancels, which is reported as `GDAL_CANCELLED` — in the message on the
-  async surface, where `napi::Task` pins the error type. A callback that returns
-  nothing keeps going, so one that only logs cannot stop the job by accident.
-  `translate`, `warp` and `vectorTranslate` take it next, as do the method forms.
+- `gdal.translate`, `gdal.warp`, `gdal.vectorTranslate` and `gdal.demProcess` take
+  an `onProgress` callback: it runs on the JS thread while the work happens on a
+  worker, and is handed `{ complete, message }`. Returning `false` cancels, which is
+  reported as `GDAL_CANCELLED` — in the message on the async surface, where
+  `napi::Task` pins the error type. A callback that returns nothing keeps going, so
+  one that only logs cannot stop the job by accident. A callback must not call back
+  into this library: the worker holds the process-wide GDAL lock while it waits for
+  the answer, so that deadlocks. The `Sync` forms and the method forms on a dataset
+  do not take it yet — see the README section.
 - `RasterBand::setStatistics` writes min/max/mean/stdDev back, so a later reader
   gets them from `statistics({ force: false })` instead of computing them. An
   update-mode dataset stores them in the file; a read-only one gets a

@@ -446,6 +446,41 @@ Worth knowing:
   `color-relief`, `tri`, `tpi` and `roughness`. They want a geotransform, and the
   ones that measure slope want a CRS in metres.
 
+### Progress and cancelling
+
+Every program call takes an optional `onProgress`. It runs on the JS thread while the
+work runs on a worker, and is handed `{ complete, message }`:
+
+```js
+await gdal.warp('out.tif', ['big.tif'], ['-t_srs', 'EPSG:3857'], (progress) => {
+  process.stdout.write(`\r${Math.round(progress.complete * 100)}%`)
+})
+```
+
+Returning `false` cancels the run — GDAL's only way of being stopped once it has
+started — and the rejection says so rather than looking like a failure:
+
+```js
+try {
+  await gdal.warp(dest, sources, args, (progress) => progress.complete < 0.5)
+} catch (error) {
+  if (error.message.includes('[GDAL_CANCELLED]')) console.log('stopped early')
+}
+```
+
+Three things worth knowing:
+
+- **Only an explicit `false` cancels.** A callback that returns nothing — the common
+  shape, and what one that only logs looks like — keeps going.
+- **The callback is synchronous as far as GDAL is concerned**, so a slow one slows
+  the conversion down. Count what you need in there; do not do work in there.
+- **Do not call back into this library from a progress callback.** The worker holds
+  the process-wide GDAL lock while it waits for your answer, so a call from inside
+  deadlocks. Report progress; do not read a raster.
+
+There is no `onProgress` on the `Sync` entry points on purpose: a sync call holds the
+JS thread, and the callback has to run on that thread, so it could never be called.
+
 ## Async semantics — read this before relying on it
 
 Every operation that touches GDAL takes a **process-wide lock**, because GDAL

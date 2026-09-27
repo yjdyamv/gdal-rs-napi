@@ -44,6 +44,29 @@ test('onProgress reports the work while it happens', async () => {
   assert.ok(existsSync(dest), 'the work still completed')
 })
 
+test('warp reports progress as well, through the path-based entry point', async () => {
+  const source = tmp('progress-warp-source.tif')
+  const dest = tmp('progress-warp-dest.tif')
+  ramp(source, 1024)
+
+  const seen = []
+  const dataset = await gdal.warp(
+    dest,
+    [source],
+    ['-t_srs', 'EPSG:3857', '-r', 'bilinear'],
+    (progress) => {
+      seen.push(progress.complete)
+    },
+  )
+  dataset.close()
+
+  // A warp goes through different plumbing from `demProcess`: the sources are paths
+  // that GDAL opens itself, rather than a dataset we already hold.
+  assert.ok(seen.length > 0, 'gdalwarp reported progress')
+  const last = seen.at(-1)
+  assert.ok(last > 0 && last <= 1, `complete should climb to 1, finished at ${last}`)
+})
+
 test('returning false cancels, and says so rather than reporting a failure', async () => {
   const source = tmp('cancel-source.tif')
   const dest = tmp('cancel-dest.tif')
