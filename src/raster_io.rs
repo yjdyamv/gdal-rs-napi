@@ -280,11 +280,12 @@ pub fn overview_levels(width: usize, height: usize) -> Vec<i32> {
     levels
 }
 
-/// The kernels `gdaladdo -r` accepts.
+/// The kernels `gdaladdo -r` accepts, plus `none`.
 ///
 /// Deliberately not the read path's `ResampleAlg`: `rms` and `average_magphase`
-/// exist only for overview generation.
-pub const OVERVIEW_RESAMPLING: [&str; 10] = [
+/// exist only for overview generation, and `none` is not a kernel at all — GDAL
+/// reads it as "remove the overviews", which is how `gdaladdo -clean` works.
+pub const OVERVIEW_RESAMPLING: [&str; 11] = [
     "nearest",
     "average",
     "rms",
@@ -295,6 +296,7 @@ pub const OVERVIEW_RESAMPLING: [&str; 10] = [
     "lanczos",
     "average_magphase",
     "mode",
+    "none",
 ];
 
 /// Validate an overview resampling name, returning it in GDAL's spelling.
@@ -444,6 +446,8 @@ mod tests {
         // `ResampleAlg` cannot be reused for them.
         assert_eq!(overview_resampling("rms").unwrap(), "rms");
         assert_eq!(overview_resampling("mode").unwrap(), "mode");
+        // And this one means the opposite of building anything.
+        assert_eq!(overview_resampling("NONE").unwrap(), "none");
 
         let err = overview_resampling("cubicc").unwrap_err();
         assert!(

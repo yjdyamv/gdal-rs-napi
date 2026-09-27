@@ -359,6 +359,22 @@ fn write_overviews(dataset: &mut GdalDataset, request: &BuildOverviewsRequest) -
         .gdal()
 }
 
+/// The request that deletes overviews instead of building them.
+fn remove_overviews_request() -> BuildOverviewsRequest {
+    BuildOverviewsRequest {
+        // Ignored with "NONE", which is GDAL's rule, and empty is honest about it.
+        levels: Some(Vec::new()),
+        resampling: "none",
+        bands: Vec::new(),
+    }
+}
+
+/// Removing overviews is the same call with the "NONE" resampling, which GDAL
+/// reads as "delete them" — the mechanism behind `gdaladdo -clean`.
+fn remove_overviews(dataset: &mut GdalDataset) -> Result<()> {
+    dataset.build_overviews("NONE", &[], &[]).gdal()
+}
+
 #[napi(object)]
 #[derive(Debug, Clone, Default)]
 pub struct BuildOverviewsOptions {
@@ -779,6 +795,90 @@ impl JsDataset {
         self.dataset.close()
     }
 
+    /// Run one of `gdaldem`'s terrain algorithms on this dataset: `hillshade`,
+    /// `slope`, `aspect`, `color-relief`, `tri`, `tpi` or `roughness`.
+    ///
+    /// `args` are gdaldem's own command-line arguments, e.g.
+    /// `['-az', '315', '-alt', '45']` for a hillshade. `colorFile` is read only by
+    /// `color-relief`, which takes its palette from a separate file.
+    ///
+    /// The source wants a geotransform, and slope or aspect want a CRS with metric
+    /// units — without one GDAL computes in pixel units, and says so.
+    #[napi]
+    pub fn dem_process_sync(
+        &self,
+        dest: String,
+        algorithm: String,
+        args: Option<Vec<String>>,
+        color_file: Option<String>,
+    ) -> Result<JsDataset> {
+        let algorithm = programs::dem_algorithm(&algorithm)?;
+        let args = args.unwrap_or_default();
+
+        let dataset = self.dataset.with_exclusive(|source| {
+            programs::dem_process(&dest, algorithm, color_file.as_deref(), source, &args)
+        })?;
+        Ok(JsDataset::wrap(dataset, dest))
+    }
+
+    #[napi]
+    pub fn dem_process(
+        &self,
+        dest: String,
+        algorithm: String,
+        args: Option<Vec<String>>,
+        color_file: Option<String>,
+    ) -> Result<AsyncTask<DemTask>> {
+        Ok(AsyncTask::new(DemTask {
+            // Checked here so a typo is thrown by the call rather than by the worker.
+            algorithm: programs::dem_algorithm(&algorithm)?,
+            dest,
+            color_file,
+            sources: ProgramSources::Open(self.dataset.clone()),
+            args: args.unwrap_or_default(),
+        }))
+    }
+
+    /// Delete a layer, **by name**.
+    ///
+    /// By name rather than by index because deleting shifts every later index, so
+    /// a list of indices to delete is a trap. Not every driver can do it — GeoPackage
+    /// can, an ESRI Shapefile cannot, and GDAL says so when asked.
+    #[napi]
+    pub fn delete_layer(&self, name: String) -> Result<()> {
+        ensure_initialized();
+        self.dataset.ensure_vector_capable()?;
+
+        self.dataset.with_mut(|dataset| {
+            let mut found = None;
+            for candidate in 0..dataset.layer_count() {
+                if dataset.layer(candidate).gdal()?.name() == name {
+                    found = Some(candidate);
+                    break;
+                }
+            }
+            let index = found.ok_or_else(|| bad_argument(format!("no layer named {name:?}")))?;
+            dataset.delete_layer(index).gdal()
+        })
+    }
+
+    /// Remove every overview level — the counterpart of `buildOverviews`.
+    ///
+    /// The same call, with the "NONE" resampling that GDAL reads as "delete them",
+    /// which is how `gdaladdo -clean` prunes a pyramid.
+    #[napi]
+    pub fn remove_overviews_sync(&self) -> Result<()> {
+        self.dataset.with_mut(remove_overviews)
+    }
+
+    #[napi]
+    pub fn remove_overviews(&self) -> AsyncTask<BuildOverviewsTask> {
+        AsyncTask::new(BuildOverviewsTask {
+            dataset: self.dataset.clone(),
+            request: remove_overviews_request(),
+        })
+    }
+
     /// Build overviews — a pyramid of progressively smaller copies — so reads at
     /// reduced resolution do not have to touch every pixel.
     ///
@@ -1101,6 +1201,111 @@ fn program_task_paths(
         sources: ProgramSources::Paths(sources),
         args: args.unwrap_or_default(),
     })
+}
+
+/// `gdaldem <algorithm> source dest`, as one call. `colorFile` is read only by the
+/// `color-relief` algorithm.
+#[napi]
+pub fn dem_process(
+    dest: String,
+    source: String,
+    algorithm: String,
+    args: Option<Vec<String>>,
+    color_file: Option<String>,
+) -> Result<AsyncTask<DemTask>> {
+    Ok(AsyncTask::new(DemTask {
+        algorithm: programs::dem_algorithm(&algorithm)?,
+        dest,
+        color_file,
+        sources: ProgramSources::Paths(vec![source]),
+        args: args.unwrap_or_default(),
+    }))
+}
+
+#[napi]
+pub fn dem_process_sync(
+    dest: String,
+    source: String,
+    algorithm: String,
+    args: Option<Vec<String>>,
+    color_file: Option<String>,
+) -> Result<JsDataset> {
+    let algorithm = programs::dem_algorithm(&algorithm)?;
+    let args = args.unwrap_or_default();
+
+    let dataset = dem_with_paths(algorithm, &dest, color_file.as_deref(), &[source], &args)?;
+    Ok(JsDataset::wrap(dataset, dest))
+}
+
+/// Open the source and run the terrain tool on it, holding the lock throughout.
+fn dem_with_paths(
+    algorithm: &str,
+    dest: &str,
+    color_file: Option<&str>,
+    paths: &[String],
+    args: &[String],
+) -> Result<GdalDataset> {
+    ensure_initialized();
+    let _guard = lock_gdal();
+
+    let opened = paths
+        .iter()
+        .map(|path| {
+            GdalDataset::open_ex(
+                path,
+                DatasetOptions {
+                    open_flags: GdalOpenFlags::GDAL_OF_RASTER,
+                    ..DatasetOptions::default()
+                },
+            )
+            .gdal()
+        })
+        .collect::<Result<Vec<_>>>()?;
+
+    if opened.len() != 1 {
+        return Err(bad_argument("gdaldem takes exactly one source dataset"));
+    }
+    programs::dem_process(dest, algorithm, color_file, &opened[0], args)
+}
+
+/// `gdaldem` on the thread pool: each algorithm reads the whole raster, so it
+/// belongs off the event loop just as much as a warp does.
+pub struct DemTask {
+    algorithm: &'static str,
+    dest: String,
+    color_file: Option<String>,
+    sources: ProgramSources,
+    args: Vec<String>,
+}
+
+impl Task for DemTask {
+    type Output = OpResult<GdalDataset>;
+    type JsValue = JsDataset;
+
+    fn compute(&mut self) -> napi::Result<Self::Output> {
+        let DemTask {
+            algorithm,
+            dest,
+            color_file,
+            sources,
+            args,
+        } = self;
+
+        Ok(op(match sources {
+            ProgramSources::Paths(paths) => {
+                dem_with_paths(algorithm, dest, color_file.as_deref(), paths, args)
+            }
+            ProgramSources::Open(dataset) => dataset.with_exclusive(|source| {
+                programs::dem_process(dest, algorithm, color_file.as_deref(), source, args)
+            }),
+        }))
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
+        output
+            .map(|dataset| JsDataset::wrap(dataset, self.dest.clone()))
+            .map_err(|(code, reason)| into_status_error(code, reason))
+    }
 }
 
 pub struct FlushTask {

@@ -157,6 +157,26 @@ test('buildOverviews() builds the levels gdaladdo would', async () => {
   dataset.close()
 })
 
+test('removeOverviews() prunes the whole pyramid', async () => {
+  const path = tmp('overviews-remove.tif')
+  ramp(path, 1024, 1024)
+
+  const dataset = gdal.openSync(path, { update: true })
+  dataset.buildOverviewsSync()
+  assert.equal(dataset.band(0).overviewCount, 3)
+
+  await dataset.removeOverviews()
+  assert.equal(dataset.band(0).overviewCount, 0)
+
+  // And again synchronously, to show the pair is symmetric in both directions.
+  dataset.buildOverviewsSync({ levels: [2] })
+  assert.equal(dataset.band(0).overviewCount, 1)
+  dataset.removeOverviewsSync()
+  assert.equal(dataset.band(0).overviewCount, 0)
+
+  dataset.close()
+})
+
 test('a raster too small for overviews is not an error', () => {
   const path = tmp('overviews-small.tif')
   ramp(path, 16, 16)

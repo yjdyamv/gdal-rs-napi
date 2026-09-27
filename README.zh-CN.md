@@ -127,6 +127,7 @@ dataset.band(0).overviewCount // 1024x1024 的栅格会建 3 层
   `bilinear`、`cubic`、`cubicspline`、`lanczos`、`average_magphase`、`mode`。拼错会直接报错
   并列出候选，不会丢给 GDAL。
 - **GTiff 只支持一次性为所有波段建 overview**，`bands` 是为那些接受子集的驱动预留的透传。
+- **`removeOverviews()` 删除整个金字塔** —— 与构建完全对称，就是一次调用版的 `gdaladdo -clean`。
 
 ## 坐标系（CRS）
 
@@ -230,7 +231,9 @@ dataset.close()
 `String` 字段收连接后的文本、数组写进整数列会明确报错而不是静默出错。
 
 `updateFeature(fid, geometry, properties)` 只改你点名的字段，遇到不存在的属性会报错
-（而不是加列），`geometry` 传 `null` 表示保持原样。
+（而不是加列），`geometry` 传 `null` 表示保持原样。`deleteFeature(fid)` 删掉一条要素，
+`deleteLayer(name)` 按名字删掉整个图层（删除会让索引位移，所以名字才是安全的句柄）。
+并非所有驱动都支持删除：GeoPackage 可以，Shapefile 不行，GDAL 会直接告诉你。
 
 ## 调用 GDAL 命令行工具（gdal_translate / gdalwarp / ogr2ogr）
 
@@ -267,6 +270,9 @@ dataset.warpSync('out-3857.tif', ['-t_srs', 'EPSG:3857', '-r', 'cubic'])
   直接崩在空指针上。
 - **这里的 `ogr2ogr` 没有 `-overwrite`**。那是命令行层的功能，不属于 `GDALVectorTranslate`：
   目标已存在时是**追加/更新**而不是替换，需要替换请先删掉目标。
+- **`gdaldem` 也提供了**：数据集上的 `demProcess` / `demProcessSync`，或按路径的
+  `gdal.demProcess`，支持 `hillshade`、`slope`、`aspect`、`color-relief`、`tri`、`tpi`、
+  `roughness`。它们需要 geotransform，而计算坡度的那些需要以米为单位的 CRS。
 
 ## 异步语义（用之前请读）
 

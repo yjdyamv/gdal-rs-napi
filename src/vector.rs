@@ -432,6 +432,38 @@ fn update_existing(
     layer.set_feature(feature).gdal()
 }
 
+/// Remove a feature by id.
+///
+/// The `gdal` crate has no wrapper for this one, so it is the single place that
+/// reaches into the C API directly. GDAL's own message is relayed rather than
+/// replaced: it knows whether the id was missing or the driver simply cannot
+/// delete, and those are different problems.
+fn delete_feature(layer: &gdal::vector::Layer<'_>, fid: u64) -> Result<()> {
+    // SAFETY: the layer handle is live for as long as `layer` is.
+    let status = unsafe { gdal_sys::OGR_L_DeleteFeature(layer.c_layer(), fid as i64) };
+    if status == gdal_sys::OGRErr::OGRERR_NONE {
+        return Ok(());
+    }
+
+    // SAFETY: GDAL owns this string; null means it has nothing to say.
+    let detail = unsafe {
+        let message = gdal_sys::CPLGetLastErrorMsg();
+        if message.is_null() {
+            String::new()
+        } else {
+            std::ffi::CStr::from_ptr(message)
+                .to_string_lossy()
+                .into_owned()
+        }
+    };
+
+    Err(bad_argument(if detail.is_empty() {
+        format!("GDAL could not delete feature {fid}")
+    } else {
+        format!("GDAL could not delete feature {fid}: {detail}")
+    }))
+}
+
 #[napi]
 impl JsLayer {
     /// Position of this layer in the dataset, 0-based.
@@ -620,6 +652,22 @@ impl JsLayer {
         self.dataset.with_mut(|dataset| {
             let layer = dataset.layer(self.index).gdal()?;
             update_existing(&layer, fid as u64, geometry.as_ref(), properties)
+        })
+    }
+
+    /// Delete a feature by id.
+    ///
+    /// An id that is not there is an error rather than a silent no-op, and not
+    /// every driver supports deleting at all — GDAL decides, and its answer is
+    /// passed on.
+    #[napi]
+    pub fn delete_feature(&self, fid: i64) -> Result<()> {
+        ensure_initialized();
+        // A write, so `with_mut`: a read-only dataset refuses it, which is also
+        // how a thread-safe one stays read-only.
+        self.dataset.with_mut(|dataset| {
+            let layer = dataset.layer(self.index).gdal()?;
+            delete_feature(&layer, fid as u64)
         })
     }
 

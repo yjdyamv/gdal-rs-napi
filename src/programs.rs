@@ -9,10 +9,11 @@
 //! which keeps it unit-testable.
 
 use std::ffi::{CString, c_char, c_int};
-use std::ptr::null_mut;
+use std::ptr::{null, null_mut};
 
 use gdal::Dataset as GdalDataset;
 use gdal::{DatasetOptions, GdalOpenFlags};
+use gdal_sys::GDALDatasetH;
 use napi::Error;
 
 use crate::error::{GdalErrorCode, IntoGdalResult, Result, bad_argument};
@@ -136,6 +137,68 @@ options_wrapper!(
     "ogr2ogr"
 );
 
+options_wrapper!(
+    /// Wraps a `GDALDEMProcessingOptions` object.
+    DemOptions,
+    GDALDEMProcessingOptions,
+    GDALDEMProcessingOptionsNew,
+    GDALDEMProcessingOptionsFree,
+    "gdaldem"
+);
+
+/// The terrain algorithms `gdaldem` offers, which is also the vocabulary
+/// `GDALDEMProcessing` takes as its third argument.
+pub const DEM_ALGORITHMS: [&str; 7] = [
+    "hillshade",
+    "color-relief",
+    "slope",
+    "aspect",
+    "tri",
+    "tpi",
+    "roughness",
+];
+
+/// Validate a terrain algorithm name.
+///
+/// Checked here so a typo reads as
+/// `unknown terrain algorithm "slop"; expected one of …`, rather than whatever
+/// GDAL prints before failing.
+pub fn dem_algorithm(name: &str) -> Result<&'static str> {
+    let lowered = name.to_ascii_lowercase();
+    DEM_ALGORITHMS
+        .iter()
+        .copied()
+        .find(|candidate| *candidate == lowered)
+        .ok_or_else(|| {
+            bad_argument(format!(
+                "unknown terrain algorithm {name:?}; expected one of {}",
+                DEM_ALGORITHMS.join(", ")
+            ))
+        })
+}
+
+/// Take the dataset GDAL handed back, or explain why there is none.
+///
+/// A null handle means the program failed; `usage_error` distinguishes "your
+/// arguments were wrong" from everything else, which is the most useful thing to
+/// say about it.
+fn take_result(program: &str, handle: GDALDatasetH, usage_error: c_int) -> Result<GdalDataset> {
+    if handle.is_null() {
+        let hint = if usage_error == 0 {
+            String::new()
+        } else {
+            " (it reported the arguments as invalid)".to_string()
+        };
+        return Err(bad_argument(format!(
+            "{program} did not produce a dataset{hint}"
+        )));
+    }
+
+    // SAFETY: GDAL just handed us a dataset it created. `Dataset` takes ownership
+    // and closes it when it is dropped or `close()`d.
+    Ok(unsafe { GdalDataset::from_c_dataset(handle) })
+}
+
 /// Run one of the programs on already-open sources.
 ///
 /// The caller must already hold the global GDAL lock, and the sources must stay
@@ -202,21 +265,47 @@ pub(crate) fn run(
         }
     };
 
-    if handle.is_null() {
-        let hint = if usage_error == 0 {
-            String::new()
-        } else {
-            " (it reported the arguments as invalid)".to_string()
-        };
-        return Err(bad_argument(format!(
-            "{} did not produce a dataset{hint}",
-            program.name()
-        )));
-    }
+    take_result(program.name(), handle, usage_error)
+}
 
-    // SAFETY: GDAL just handed us a dataset it created. `Dataset` takes ownership
-    // and closes it when it is dropped or `close()`d.
-    Ok(unsafe { GdalDataset::from_c_dataset(handle) })
+/// Run the terrain tools — `gdaldem`'s hillshade, slope, aspect and friends.
+///
+/// `algorithm` comes from [`DEM_ALGORITHMS`], `color_file` only means anything for
+/// `color-relief`, and `args` are the tool's own command-line arguments. The
+/// caller must already hold the global lock.
+pub(crate) fn dem_process(
+    dest: &str,
+    algorithm: &str,
+    color_file: Option<&str>,
+    source: &GdalDataset,
+    args: &[String],
+) -> Result<GdalDataset> {
+    let c_dest =
+        CString::new(dest).map_err(|_| bad_argument("the destination path contains a NUL byte"))?;
+    let c_algorithm = CString::new(algorithm)
+        .map_err(|_| bad_argument("the algorithm name contains a NUL byte"))?;
+    let c_color = match color_file {
+        Some(path) => Some(
+            CString::new(path)
+                .map_err(|_| bad_argument("the colour file path contains a NUL byte"))?,
+        ),
+        None => None,
+    };
+
+    let mut usage_error: c_int = 0;
+    let handle = unsafe {
+        let options = DemOptions::new(args)?;
+        gdal_sys::GDALDEMProcessing(
+            c_dest.as_ptr(),
+            source.c_dataset(),
+            c_algorithm.as_ptr(),
+            c_color.as_ref().map_or(null(), |path| path.as_ptr()),
+            options.c_options,
+            &mut usage_error,
+        )
+    };
+
+    take_result("gdaldem", handle, usage_error)
 }
 
 /// Open `paths` and run `program` on them, holding the global lock throughout.
@@ -333,6 +422,35 @@ mod tests {
 
     fn to_argv_error(arg: &str) -> Error<GdalErrorCode> {
         with_argv(&[arg.to_string()], |_| ()).unwrap_err()
+    }
+
+    #[test]
+    fn terrain_algorithms_are_the_gdaldem_ones() {
+        assert_eq!(dem_algorithm("hillshade").unwrap(), "hillshade");
+        assert_eq!(dem_algorithm("Color-Relief").unwrap(), "color-relief");
+        assert_eq!(dem_algorithm("TPI").unwrap(), "tpi");
+
+        let err = dem_algorithm("slop").unwrap_err();
+        assert!(
+            err.reason.contains("unknown terrain algorithm"),
+            "{}",
+            err.reason
+        );
+        // The alternatives come back with the complaint.
+        assert!(err.reason.contains("roughness"), "{}", err.reason);
+    }
+
+    /// The same trap the other programs have: a bad argument list must be reported
+    /// rather than handed to GDAL as a null options pointer.
+    #[test]
+    fn a_bad_terrain_argument_is_a_readable_error() {
+        let _guard = lock_gdal();
+        let args = vec!["-definitely-not-an-option".to_string()];
+        let err = match DemOptions::new(&args) {
+            Ok(_) => panic!("an unknown option should have been rejected"),
+            Err(err) => err,
+        };
+        assert!(err.reason.contains("gdaldem rejected"), "{}", err.reason);
     }
 
     #[test]

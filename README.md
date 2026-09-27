@@ -197,6 +197,8 @@ Worth knowing:
   to GDAL.
 - **GTiff builds overviews for every band at once**, so `bands` is passed through
   for the drivers that accept a subset.
+- **`removeOverviews()` deletes the pyramid**, the exact counterpart of building
+  it — `gdaladdo -clean`, as one call.
 
 ## Coordinate reference systems
 
@@ -327,7 +329,10 @@ silent nonsense.
 
 `updateFeature(fid, geometry, properties)` changes only what you name, errors on
 an unknown property rather than adding a column, and treats a `null` geometry as
-"leave it alone".
+"leave it alone". `deleteFeature(fid)` removes one feature, and
+`deleteLayer(name)` a whole layer *by name* — deleting shifts every later index, so
+a name is the safe handle. Not every driver can do either: GeoPackage can, an ESRI
+Shapefile cannot, and GDAL says so.
 
 On a feature, `fid` and `geometry` are `null` when absent — matching
 `properties`, where a SQL `NULL` is also `null`.
@@ -374,6 +379,10 @@ Worth knowing:
 - **`ogr2ogr` has no `-overwrite` here.** That flag is a command-line feature, not
   part of `GDALVectorTranslate`: an existing destination is updated rather than
   replaced, so delete it first if that is what you want.
+- **`gdaldem` is here as well**, through `demProcess` / `demProcessSync` on a
+  dataset or `gdal.demProcess` by path: `hillshade`, `slope`, `aspect`,
+  `color-relief`, `tri`, `tpi` and `roughness`. They want a geotransform, and the
+  ones that measure slope want a CRS in metres.
 
 ## Async semantics — read this before relying on it
 

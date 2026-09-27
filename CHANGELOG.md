@@ -26,7 +26,12 @@ First working cut — everything here is new.
   `metadata`, `overviewCount`.
 - `Layer`: `featuresSync`, `feature`, `setAttributeFilter`,
   `setSpatialFilterRect`, `clearSpatialFilter`, `createFeature`, `updateFeature`,
-  `fields`, `extent`, `spatialRefWkt`, `spatialRef`.
+  `deleteFeature`, `fields`, `extent`, `spatialRefWkt`, `spatialRef`.
+- `Dataset`: `demProcess` / `demProcessSync` for `gdaldem`'s hillshade, slope,
+  aspect, color-relief, tri, tpi and roughness (with `gdal.demProcess` by path);
+  `deleteLayer(name)`, by name because deleting shifts every later index; and
+  `removeOverviews` / `removeOverviewsSync`, the counterpart of building a
+  pyramid — the same call with the "NONE" resampling GDAL reads as "delete them".
 - `SpatialRef`: `fromEpsg` / `fromWkt` / `fromProj4` / `fromDefinition`, plus
   `wkt`, `prettyWkt`, `proj4`, `projJson`, `name`, `authName`, `authCode`,
   `authority`, `axisMapping`, `linearUnit`, `angularUnit`, `isGeographic`,
@@ -112,8 +117,7 @@ First working cut — everything here is new.
   `CoordTransformOptions` (a specific pipeline, an accuracy target) is not exposed,
   and the transformation is synchronous, so a million points has to be chunked by
   the caller.
-- Overviews can be built but not removed (`GDALBuildOverviews` with `NONE`), and
-  statistics and histograms can be read but not written back into a dataset.
+- Statistics and histograms can be read but not written back into a dataset.
 - `buildOverviews({ bands })` is passed through, but GTiff — the only writable
   overview driver compiled in — refuses anything short of every band.
 - The programs have no progress callbacks (GDAL's `*OptionsSetProgress` is not

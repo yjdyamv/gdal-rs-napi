@@ -3,6 +3,49 @@ import { test } from 'node:test'
 
 import { gdal, tmp } from './helpers.mjs'
 
+test('deleteFeature removes exactly the one asked for', () => {
+  const path = tmp('delete-feature.gpkg')
+  const dataset = gdal.createVectorSync(path, 'GPKG')
+  const layer = dataset.createLayer({ name: 'places', geometryType: 'Point' })
+
+  layer.createFeature({ type: 'Point', coordinates: [1, 2] }, { name: 'one' })
+  layer.createFeature({ type: 'Point', coordinates: [3, 4] }, { name: 'two' })
+  layer.createFeature({ type: 'Point', coordinates: [5, 6] }, { name: 'three' })
+
+  const before = layer.featuresSync()
+  assert.equal(before.length, 3)
+
+  layer.deleteFeature(before[1].fid)
+
+  const after = layer.featuresSync()
+  assert.equal(after.length, 2)
+  assert.deepEqual(
+    after.map((feature) => feature.properties.name).sort(),
+    ['one', 'three'],
+  )
+
+  // An id that is not there is an error rather than a shrug.
+  assert.throws(() => layer.deleteFeature(999999))
+
+  dataset.close()
+})
+
+test('deleteLayer drops a layer by name', () => {
+  const path = tmp('delete-layer.gpkg')
+  const dataset = gdal.createVectorSync(path, 'GPKG')
+  dataset.createLayer({ name: 'keep', geometryType: 'Point' })
+  dataset.createLayer({ name: 'drop', geometryType: 'Point' })
+  assert.equal(dataset.layerCount, 2)
+
+  dataset.deleteLayer('drop')
+  assert.equal(dataset.layerCount, 1)
+  assert.equal(dataset.layer(0).name, 'keep')
+
+  assert.throws(() => dataset.deleteLayer('nope'), /no layer named/)
+
+  dataset.close()
+})
+
 test('writes a GPKG through createVector + createLayer + createFeature', () => {
   const path = tmp('places.gpkg')
   const dataset = gdal.createVectorSync(path, 'GPKG')

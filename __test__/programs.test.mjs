@@ -5,11 +5,11 @@ import { test } from 'node:test'
 import { bytesOf, gdal, ramp, tmp } from './helpers.mjs'
 
 /** A single-band GTiff in EPSG:4326 — origin (0, 0), 1 unit per pixel, Y down. */
-function georeferenced(path, width, height, originX = 0) {
+function georeferenced(path, width, height, originX = 0, epsg = 4326) {
   const dataset = gdal.createSync(path, { driver: 'GTiff', width, height, bandCount: 1 })
   dataset.band(0).writePixelsSync(bytesOf(ramp(width, height)))
   dataset.setGeoTransform([originX, 1, 0, height, 0, -1])
-  dataset.setProjection(gdal.epsgToWkt(4326))
+  dataset.setProjection(gdal.epsgToWkt(epsg))
   dataset.close()
 }
 
@@ -147,6 +147,47 @@ test('warp() merges several sources side by side', () => {
   }
 
   merged.close()
+})
+
+test('demProcess() runs gdaldem, and gives back real relief', async () => {
+  const source = tmp('dem-source.tif')
+  // A hillshade needs a geotransform; slope and aspect want a CRS in metres, which
+  // is why this fixture is projected rather than in degrees.
+  georeferenced(source, 32, 32, 0, 3857)
+
+  const dest = tmp('dem-hillshade.tif')
+  const hillshade = gdal.demProcessSync(dest, source, 'hillshade', ['-az', '315', '-alt', '45'])
+  assert.equal(hillshade.driver, 'GTiff')
+  assert.equal(hillshade.width, 32)
+  hillshade.close()
+
+  const shaded = gdal.openSync(dest)
+  const values = new Set(Array.from(shaded.band(0).readPixelsSync()))
+  assert.ok(values.size > 1, 'a hillshade of a ramp should not be flat')
+  shaded.close()
+
+  // The same thing as a method on an open dataset, and off the event loop.
+  const opened = gdal.openSync(source)
+  const slope = await opened.demProcess(tmp('dem-slope.tif'), 'slope')
+  assert.equal(slope.driver, 'GTiff')
+  slope.close()
+  opened.close()
+})
+
+test('a terrain algorithm that does not exist is refused, with the list', () => {
+  const source = tmp('dem-bad.tif')
+  georeferenced(source, 8, 8)
+
+  const dataset = gdal.openSync(source)
+  assert.throws(
+    () => dataset.demProcessSync(tmp('dem-bad-out.tif'), 'slop'),
+    (error) => {
+      assert.match(error.message, /unknown terrain algorithm/)
+      assert.match(error.message, /roughness/, 'the alternatives are listed')
+      return true
+    },
+  )
+  dataset.close()
 })
 
 test('vectorTranslate() runs ogr2ogr, schema and all', () => {
