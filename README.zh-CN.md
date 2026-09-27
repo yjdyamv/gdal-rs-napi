@@ -235,6 +235,29 @@ dataset.close()
 `deleteLayer(name)` 按名字删掉整个图层（删除会让索引位移，所以名字才是安全的句柄）。
 并非所有驱动都支持删除：GeoPackage 可以，Shapefile 不行，GDAL 会直接告诉你。
 
+### 按批读取
+
+`featuresSync()` 会把整层物化；`openCursor()` 改成一次读一批，于是图层的代价是**一批**而不是全部：
+
+```js
+const cursor = layer.openCursor({ batchSize: 1000 })
+for (;;) {
+  const batch = await cursor.read() // 在线程池上读
+  if (batch.length === 0) break
+  consume(batch) // { fid, properties, geometry }，与其它地方一致
+}
+```
+
+每一批的内容与 `featuresSync()` 对这几行给出的结果完全相同，
+所以这样的循环可以直接替换整层物化的调用。
+
+两点要知道，这两点都是 GDAL 的形态、而不是本 API 的：
+
+- **同一图层同时只能有一个读取者。** GDAL 把读取位置放在**图层**上 —— 这既是批次能续读的原因，
+  也是第二个游标（或一次 `featuresSync()` 调用）会把第一个倒回开头的原因。
+  请顺序读，并且不要混用两种读法。
+- **`close()` 不碰 GDAL。** 其它任何读取都会重新倒带，所以把位置停在半途没有代价。
+
 ## 调用 GDAL 命令行工具（gdal_translate / gdalwarp / ogr2ogr）
 
 三个工具各对应一次调用。`args` 就是**该工具自己的命令行参数**，GDAL 文档里的任何选项都能
@@ -484,9 +507,9 @@ MapInfo、DXF、DGN、CAD、S57、VDV、VFK、CSV、GTFS、Selafin、KMLSUPEROVE
 CRS 只做到点与包围盒的变换：几何对象本身不参与变换，`CoordTransformOptions`（指定转换管线、
 精度目标）没有暴露，且变换是同步的 —— 上百万个点需要调用方自行分块。
 
-读图层是整层物化，没有流式或异步迭代；`translate`/`warp`/`ogr2ogr` 没有进度回调，也没有
-`-overwrite` 兼容层；没有 `GDALDEMProcessing`（hillshade 等）；`statistics()` 与直方图只能读，
-不能写回数据集，overview 只能建不能删。
+读图层可以按批读（游标），但那是游标而不是 JS 的 async iterator；且 GDAL 的读取位置在图层上，
+同一图层同时只能有一个读取者。`translate`/`warp`/`ogr2ogr`/`gdaldem` 都没有进度回调，
+`vectorTranslate` 也没有 `-overwrite` 兼容层；`statistics()` 与直方图只能读，不能写回数据集。
 
 一个构建系统层面的瑕疵：**异步方法的返回类型在 `.d.ts` 里是 `Promise<unknown>`**，
 因为 napi 无法从 `Task` 推导 `JsValue`。同步方法的类型是准确的，运行时返回的也确实是对应

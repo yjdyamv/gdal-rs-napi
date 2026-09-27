@@ -334,6 +334,32 @@ an unknown property rather than adding a column, and treats a `null` geometry as
 a name is the safe handle. Not every driver can do either: GeoPackage can, an ESRI
 Shapefile cannot, and GDAL says so.
 
+### Reading in batches
+
+`featuresSync()` materialises the whole layer. `openCursor()` reads it a batch at a
+time instead, so what a layer costs is one batch rather than all of it:
+
+```js
+const cursor = layer.openCursor({ batchSize: 1000 })
+for (;;) {
+  const batch = await cursor.read() // on the thread pool
+  if (batch.length === 0) break
+  consume(batch) // { fid, properties, geometry }, as everywhere else
+}
+```
+
+Every batch holds exactly what `featuresSync()` would have returned for those rows,
+so a loop like this is a drop-in replacement for the materialising call.
+
+Two things to know, both of them GDAL's shape rather than this API's:
+
+- **One reader per layer at a time.** GDAL keeps the reading position *on the
+  layer*, which is what lets a batch resume where the last one stopped — and what
+  makes a second cursor, or a `featuresSync()` call, rewind the first. Read the
+  batches in order and do not mix the two ways of reading one layer.
+- **`close()` does not touch GDAL.** Anything else reading that layer rewinds it
+  anyway, so leaving the position where it stopped costs nothing.
+
 On a feature, `fid` and `geometry` are `null` when absent — matching
 `properties`, where a SQL `NULL` is also `null`.
 

@@ -4,6 +4,100 @@ import { test } from 'node:test'
 
 import { gdal, tmp } from './helpers.mjs'
 
+/** A GPKG holding `count` point features, so a cursor has something to page. */
+function manyFeatures(path, count) {
+  const dataset = gdal.createVectorSync(path, 'GPKG')
+  const layer = dataset.createLayer({ name: 'points', geometryType: 'Point', epsg: 4326 })
+  for (let index = 0; index < count; index += 1) {
+    layer.createFeature(
+      { type: 'Point', coordinates: [index / 10, index / 10] },
+      { name: `n${index}`, n: index },
+    )
+  }
+  dataset.close()
+}
+
+test('a cursor pages a layer, exactly as materialising it would', async () => {
+  const path = tmp('cursor.gpkg')
+  manyFeatures(path, 250)
+
+  const dataset = gdal.openSync(path)
+  const layer = dataset.layer(0)
+  const everything = layer.featuresSync()
+
+  const cursor = layer.openCursor({ batchSize: 100 })
+  assert.equal(cursor.batchSize, 100)
+  assert.equal(cursor.finished, false)
+
+  const batches = []
+  for (;;) {
+    const batch = await cursor.read()
+    if (batch.length === 0) break
+    batches.push(batch)
+  }
+
+  assert.deepEqual(
+    batches.map((batch) => batch.length),
+    [100, 100, 50],
+  )
+  assert.equal(cursor.finished, true)
+
+  // The whole point of the thing: paged and materialised reads have to agree
+  // field for field — fid, properties and geometry alike.
+  assert.deepEqual(batches.flat(), everything)
+
+  // And reading past the end stays empty rather than throwing.
+  assert.deepEqual(await cursor.read(), [])
+  cursor.close()
+
+  dataset.close()
+})
+
+test('a cursor respects the attribute filter, and readSync matches read', () => {
+  const path = tmp('cursor-filter.gpkg')
+  manyFeatures(path, 40)
+
+  const dataset = gdal.openSync(path)
+  const layer = dataset.layer(0)
+
+  layer.setAttributeFilter('n >= 20')
+  const filtered = layer.featuresSync()
+  assert.equal(filtered.length, 20)
+
+  const paged = []
+  const cursor = layer.openCursor({ batchSize: 7 })
+  while (!cursor.finished) paged.push(...cursor.readSync())
+  cursor.close()
+
+  assert.deepEqual(paged, filtered)
+
+  dataset.close()
+})
+
+test('a cursor refuses nonsense, and stops when it is closed', async () => {
+  const path = tmp('cursor-errors.gpkg')
+  manyFeatures(path, 5)
+
+  const dataset = gdal.openSync(path)
+  const layer = dataset.layer(0)
+
+  assert.throws(() => layer.openCursor({ batchSize: 0 }), /at least 1/)
+
+  const cursor = layer.openCursor()
+  assert.equal(cursor.batchSize, 1000, 'the documented default')
+  assert.equal((await cursor.read()).length, 5)
+
+  cursor.close()
+  cursor.close() // idempotent
+  await assert.rejects(cursor.read(), /closed/)
+  assert.throws(() => cursor.readSync(), /closed/)
+
+  // Closing the dataset shuts the cursor too, through the handle it shares.
+  const other = layer.openCursor()
+  dataset.close()
+  await assert.rejects(other.read(), /closed/)
+})
+
 const collection = {
   type: 'FeatureCollection',
   features: [

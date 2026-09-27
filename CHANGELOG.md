@@ -24,9 +24,15 @@ First working cut — everything here is new.
   `statistics` / `statisticsSync`, `histogram` / `histogramSync`,
   `noDataValue`, `setNoDataValue`, `size`, `blockSize`, `colorInterpretation`,
   `metadata`, `overviewCount`.
-- `Layer`: `featuresSync`, `feature`, `setAttributeFilter`,
+- `Layer`: `featuresSync`, `feature`, `openCursor`, `setAttributeFilter`,
   `setSpatialFilterRect`, `clearSpatialFilter`, `createFeature`, `updateFeature`,
   `deleteFeature`, `fields`, `extent`, `spatialRefWkt`, `spatialRef`.
+- `FeatureCursor`: `read` (async) / `readSync`, `batchSize`, `finished`, `close`.
+  It pages a layer, so a large one costs a batch of memory instead of all of it,
+  and each batch holds exactly what `featuresSync` would have returned for those
+  rows. Note that GDAL keeps the reading position on the *layer*, not in the
+  cursor: that is what lets batches resume, and it also means one reader per layer
+  at a time, read in order.
 - `Dataset`: `demProcess` / `demProcessSync` for `gdaldem`'s hillshade, slope,
   aspect, color-relief, tri, tpi and roughness (with `gdal.demProcess` by path);
   `deleteLayer(name)`, by name because deleting shifts every later index; and
@@ -123,9 +129,9 @@ First working cut — everything here is new.
 - The programs have no progress callbacks (GDAL's `*OptionsSetProgress` is not
   wired up), and `vectorTranslate` has no `-overwrite`, which is a command-line
   feature rather than part of `GDALVectorTranslate`.
-- No `GDALDEMProcessing` (hillshade and friends).
-- Reading a layer materialises every feature; there is no streaming iterator, and
-  no async feature iteration.
+- No terrain algorithms beyond the ones `gdaldem` itself offers.
+- Reading a layer in batches is a cursor rather than a JS async iterator, and GDAL
+  keeps the reading position on the layer, so one reader per layer at a time.
 - Array-valued properties are written as comma-joined text rather than list fields.
 - Generated `.d.ts` types the async methods as `Promise<unknown>`, because `napi`
   cannot resolve `Task::JsValue`. The sync signatures are exact and the values

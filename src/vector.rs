@@ -7,6 +7,10 @@
 //! is only valid while the feature lives. Copying the fields out removes the
 //! whole class of problems, and the values are what JS wants anyway.
 
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+
+use gdal::Dataset as GdalDataset;
 use gdal::Metadata;
 use gdal::vector::{
     Feature, FieldDefn, FieldValue, LayerAccess, OGRFieldType, OGRwkbGeometryType,
@@ -17,7 +21,7 @@ use napi_derive::napi;
 use serde_json::{Map, Value};
 
 use crate::dataset::DatasetRef;
-use crate::error::{IntoGdalResult, Result, bad_argument};
+use crate::error::{GdalErrorCode, IntoGdalResult, Result, bad_argument, into_status_error, split};
 use crate::json::{is_scalar, json_f64, json_i64, json_joined_text, json_text};
 use crate::runtime::{ensure_initialized, lock_gdal};
 use crate::spatial_ref::JsSpatialRef;
@@ -655,6 +659,31 @@ impl JsLayer {
         })
     }
 
+    /// Read this layer in batches, rather than materialising all of it the way
+    /// `featuresSync` does.
+    ///
+    /// See `FeatureCursor` for the one-cursor-per-layer rule: GDAL keeps the
+    /// reading position on the layer, not in the cursor, which is what lets
+    /// batches resume — and what makes a second reader rewind the first.
+    #[napi]
+    pub fn open_cursor(&self, options: Option<CursorOptions>) -> Result<JsFeatureCursor> {
+        let batch_size = options
+            .unwrap_or_default()
+            .batch_size
+            .unwrap_or(DEFAULT_CURSOR_BATCH);
+
+        if batch_size == 0 {
+            return Err(bad_argument("batchSize has to be at least 1"));
+        }
+
+        Ok(JsFeatureCursor {
+            dataset: self.dataset.clone(),
+            index: self.index,
+            batch_size: batch_size as usize,
+            state: Arc::new(CursorState::default()),
+        })
+    }
+
     /// Delete a feature by id.
     ///
     /// An id that is not there is an error rather than a silent no-op, and not
@@ -710,6 +739,176 @@ impl JsLayer {
             layer.clear_spatial_filter();
             Ok(())
         })
+    }
+}
+
+/// How many features a cursor pulls per read.
+pub const DEFAULT_CURSOR_BATCH: u32 = 1000;
+
+#[napi(object)]
+#[derive(Debug, Clone, Default)]
+pub struct CursorOptions {
+    /// Default 1000. Bigger batches mean fewer round trips and more memory held
+    /// at once — a thousand features is a few hundred kilobytes of JS objects.
+    pub batch_size: Option<u32>,
+}
+
+/// A cursor's bookkeeping.
+///
+/// Atomics rather than `&mut self`, because a batch read can be running on the
+/// thread pool while JS asks whether the cursor is finished.
+#[derive(Debug, Default)]
+struct CursorState {
+    started: AtomicBool,
+    finished: AtomicBool,
+    closed: AtomicBool,
+}
+
+/// Reads a layer in batches, so a large layer costs one batch of memory instead
+/// of all of it.
+///
+/// # One cursor per layer at a time
+///
+/// GDAL keeps the reading position *on the layer*, not in this object. That is
+/// what lets a batch resume where the last one stopped, and it also means a
+/// second cursor — or a `featuresSync()` call, which builds an iterator that
+/// rewinds on drop — will pull the ground out from under the first. Use one
+/// reader per layer, and read the batches in order.
+#[napi(js_name = "FeatureCursor")]
+pub struct JsFeatureCursor {
+    dataset: DatasetRef,
+    index: usize,
+    batch_size: usize,
+    state: Arc<CursorState>,
+}
+
+impl JsFeatureCursor {
+    /// Pull the next batch. Shared by the sync method and the async task.
+    fn next_batch(&self) -> Result<Vec<FeatureRecord>> {
+        if self.state.closed.load(Ordering::Relaxed) {
+            return Err(bad_argument("the cursor is closed"));
+        }
+
+        // `swap` hands the rewind to exactly one caller even if two reads are
+        // issued at once: the layer has to be rewound once, not twice.
+        let reset = !self.state.started.swap(true, Ordering::Relaxed);
+        let batch = self
+            .dataset
+            .with_exclusive(|dataset| read_batch(dataset, self.index, self.batch_size, reset))?;
+
+        if batch.is_empty() {
+            self.state.finished.store(true, Ordering::Relaxed);
+        }
+        Ok(batch)
+    }
+}
+
+#[napi]
+impl JsFeatureCursor {
+    #[napi(getter)]
+    pub fn batch_size(&self) -> u32 {
+        self.batch_size as u32
+    }
+
+    /// True once a read has come back empty. `read()` returning `[]` says the
+    /// same thing; this is for a `while (!cursor.finished)` loop.
+    #[napi(getter)]
+    pub fn finished(&self) -> bool {
+        self.state.finished.load(Ordering::Relaxed)
+    }
+
+    /// The next batch, or an empty array once the layer is exhausted.
+    #[napi]
+    pub fn read_sync(&self) -> Result<Vec<FeatureRecord>> {
+        self.next_batch()
+    }
+
+    #[napi]
+    pub fn read(&self) -> AsyncTask<CursorTask> {
+        AsyncTask::new(CursorTask {
+            dataset: self.dataset.clone(),
+            index: self.index,
+            batch_size: self.batch_size,
+            state: Arc::clone(&self.state),
+        })
+    }
+
+    /// Stop reading. Idempotent, and it does not touch GDAL on purpose: every
+    /// other way of reading this layer rewinds it anyway, so leaving the position
+    /// where it stopped costs nothing.
+    #[napi]
+    pub fn close(&self) {
+        self.state.closed.store(true, Ordering::Relaxed);
+    }
+}
+
+/// Pull up to `count` features from wherever the layer's reading position is.
+///
+/// The position lives on the layer, so `reset` is only for the first batch. Each
+/// `Feature` is dropped as soon as it has been converted, and that drop is what
+/// frees the C-side memory: it is why a cursor's footprint is the batch rather
+/// than the layer.
+fn read_batch(
+    dataset: &GdalDataset,
+    index: usize,
+    count: usize,
+    reset: bool,
+) -> Result<Vec<FeatureRecord>> {
+    let layer = dataset.layer(index).gdal()?;
+
+    if reset {
+        // SAFETY: the layer handle is live for as long as `layer` is.
+        unsafe { gdal_sys::OGR_L_ResetReading(layer.c_layer()) };
+    }
+
+    let field_names = layer_field_names(&layer);
+
+    let mut records = Vec::new();
+    for _ in 0..count {
+        // SAFETY: the layer handle is live, and `OGR_L_GetNextFeature` hands over
+        // ownership of what it returns — which is why it goes straight into a
+        // `Feature`, whose drop destroys it.
+        let handle = unsafe { gdal_sys::OGR_L_GetNextFeature(layer.c_layer()) };
+        if handle.is_null() {
+            break;
+        }
+        let feature = unsafe { Feature::from_c_feature(layer.defn(), handle) };
+        records.push(to_record(&feature, &field_names)?);
+    }
+    Ok(records)
+}
+
+type OpResult<T> = std::result::Result<T, (GdalErrorCode, String)>;
+
+fn op<T>(result: Result<T>) -> OpResult<T> {
+    result.map_err(split)
+}
+
+/// A batch read on the thread pool: pulling a page out of a large layer is
+/// exactly the kind of work that should not hold up the event loop.
+pub struct CursorTask {
+    dataset: DatasetRef,
+    index: usize,
+    batch_size: usize,
+    state: Arc<CursorState>,
+}
+
+impl Task for CursorTask {
+    type Output = OpResult<Vec<FeatureRecord>>;
+    type JsValue = Vec<FeatureRecord>;
+
+    fn compute(&mut self) -> napi::Result<Self::Output> {
+        let cursor = JsFeatureCursor {
+            dataset: self.dataset.clone(),
+            index: self.index,
+            batch_size: self.batch_size,
+            state: Arc::clone(&self.state),
+        };
+        Ok(op(cursor.next_batch()))
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
+        output.map_err(|(code, reason)| into_status_error(code, reason))
     }
 }
 
