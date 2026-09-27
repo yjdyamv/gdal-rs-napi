@@ -17,6 +17,7 @@ use gdal::spatial_ref::SpatialRef;
 use gdal::vector::{FieldDefn, LayerAccess, LayerOptions, OGRFieldType, OGRwkbGeometryType};
 use gdal::{Dataset as GdalDataset, DatasetOptions, DriverManager, GdalOpenFlags, Metadata};
 use napi::bindgen_prelude::*;
+use napi::threadsafe_function::ThreadsafeFunction;
 use napi_derive::napi;
 use serde_json::Value;
 
@@ -24,6 +25,7 @@ use crate::band::JsRasterBand;
 use crate::dtype::DataType;
 use crate::error::{GdalErrorCode, IntoGdalResult, Result, bad_argument, into_status_error, split};
 use crate::programs;
+use crate::progress::{JsProgressSink, ProgressCallback, ProgressUpdate};
 use crate::raster_io::{
     build_creation_options, create_dataset, overview_levels, overview_resampling,
 };
@@ -870,6 +872,9 @@ impl JsDataset {
             color_file,
             sources: ProgramSources::Open(self.dataset.clone()),
             args: args.unwrap_or_default(),
+            // The method form has no `onProgress` yet; the module-level
+            // `gdal.demProcess` is where a caller can pass one.
+            progress: None,
         }))
     }
 
@@ -1239,6 +1244,9 @@ fn program_task_paths(
 
 /// `gdaldem <algorithm> source dest`, as one call. `colorFile` is read only by the
 /// `color-relief` algorithm.
+///
+/// `onProgress` runs on the JS thread while the work happens on a worker, and
+/// returning `false` from it cancels — see the progress section of the README.
 #[napi(ts_return_type = "Promise<Dataset>")]
 pub fn dem_process(
     dest: String,
@@ -1246,6 +1254,7 @@ pub fn dem_process(
     algorithm: String,
     args: Option<Vec<String>>,
     color_file: Option<String>,
+    on_progress: Option<ThreadsafeFunction<ProgressUpdate, bool, ProgressUpdate, Status, false>>,
 ) -> Result<AsyncTask<DemTask>> {
     Ok(AsyncTask::new(DemTask {
         algorithm: programs::dem_algorithm(&algorithm)?,
@@ -1253,6 +1262,7 @@ pub fn dem_process(
         color_file,
         sources: ProgramSources::Paths(vec![source]),
         args: args.unwrap_or_default(),
+        progress: on_progress.map(Arc::new),
     }))
 }
 
@@ -1267,7 +1277,14 @@ pub fn dem_process_sync(
     let algorithm = programs::dem_algorithm(&algorithm)?;
     let args = args.unwrap_or_default();
 
-    let dataset = dem_with_paths(algorithm, &dest, color_file.as_deref(), &[source], &args)?;
+    let dataset = dem_with_paths(
+        algorithm,
+        &dest,
+        color_file.as_deref(),
+        &[source],
+        &args,
+        None,
+    )?;
     Ok(JsDataset::wrap(dataset, dest))
 }
 
@@ -1278,6 +1295,7 @@ fn dem_with_paths(
     color_file: Option<&str>,
     paths: &[String],
     args: &[String],
+    progress: Option<&dyn programs::ProgressSink>,
 ) -> Result<GdalDataset> {
     ensure_initialized();
     let _guard = lock_gdal();
@@ -1299,7 +1317,7 @@ fn dem_with_paths(
     if opened.len() != 1 {
         return Err(bad_argument("gdaldem takes exactly one source dataset"));
     }
-    programs::dem_process(dest, algorithm, color_file, &opened[0], args)
+    programs::dem_process_with_progress(dest, algorithm, color_file, &opened[0], args, progress)
 }
 
 /// `gdaldem` on the thread pool: each algorithm reads the whole raster, so it
@@ -1310,6 +1328,9 @@ pub struct DemTask {
     color_file: Option<String>,
     sources: ProgramSources,
     args: Vec<String>,
+    /// Present only when the caller asked for progress. The sync entry points have
+    /// no way to run it, so they pass `None` — see `programs::run_with_progress`.
+    progress: Option<Arc<ProgressCallback>>,
 }
 
 impl Task for DemTask {
@@ -1323,14 +1344,36 @@ impl Task for DemTask {
             color_file,
             sources,
             args,
+            progress,
         } = self;
 
+        // The sink owns whatever the callback needs; `progress` below is the trait
+        // object the programs take, and is `None` when nobody asked.
+        let sink = progress
+            .as_ref()
+            .map(|callback| JsProgressSink::new(Arc::clone(callback)));
+        let progress = sink
+            .as_ref()
+            .map(|sink| sink as &dyn programs::ProgressSink);
+
         Ok(op(match sources {
-            ProgramSources::Paths(paths) => {
-                dem_with_paths(algorithm, dest, color_file.as_deref(), paths, args)
-            }
+            ProgramSources::Paths(paths) => dem_with_paths(
+                algorithm,
+                dest,
+                color_file.as_deref(),
+                paths,
+                args,
+                progress,
+            ),
             ProgramSources::Open(dataset) => dataset.with_exclusive(|source| {
-                programs::dem_process(dest, algorithm, color_file.as_deref(), source, args)
+                programs::dem_process_with_progress(
+                    dest,
+                    algorithm,
+                    color_file.as_deref(),
+                    source,
+                    args,
+                    progress,
+                )
             }),
         }))
     }

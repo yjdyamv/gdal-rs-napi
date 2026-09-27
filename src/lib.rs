@@ -25,6 +25,7 @@ mod dtype;
 mod error;
 mod json;
 mod programs;
+mod progress;
 mod raster_io;
 mod runtime;
 mod spatial_ref;
