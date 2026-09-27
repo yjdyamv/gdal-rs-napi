@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { writeFileSync } from 'node:fs'
 import { test } from 'node:test'
 
 import { asTypedArray, bytesOf, gdal, ramp, tmp } from './helpers.mjs'
@@ -70,6 +71,9 @@ test('diagnostics() finds the packaged CRS database', () => {
   const diagnostics = gdal.diagnostics()
   assert.equal(diagnostics.epsg4326Resolves, true, diagnostics.error ?? '')
   assert.equal(diagnostics.crsDatabaseFound, true)
+  // GEOS is LGPL and deliberately not linked, so the OGR predicates it backs are
+  // absent. diagnostics is where that is answerable without a probe.
+  assert.equal(diagnostics.geosAvailable, false, 'GEOS is deliberately not linked')
 })
 
 test('bytesPerSample covers the sample types', () => {
@@ -181,6 +185,122 @@ test('geotransform, projection, no-data value and metadata round-trip', () => {
   assert.equal(reopened.band(0).size.join('x'), '4x4')
   assert.ok(reopened.band(0).blockSize[0] > 0)
   assert.equal(typeof reopened.band(0).colorInterpretation, 'string')
+  reopened.close()
+})
+
+test('a band reports its GDAL identity and access mode, and can be filled', () => {
+  const path = tmp('band-identity.tif')
+  const dataset = gdal.createSync(path, {
+    driver: 'GTiff',
+    width: 4,
+    height: 4,
+    bandCount: 2,
+    dataType: 'Float32',
+  })
+  const band = dataset.band(0)
+
+  // `id` is GDAL's 1-based band number; `index` is this API's 0-based one.
+  assert.equal(band.index, 0)
+  assert.equal(band.id, 1)
+  assert.equal(dataset.band(1).id, 2)
+
+  // A freshly created band has no format metadata yet.
+  assert.equal(band.description, null)
+  assert.equal(band.unitType, null)
+  assert.equal(band.scale, null)
+  assert.equal(band.offset, null)
+  assert.deepEqual(band.categoryNames, [])
+
+  // create() opens for update, so the band is writable.
+  assert.equal(band.readOnly, false)
+
+  // fill() writes one value everywhere without a buffer per sample.
+  band.fill(7)
+  assert.deepEqual(Array.from(asTypedArray(band.readPixelsSync(), Float32Array)), Array(16).fill(7))
+  dataset.close()
+
+  // Reopened read-only it says so, and so does a thread-safe handle.
+  const readOnly = gdal.openSync(path)
+  assert.equal(readOnly.band(0).readOnly, true)
+  readOnly.close()
+
+  const concurrent = gdal.openThreadSafeSync(path)
+  assert.equal(concurrent.band(0).readOnly, true, 'a thread-safe dataset is read-only')
+  concurrent.close()
+})
+
+test('minimum and maximum are GDAL caches that statistics() fills in', () => {
+  const dataset = gdal.createSync(tmp('min-max.tif'), {
+    driver: 'GTiff',
+    width: 4,
+    height: 4,
+    bandCount: 1,
+    dataType: 'Float32',
+  })
+  const band = dataset.band(0)
+  band.writePixelsSync(bytesOf(new Float32Array([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16])))
+
+  // Nothing has asked GDAL for a range, so it has none cached.
+  assert.equal(band.minimum, null)
+  assert.equal(band.maximum, null)
+
+  const statistics = band.statisticsSync()
+  assert.equal(band.minimum, statistics.min)
+  assert.equal(band.maximum, statistics.max)
+  dataset.close()
+})
+
+test('band scale, offset, unit, description and categories come from the format', () => {
+  // A VRT carries band metadata that no gdal_translate flag can set, which makes
+  // it the way to exercise the getters against real values.
+  const path = tmp('band-metadata.vrt')
+  writeFileSync(
+    path,
+    `<?xml version="1.0"?>
+<VRTDataset rasterXSize="2" rasterYSize="2">
+  <VRTRasterBand dataType="Byte" band="1">
+    <Description>my band</Description>
+    <UnitType>metre</UnitType>
+    <Scale>2.5</Scale>
+    <Offset>10</Offset>
+    <CategoryNames>
+      <Category>water</Category>
+      <Category>land</Category>
+    </CategoryNames>
+  </VRTRasterBand>
+</VRTDataset>
+`,
+  )
+
+  const dataset = gdal.openSync(path)
+  const band = dataset.band(0)
+  assert.equal(dataset.driver, 'VRT')
+  assert.equal(band.description, 'my band')
+  assert.equal(band.unitType, 'metre')
+  assert.equal(band.scale, 2.5)
+  assert.equal(band.offset, 10)
+  assert.deepEqual(band.categoryNames, ['water', 'land'])
+  dataset.close()
+})
+
+test('scale and offset written by gdal_translate read back off the band', () => {
+  const source = tmp('scale-source.tif')
+  const created = gdal.createSync(source, {
+    driver: 'GTiff',
+    width: 2,
+    height: 2,
+    bandCount: 1,
+    dataType: 'Float32',
+  })
+  created.band(0).fill(1)
+  created.close()
+
+  const dest = tmp('scaled.tif')
+  gdal.translateSync(dest, source, ['-a_scale', '2', '-a_offset', '10']).close()
+
+  const reopened = gdal.openSync(dest)
+  assert.equal(reopened.band(0).scale, 2)
+  assert.equal(reopened.band(0).offset, 10)
   reopened.close()
 })
 

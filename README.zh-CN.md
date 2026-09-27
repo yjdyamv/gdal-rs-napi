@@ -20,11 +20,63 @@ gdal.drivers().length   // 148
 // 出问题时先跑这个：它会告诉你 CRS 数据库有没有被找到、PROJ 被指到了哪里
 gdal.diagnostics()
 // { epsg4326Resolves: true, crsDatabaseFound: true, projDataEnv: '.../assets/proj', … }
+
+// 这个构建到底是什么？BUILD_INFO 只列出编译进来的东西，
+// 没编译进来的能力就是“键不存在”——这里根本没有 GEOS_ENABLED。
+gdal.info()
+// { releaseName: '3.12.1', releaseDate: '20251212', versionNum: '3120100',
+//   build: { OGR_ENABLED: 'YES', PROJ_BUILD_VERSION: '9.6.2', … }, driverCount: 148 }
 ```
 
 `index.js` 会自动调用 `configureDataPaths()`，把 PROJ/GDAL 指向包内的
 `assets/proj` 与 `assets/gdal`。环境里已有的 `PROJ_DATA` / `GDAL_DATA` **永远优先**，
 不会被覆盖。
+
+`diagnostics().geosAvailable` 回答 OGR 的几何谓词（`ST_Intersects`、`ST_Buffer`、
+`-simplify`）能不能用。答案是不能：GEOS 是 LGPL，静态链接会让整个产物变更许可证，所以是
+**故意**不链的——见文末许可证一节。
+
+## 配置与 GDAL 的最后错误
+
+`gdal.config` 是 GDAL 自己的选项存储——也就是 `--config NAME=VALUE` 与 `GDAL_*` /
+`CPL_*` 环境变量写入的同一处：
+
+```js
+gdal.config.set('GDAL_NUM_THREADS', 'ALL_CPUS') // 例如让 buildOverviews 并行
+gdal.config.set('CPL_CURL_VERBOSE', 'YES')      // 以及 curl 系列驱动
+gdal.config.get('GDAL_NUM_THREADS')             // 'ALL_CPUS'
+gdal.config.get('NOT_SET_ANYWHERE')             // null
+gdal.config.get('NOT_SET_ANYWHERE', 'fallback') // 'fallback'
+gdal.config.set('GDAL_NUM_THREADS', null)       // 清掉
+```
+
+两点值得知道：
+
+- **它是进程级的，活过这一次调用。** 在这里设的值会盖过环境变量，直到被清除或进程退出。
+- **`get` 能区分“没设”和“空”。** GDAL 没有“空值”这种选项值，所以没人设过的键读出来是
+  `null`，或者是你传进去的默认值。正因如此，这里用的是 C 函数，而不是那层会把两者合并的
+  封装。
+
+`gdal.lastError()` 返回 GDAL 最近一次错误——`class`、`number`、`message`——没有则 `null`：
+
+```js
+const dataset = gdal.createSync('out.tif', {
+  driver: 'GTiff', width: 4, height: 4, bandCount: 1,
+  options: { NOT_A_REAL_OPTION: 'x' },  // GTiff 打个 warning 就继续了
+})
+gdal.lastError()
+// { class: 2, number: 6,
+//   message: 'driver GTiff does not support creation option NOT_A_REAL_OPTION' }
+```
+
+两点需要知道：
+
+- **它是给“没有变成异常”的错误用的。** 驱动打条 warning 然后照常跑完，正是它的用武之地；
+  抛出的异常消息里不会有这条。
+- **被抛出的失败在这里已经没了。** Rust 的 `gdal` crate 在构造错误时会读取并**重置** GDAL
+  的错误状态，所以你 catch 到之后再调 `lastError()` 得到的是 `null`——那条错误的记录是
+  `err.code` 与 `err.message`，其中 code 命名的就是这里报告的同一个 `CPLErr` class
+  （`GDAL_CPL_FAILURE` 即 class 3）。
 
 ## 光栅
 
@@ -40,6 +92,20 @@ band.dataType           // 'Float32'
 band.noDataValue        // -9999 或 null
 band.size               // [宽, 高]
 band.blockSize          // 驱动原生分块
+
+// 格式可以携带的波段元数据。`id` 是 GDAL 的 1-based 波段号，
+// 而上面的 `index` 是本绑定 0-based 的约定。
+band.id                 // 1
+band.description        // 自由文本，或 null
+band.unitType           // 例如 'metre'，或 null
+band.scale              // raw * scale + offset 才是真实值
+band.offset             //   …… 格式不带这两个时是 null
+band.readOnly           // 跟随数据集的打开方式
+band.minimum            // GDAL 的缓存：statistics() 之前是 null
+band.maximum
+band.categoryNames      // 以像素值为下标的标签，没有则 []
+
+band.fill(0)            // 整条波段写同一个值
 
 // 按波段自身类型读原始字节（零拷贝 Buffer），不做转换
 band.readPixelsSync({ x: 0, y: 0, width: 256, height: 256 })
@@ -89,6 +155,11 @@ const cog = await source.createCopy('dem-cog.tif', 'COG', { COMPRESS: 'DEFLATE',
 cog.close(); source.close()
 // 用它自己的元数据验证：{ INTERLEAVE: 'BAND', COMPRESSION: 'DEFLATE', LAYOUT: 'COG' }
 ```
+
+`scale` 与 `offset` 决定了一个波段样本的真实含义——`raw * scale + offset` 才是物理值——
+所以对 DEM 或反射率数据做任何计算前先读它们，否则读到的只是一堆整数。`minimum` /
+`maximum` 是 GDAL 的**缓存**而不是计算：在 `statistics()` 跑过之前（或打开一个自带统计量的
+格式之前）是 `null`。`readOnly` 跟随数据集的访问模式，因为波段自己没有访问模式。
 
 两个容易踩的点：`width`/`height` 是 GDAL 原样返回的，**只对栅格数据集有意义**
 （矢量 GPKG 也会返回一个数字），用之前先看 `bandCount`；`IMAGE_STRUCTURE`
@@ -569,8 +640,9 @@ CRS 只做到点与包围盒的变换：几何对象本身不参与变换，`Coo
 精度目标）没有暴露，且变换是同步的 —— 上百万个点需要调用方自行分块。
 
 读图层可以按批读（游标），但那是游标而不是 JS 的 async iterator；且 GDAL 的读取位置在图层上，
-同一图层同时只能有一个读取者。`translate`/`warp`/`ogr2ogr`/`gdaldem` 都没有进度回调；
-直方图只能读，不能写回数据集（统计量可以，见 `setStatistics()`）。
+同一图层同时只能有一个读取者。直方图只能读、不能写回数据集（统计量可以，见
+`setStatistics()`）；波段的 `scale`/`offset`/`unitType`/`description`/`categoryNames`
+只有 getter，还没有 setter。
 
 Intel macOS 与 32 位目标未构建。
 

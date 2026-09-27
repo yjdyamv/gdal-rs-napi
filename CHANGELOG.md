@@ -6,10 +6,39 @@ First working cut — everything here is new.
 
 ### Binding
 
-- Module functions: `version`, `drivers`, `diagnostics`, `configureDataPaths`,
-  `epsgToWkt`, `bytesPerSample`, `openThreadSafe` / `openThreadSafeSync`,
-  `geometryTypeOf`, `geometryToWkt`, `geometryToWkb`, `geometryFromWkt`,
-  `geometryFromWkb`.
+- Module functions: `version`, `info`, `drivers`, `diagnostics`,
+  `configureDataPaths`, `lastError`, `epsgToWkt`, `bytesPerSample`,
+  `openThreadSafe` / `openThreadSafeSync`, `geometryTypeOf`, `geometryToWkt`,
+  `geometryToWkb`, `geometryFromWkt`, `geometryFromWkb`, and the `config`
+  namespace's `get` / `set`.
+- `gdal.config.get(key, defaultValue?)` / `gdal.config.set(key, value)` read and
+  write GDAL's own configuration store — `GDAL_NUM_THREADS`, the curl drivers'
+  `CPL_CURL_*`, anything a tool would take as `--config`. `get` answers `null` for
+  an option nobody set (or the default you pass), which is why it goes through the
+  C function rather than a wrapper that folds "unset" into a value; `set(key,
+  null)` clears one. The option is process-wide and overrides the environment GDAL
+  was started with.
+- `gdal.info()` reports what the static build actually is: `releaseName`,
+  `releaseDate`, `versionNum`, GDAL's `BUILD_INFO` map and the registered driver
+  count. It answers capability questions the way GDAL does — a feature that was
+  compiled out is a *missing key*, not a "NO", so this build has no `GEOS_ENABLED`
+  at all. `diagnostics()` is the place with the yes/no answers.
+- `gdal.lastError()` returns GDAL's most recent error (`class`, `number`, `message`)
+  or `null`. It is for the errors that never became an exception — a warning GDAL
+  logged and carried on past. A failure that *is* thrown has already been read and
+  reset by the `gdal` crate by the time JS sees it, so this is `null` for those;
+  the thrown error's `code` and message are their record.
+- `diagnostics()` gains `geosAvailable` — `false` here, because GEOS is LGPL and
+  statically linking it would relicense the artifact, so the OGR predicates it
+  implements (`ST_Intersects`, `ST_Buffer`, `-simplify`) are absent.
+- `RasterBand` gains GDAL's band metadata: `id` (GDAL's 1-based band number, where
+  `index` is this API's 0-based one), `description`, `readOnly`, `scale`, `offset`,
+  `unitType`, `minimum`, `maximum` and `categoryNames`, plus `fill(value)` to write
+  one value over the whole band. `minimum` / `maximum` are GDAL's *cache* — `null`
+  until `statistics()` computes them, or the format stored them — and `readOnly`
+  follows how the dataset was opened, since a band has no access mode of its own.
+  Reading `scale` / `offset` is what keeps a DEM or reflectance raster from being
+  treated as its raw integers.
 - Programs: `translate` / `translateSync`, `warp` / `warpSync`, `vectorTranslate` /
   `vectorTranslateSync` — `gdal_translate`, `gdalwarp` and `ogr2ogr`, each taking
   that tool's own command-line arguments. `warp` and `vectorTranslate` take a list
@@ -154,11 +183,12 @@ First working cut — everything here is new.
   `CoordTransformOptions` (a specific pipeline, an accuracy target) is not exposed,
   and the transformation is synchronous, so a million points has to be chunked by
   the caller.
-- Statistics and histograms can be read but not written back into a dataset.
+- Statistics can be written back into a dataset (`setStatistics`); histograms can
+  only be read, because `GDALSetDefaultHistogram` is not exposed.
+- Band metadata is read, not written: `scale`, `offset`, `unitType`,
+  `description` and `categoryNames` have getters but no setters yet.
 - `buildOverviews({ bands })` is passed through, but GTiff — the only writable
   overview driver compiled in — refuses anything short of every band.
-- The programs have no progress callbacks (GDAL's `*OptionsSetProgress` is not
-  wired up).
 - No terrain algorithms beyond the ones `gdaldem` itself offers.
 - Reading a layer in batches is a cursor rather than a JS async iterator, and GDAL
   keeps the reading position on the layer, so one reader per layer at a time.

@@ -20,6 +20,7 @@
 #![cfg_attr(test, allow(dead_code))]
 
 mod band;
+mod config;
 mod dataset;
 mod dtype;
 mod error;
@@ -30,6 +31,8 @@ mod raster_io;
 mod runtime;
 mod spatial_ref;
 mod vector;
+
+use std::collections::HashMap;
 
 use gdal::spatial_ref::SpatialRef;
 use napi_derive::napi;
@@ -99,6 +102,90 @@ pub fn drivers() -> Vec<DriverInfo> {
 }
 
 #[napi(object)]
+pub struct GdalInfo {
+    /// e.g. `3.12.1`
+    pub release_name: String,
+    /// e.g. `20251212`
+    pub release_date: String,
+    /// The same number as a single integer, e.g. `3120100`.
+    pub version_num: String,
+    /// GDAL's `BUILD_INFO`: `OGR_ENABLED`, `PROJ_BUILD_VERSION`, `COMPILER`,
+    /// `CURL_ENABLED` and the rest. It is what the library was *compiled* with, and
+    /// a feature that was compiled out is simply absent rather than reported as
+    /// off — this build has no `GEOS_ENABLED` key at all. `diagnostics` is the
+    /// place with the yes/no answers, `geosAvailable` among them.
+    pub build: HashMap<String, String>,
+    /// Registered drivers, the same number `drivers().length` reports. Here so
+    /// one call answers "what am I running".
+    pub driver_count: u32,
+}
+
+/// What the statically linked GDAL was built with, and how many drivers it
+/// registered.
+///
+/// `version()` is the one-liner (`GDAL 3.12.1 …, PROJ 9.6.2`); this is the detail
+/// behind it, straight from GDAL's `BUILD_INFO`. It answers "is capability X in
+/// this build" — and answers it the way GDAL does, by listing only what was
+/// compiled in, so the absence of a key is the answer.
+#[napi]
+pub fn info() -> GdalInfo {
+    runtime::ensure_initialized();
+    let _guard = runtime::lock_gdal();
+
+    use gdal::version::VersionInfo;
+
+    GdalInfo {
+        release_name: VersionInfo::release_name(),
+        release_date: VersionInfo::release_date(),
+        version_num: VersionInfo::version_num(),
+        build: VersionInfo::build_info(),
+        driver_count: gdal::DriverManager::count() as u32,
+    }
+}
+
+#[napi(object)]
+pub struct LastError {
+    /// The `CPLErr` class: 0 None, 1 Debug, 2 Warning, 3 Failure, 4 Fatal. It is
+    /// the same number the sync error codes are named after — `GDAL_CPL_FAILURE`
+    /// is class 3 — so a `lastError()` you catch can be matched to that list.
+    pub class: i32,
+    /// GDAL's `CPLErrorNum`, e.g. 4 for `CPLE_AppDefined`. The other half of the
+    /// `[CPLErr=3 #4]` prefix the thrown messages carry.
+    pub number: i32,
+    pub message: String,
+}
+
+/// GDAL's most recent error, or `null` when there has not been one.
+///
+/// A sync call that fails also throws, with `err.code` set — so this is for the
+/// errors that never became an exception: a warning a driver logged and carried
+/// on past, or the last state left behind by a call whose return value was not a
+/// failure. It is the same store GDAL's own tools read.
+///
+/// Every GDAL operation in this binding is serialised, so what you read here was
+/// not overwritten by another thread in the meantime.
+#[napi]
+pub fn last_error() -> Option<LastError> {
+    runtime::ensure_initialized();
+    let _guard = runtime::lock_gdal();
+
+    // 0 is CE_None: either nothing has gone wrong, or the last thing that did has
+    // been reset since. `CPLGetLastErrorMsg` can still hold a stale message at
+    // that point, which is why the class gates the whole result rather than the
+    // message alone.
+    let class = unsafe { gdal_sys::CPLGetLastErrorType() } as i32;
+    if class == 0 {
+        return None;
+    }
+
+    Some(LastError {
+        class,
+        number: unsafe { gdal_sys::CPLGetLastErrorNo() },
+        message: runtime::c_string(unsafe { gdal_sys::CPLGetLastErrorMsg() }),
+    })
+}
+
+#[napi(object)]
 pub struct DataPathsOptions {
     pub proj: Option<String>,
     pub gdal: Option<String>,
@@ -134,6 +221,11 @@ pub struct Diagnostics {
     /// library was built on even when `PROJ_DATA` takes precedence, so treat it
     /// as trivia rather than as the path in use.
     pub proj_default_search_path: String,
+    /// Whether GDAL was built with GEOS. This build is not — GEOS is LGPL, and
+    /// statically linking it would relicense the whole artifact — so the OGR
+    /// predicates it implements (`ST_Intersects`, `ST_Buffer`, `-simplify`) are
+    /// absent.
+    pub geos_available: bool,
 }
 
 /// First stop when something CRS-related fails: reports whether the CRS
@@ -155,5 +247,6 @@ pub fn diagnostics() -> Diagnostics {
         proj_data_env: std::env::var("PROJ_DATA").ok(),
         gdal_data_env: std::env::var("GDAL_DATA").ok(),
         proj_default_search_path: runtime::proj_default_search_path(),
+        geos_available: gdal::version::VersionInfo::has_geos(),
     }
 }

@@ -156,7 +156,8 @@ pub fn proj_database_found() -> bool {
     false
 }
 
-fn c_string(ptr: *const c_char) -> String {
+/// Copy a C string, mapping a null pointer to an empty string.
+pub(crate) fn c_string(ptr: *const c_char) -> String {
     if ptr.is_null() {
         return String::new();
     }

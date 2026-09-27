@@ -37,6 +37,12 @@ names.has('GTiff') // true
 // found, and where PROJ was pointed.
 gdal.diagnostics()
 // { epsg4326Resolves: true, crsDatabaseFound: true, projDataEnv: '.../assets/proj', ... }
+
+// What is this build exactly? BUILD_INFO lists what was compiled in, and a
+// feature that was not is a missing key — there is no `GEOS_ENABLED` here.
+gdal.info()
+// { releaseName: '3.12.1', releaseDate: '20251212', versionNum: '3120100',
+//   build: { OGR_ENABLED: 'YES', PROJ_BUILD_VERSION: '9.6.2', ... }, driverCount: 148 }
 ```
 
 `index.js` calls `configureDataPaths()` for you, pointing PROJ and GDAL at the
@@ -47,6 +53,56 @@ already present in the environment is never overwritten.
 Note that `diagnostics().projDefaultSearchPath` is PROJ's *compiled-in* default
 and still names the machine the library was built on; it is not the path in use.
 `crsDatabaseFound` and `projDataEnv` are the fields that mean something.
+
+`diagnostics().geosAvailable` answers whether the OGR geometry predicates
+(`ST_Intersects`, `ST_Buffer`, `-simplify`) are available. They are not: GEOS is
+LGPL, and statically linking it would relicense this whole artifact, so it is left
+out on purpose — see the licence note at the end.
+
+## Configuration and GDAL's last error
+
+`gdal.config` is GDAL's own option store — the same one `--config NAME=VALUE` and the
+`GDAL_*` / `CPL_*` environment variables feed:
+
+```js
+gdal.config.set('GDAL_NUM_THREADS', 'ALL_CPUS') // e.g. parallelise buildOverviews
+gdal.config.set('CPL_CURL_VERBOSE', 'YES')      // and the curl-backed drivers
+gdal.config.get('GDAL_NUM_THREADS')             // 'ALL_CPUS'
+gdal.config.get('NOT_SET_ANYWHERE')             // null
+gdal.config.get('NOT_SET_ANYWHERE', 'fallback') // 'fallback'
+gdal.config.set('GDAL_NUM_THREADS', null)       // clear it again
+```
+
+Worth knowing:
+
+- **It is process-wide and outlives the call.** A value set here overrides what the
+  environment had, until it is cleared or the process exits.
+- **`get` tells "unset" apart from "empty".** GDAL has no option value that means
+  "empty", so a key nobody set reads as `null` — or as the default you hand it. That
+  distinction is why this reads the C function rather than the crate's wrapper, which
+  folds the two together.
+
+`gdal.lastError()` reports GDAL's most recent error — `class`, `number`, `message` —
+or `null`:
+
+```js
+const dataset = gdal.createSync('out.tif', {
+  driver: 'GTiff', width: 4, height: 4, bandCount: 1,
+  options: { NOT_A_REAL_OPTION: 'x' },  // GTiff warns, then carries on
+})
+gdal.lastError()
+// { class: 2, number: 6,
+//   message: 'driver GTiff does not support creation option NOT_A_REAL_OPTION' }
+```
+
+Two things to know:
+
+- **It is for the errors that never became an exception.** A warning a driver logs
+  and carries on past is the case it exists for; a thrown message would not mention it.
+- **A thrown failure is already gone from here.** The Rust `gdal` crate reads *and
+  resets* GDAL's error state as it builds the error, so `lastError()` is `null` after
+  one you caught — `err.code` and `err.message` are that error's record, and its code
+  names the same `CPLErr` class this reports (`GDAL_CPL_FAILURE` is class 3).
 
 ## Raster
 
@@ -67,6 +123,20 @@ band.noDataValue                      // -9999 or null
 band.size                             // [width, height]
 band.blockSize                        // the driver's native block
 band.colorInterpretation              // e.g. 'GrayIndex'
+
+// Band metadata a format can carry. `id` is GDAL's 1-based band number, where
+// `index` above is this API's 0-based one.
+band.id                               // 1
+band.description                      // free text, or null
+band.unitType                         // e.g. 'metre', or null
+band.scale                            // raw * scale + offset is the real value
+band.offset                           //   ... null when a format carries neither
+band.readOnly                         // follows how the dataset was opened
+band.minimum                          // GDAL's cache: null until statistics() runs
+band.maximum
+band.categoryNames                    // labels indexed by pixel value, [] when none
+
+band.fill(0)                          // write one value over the whole band
 
 // Raw sample bytes in the band's own type, no conversion.
 const raw = band.readPixelsSync({ x: 0, y: 0, width: 256, height: 256 })
@@ -148,6 +218,13 @@ source.close()
 // IMAGE_STRUCTURE then confirms what came out:
 // { INTERLEAVE: 'BAND', COMPRESSION: 'DEFLATE', LAYOUT: 'COG' }
 ```
+
+`scale` and `offset` are what make a band's samples mean something —
+`raw * scale + offset` is the physical value — so read them before computing anything
+from a DEM or a reflectance raster, which otherwise read as plain integers.
+`minimum` / `maximum` are GDAL's *cache* rather than a computation: they are `null`
+until `statistics()` has run, or a format that stores them is opened. `readOnly`
+follows the dataset's access mode, because a band has none of its own.
 
 Two things that save confusion: `width` / `height` come straight from GDAL and
 are only meaningful when there are bands, so check `bandCount` before trusting

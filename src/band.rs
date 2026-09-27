@@ -6,6 +6,7 @@
 //! [`DatasetRef::with_exclusive`] (or `with_mut` when it writes).
 
 use std::collections::HashMap;
+use std::ffi::{c_char, c_int};
 
 use gdal::Dataset as GdalDataset;
 use gdal::Metadata;
@@ -31,6 +32,39 @@ fn with_band<T>(
 ) -> Result<T> {
     let mut band = dataset.rasterband(index + 1).gdal()?;
     f(&mut band)
+}
+
+/// GDAL spells "no value" as an empty string in several places; JS gets `null`
+/// for those rather than a string that carries no information.
+fn non_empty(text: String) -> Option<String> {
+    if text.is_empty() { None } else { Some(text) }
+}
+
+/// GDAL's `pbSuccess` out-parameter, turned into an `Option`.
+fn cached(value: f64, success: c_int) -> Option<f64> {
+    (success != 0).then_some(value)
+}
+
+/// Walk the null-terminated `char **` GDAL returns for category names.
+///
+/// It is a CPL string list, so a null entry is the terminator rather than a gap:
+/// the array ends where GDAL ended it, and `categoryNames[i]` lines up with pixel
+/// value `i`.
+fn category_names(list: *mut *mut c_char) -> Vec<String> {
+    if list.is_null() {
+        return Vec::new();
+    }
+    let mut names = Vec::new();
+    let mut index = 0;
+    loop {
+        let entry = unsafe { *list.add(index) };
+        if entry.is_null() {
+            break;
+        }
+        names.push(crate::runtime::c_string(entry));
+        index += 1;
+    }
+    names
 }
 
 /// Statistics for a band, as GDAL computes them.
@@ -306,6 +340,116 @@ impl JsRasterBand {
         })
     }
 
+    /// GDAL's own band number, **1-based**: `band.id` is 1 for the first band.
+    /// It is GDAL's numbering, where `index` is this API's 0-based convention,
+    /// and the two differ by exactly one. Zero for a band that is not in the
+    /// dataset's band list, such as a mask band.
+    #[napi(getter)]
+    pub fn id(&self) -> Result<u32> {
+        self.dataset.with_exclusive(|dataset| {
+            with_band(dataset, self.index, |band| {
+                Ok(unsafe { gdal_sys::GDALGetBandNumber(band.c_rasterband()) } as u32)
+            })
+        })
+    }
+
+    /// Free-text description the format carries for this band, or `null` when it
+    /// has none.
+    #[napi(getter)]
+    pub fn description(&self) -> Result<Option<String>> {
+        self.dataset.with_exclusive(|dataset| {
+            with_band(dataset, self.index, |band| {
+                let text = crate::runtime::c_string(unsafe {
+                    gdal_sys::GDALGetDescription(band.c_rasterband())
+                });
+                Ok(non_empty(text))
+            })
+        })
+    }
+
+    /// Whether this band cannot be written.
+    ///
+    /// A band has no access mode of its own, so this follows how its dataset was
+    /// opened: `open()` is read-only, `{ update: true }` and `create` are not.
+    #[napi(getter)]
+    pub fn read_only(&self) -> Result<bool> {
+        self.dataset.with_exclusive(|dataset| {
+            let access = unsafe { gdal_sys::GDALGetAccess(dataset.c_dataset()) } as u32;
+            Ok(access == gdal_sys::GDALAccess::GA_ReadOnly)
+        })
+    }
+
+    /// Scale, or `null` when the band has none. The value a sample stands for is
+    /// `raw * scale + offset`, which is what makes a reflectance or DEM raster
+    /// mean anything beyond its raw integers.
+    #[napi(getter)]
+    pub fn scale(&self) -> Result<Option<f64>> {
+        self.dataset
+            .with_exclusive(|dataset| with_band(dataset, self.index, |band| Ok(band.scale())))
+    }
+
+    /// Offset, or `null` when the band has none — the other half of
+    /// `raw * scale + offset`.
+    #[napi(getter)]
+    pub fn offset(&self) -> Result<Option<f64>> {
+        self.dataset
+            .with_exclusive(|dataset| with_band(dataset, self.index, |band| Ok(band.offset())))
+    }
+
+    /// The band's unit, e.g. `metre` or `DN`, or `null` when it has none.
+    #[napi(getter)]
+    pub fn unit_type(&self) -> Result<Option<String>> {
+        self.dataset.with_exclusive(|dataset| {
+            with_band(dataset, self.index, |band| Ok(non_empty(band.unit())))
+        })
+    }
+
+    /// GDAL's cached minimum, or `null` when it has none.
+    ///
+    /// This is a cache, not a computation: `statistics()` fills it in, and a
+    /// format that stores band statistics reads straight from the file, but a
+    /// raster nobody has asked about reports `null` here. Use `statistics()` when
+    /// you need the number itself.
+    #[napi(getter)]
+    pub fn minimum(&self) -> Result<Option<f64>> {
+        self.dataset.with_exclusive(|dataset| {
+            with_band(dataset, self.index, |band| {
+                let mut success = 0;
+                let value =
+                    unsafe { gdal_sys::GDALGetRasterMinimum(band.c_rasterband(), &mut success) };
+                Ok(cached(value, success))
+            })
+        })
+    }
+
+    /// GDAL's cached maximum — the counterpart of `minimum`, with the same
+    /// "cache, not a computation" rule. `statistics({ force: false })` is the way
+    /// to read it without a full pass.
+    #[napi(getter)]
+    pub fn maximum(&self) -> Result<Option<f64>> {
+        self.dataset.with_exclusive(|dataset| {
+            with_band(dataset, self.index, |band| {
+                let mut success = 0;
+                let value =
+                    unsafe { gdal_sys::GDALGetRasterMaximum(band.c_rasterband(), &mut success) };
+                Ok(cached(value, success))
+            })
+        })
+    }
+
+    /// Category names, indexed by pixel value: in a paletted raster
+    /// `categoryNames[3]` is the label for value 3. Empty when the band has none.
+    #[napi(getter)]
+    pub fn category_names(&self) -> Result<Vec<String>> {
+        self.dataset.with_exclusive(|dataset| {
+            with_band(dataset, self.index, |band| {
+                Ok(category_names(unsafe {
+                    gdal_sys::GDALGetRasterCategoryNames(band.c_rasterband())
+                }))
+            })
+        })
+    }
+
     #[napi]
     pub fn metadata(&self, domain: Option<String>) -> Result<HashMap<String, String>> {
         let domain = domain.unwrap_or_default();
@@ -478,6 +622,19 @@ impl JsRasterBand {
     pub fn write_pixels_sync(&self, data: Buffer, options: Option<ReadOptions>) -> Result<()> {
         let options = options.unwrap_or_default();
         self.write_sync(data.as_ref(), &options)
+    }
+
+    /// Fill the whole band with a constant value — GDAL's `GDALFillRaster`, the
+    /// cheap way to initialise or reset a raster without building a buffer for
+    /// every sample.
+    ///
+    /// There is no imaginary component: this binding has no complex sample type,
+    /// so GDAL is always asked for a real fill.
+    #[napi]
+    pub fn fill(&self, value: f64) -> Result<()> {
+        self.dataset.with_mut(|dataset| {
+            with_band(dataset, self.index, |band| band.fill(value, None).gdal())
+        })
     }
 
     #[napi(ts_return_type = "Promise<void>")]
