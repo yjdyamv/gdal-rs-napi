@@ -21,9 +21,9 @@ jobs:
     # A cold run compiles PROJ and GDAL from source. On a 4-core runner that is
     # far slower than on a 16-core workstation, hence the generous ceiling.
     timeout-minutes: 180
-    # The musl targets are cross-linked through napi's zig-based toolchain and
-    # are the least settled part of the matrix. They are allowed to fail without
-    # turning the whole run red while that is shaken out.
+    # The musl targets are cross-built in a cross-rs container (napi's
+    # `--use-cross`) and are the least settled part of the matrix. They are
+    # allowed to fail without turning the whole run red while that is shaken out.
     continue-on-error: ${{ matrix.experimental || false }}
     strategy:
       fail-fast: false
@@ -86,12 +86,18 @@ jobs:
           cmake --version
           ninja --version
 
-      # napi's cross toolchain is LLVM/zig based. If this action has been
-      # superseded, any zig-on-PATH provision works; the flag below is the part
-      # that matters.
-      - name: Install zig (musl cross builds)
+      # The musl legs build through napi's `--use-cross`, which shells out to
+      # cross-rs, so that has to be on PATH (and a container engine has to be
+      # present, which the GitHub Linux runners have). cross is what makes the
+      # vendored C libraries the all-drivers set pulls in — HDF5, netCDF, curl,
+      # libpq — cross-configure at all: it drives a real musl sysroot, so the
+      # CMake and configure steps those libraries run get a toolchain instead of
+      # a bare `zig cc`.
+      - name: Install cross (musl cross builds)
         if: matrix.cross
-        uses: mlugg/setup-zig@v2
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cross
 
       - uses: Swatinem/rust-cache@v2
         with:
@@ -124,7 +130,7 @@ jobs:
       # PATH, verifies sqlite3 is reachable, then drives `napi build` and stages
       # the PROJ/GDAL data files into assets/.
       - name: Build
-        run: npm run build -- --target ${{ matrix.target }} ${{ matrix.cross && '--cross-compile' || '' }}
+        run: npm run build -- --target ${{ matrix.target }} ${{ matrix.cross && '--use-cross' || '' }}
 
       # `pack-platform.mjs` takes the platform label from the built `.node`
       # filename, so a leg that quietly builds for its host instead of its target

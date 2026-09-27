@@ -160,6 +160,12 @@ First working cut — everything here is new.
   cannot load the addon at all. The container is also the honest place for it —
   the generated loader resolves to musl there, so the suite exercises the real
   artifact instead of a host build wearing a musl label.
+- The musl legs cross-build through napi's `--use-cross` (cross-rs) rather than
+  its zig-based `--cross-compile`. `all_drivers` pulls in vendored C libraries —
+  HDF5, netCDF, curl, libpq — whose CMake and configure steps need a real musl
+  sysroot, and under `zig cc` they fail to configure, so those two legs never got
+  past the build. With the internal-only driver set there was nothing outside
+  GDAL's own CMake build, which is why they built before.
 - Every leg asserts its own platform label, and the release job refuses duplicate
   tarball names. The v0.1.0 release shipped four assets instead of six because the
   two musl legs were building for their host: `npm run build -- --target <triple>`

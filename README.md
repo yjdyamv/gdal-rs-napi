@@ -675,10 +675,12 @@ Two things worth knowing about that matrix:
   architecture.** Cross-compiling a statically linked GDAL is not worth the
   trouble, so the arm64 Linux leg uses GitHub's arm64 runner rather than a cross
   toolchain.
-- **The musl legs are marked `experimental`** (`continue-on-error`). They
-  cross-link a static C++ GDAL through napi's zig-based toolchain, which is the
-  least settled part of the picture; a failure there is reported but does not
-  fail the run. Treat them as a work in progress.
+- **The musl legs are marked `experimental`** (`continue-on-error`). They build
+  through napi's `--use-cross`, which hands the whole compile to a cross-rs
+  container: the all-drivers set pulls in vendored C libraries (HDF5, netCDF,
+  curl, libpq) whose CMake and configure steps need a real musl sysroot rather
+  than a bare `zig cc`. It is the least settled part of the picture, so a failure
+  there is reported but does not fail the run. Treat it as a work in progress.
 
 Intel macOS is not built. If you need it, add a `macos-13` leg — the build itself
 needs no changes.
@@ -812,15 +814,16 @@ switches it on where `gdal::ThreadSafeDataset` exists.
 
 CI builds six targets, the ones in the table under "Prebuilt binaries":
 `win32-x64-msvc`, `darwin-arm64`, `linux-x64-gnu`, `linux-arm64-gnu`, and the two
-musl ones. The musl legs are `continue-on-error` — static C++ GDAL cross-linked
-under musl through napi's `--cross-compile` plus zig is the least certain link in
+musl ones. The musl legs are `continue-on-error` — they cross-build through
+napi's `--use-cross` (a cross-rs container), which is the least certain link in
 the chain — so a release can ship without them. 32-bit targets are not built.
 
 Those two legs run their test suite in a `node:24-alpine` container rather than on
-the runner, because napi's cross toolchain links musl dynamically and the runner's
-glibc Node cannot load such an addon at all — one process, two libcs. The
-container is the honest place for it: the generated loader resolves to musl there,
-so the suite exercises the real artifact.
+the runner, because napi links musl dynamically (it adds
+`-C target-feature=-crt-static`) and the runner's glibc Node cannot load such an
+addon at all — one process, two libcs. The container is the honest place for it:
+the generated loader resolves to musl there, so the suite exercises the real
+artifact.
 
 ## Licence
 

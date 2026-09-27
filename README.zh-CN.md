@@ -514,13 +514,15 @@ npm install https://github.com/yjdyamv/gdal-rs-napi/releases/download/v0.1.0/gda
 | `aarch64-unknown-linux-musl` | `ubuntu-24.04-arm` | `linux-arm64-musl` |
 
 glibc/Windows/macOS 各条腿都跑在**对应架构的原生运行器**上（交叉编译静态 GDAL 不值得）。
-两个 musl 目标标记为 `experimental`（`continue-on-error`）：它们通过 napi 的 zig
-工具链交叉链接静态 C++ GDAL，是整条链路里最不确定的一环。Intel macOS 未构建。
+两个 musl 目标标记为 `experimental`（`continue-on-error`）：它们通过 napi 的
+`--use-cross` 在 cross-rs 容器里交叉构建 —— 全驱动集会拉进 HDF5、netCDF、curl、libpq
+这些自带 C 库，它们的 CMake/configure 需要一个真正的 musl sysroot，而不是一个光秃秃的
+`zig cc`。这是整条链路里最不确定的一环。Intel macOS 未构建。
 
-那两条 musl 腿的测试跑在 `node:24-alpine` 容器里，而不是 runner 上：napi 的交叉工具链
-把 musl **动态**链接，runner 上的 glibc Node 根本无法加载这样的 addon（一个进程里两个
-libc）。容器也是更诚实的验证场所 —— 那里生成的 loader 会解析到 musl，跑的就是真产物，
-而不是披着 musl 标签的宿主构建。
+那两条 musl 腿的测试跑在 `node:24-alpine` 容器里，而不是 runner 上：napi 会把 musl
+**动态**链接（加 `-C target-feature=-crt-static`），runner 上的 glibc Node 根本无法加载
+这样的 addon（一个进程里两个 libc）。容器也是更诚实的验证场所 —— 那里生成的 loader 会
+解析到 musl，跑的就是真产物，而不是披着 musl 标签的宿主构建。
 
 ## 从源码构建
 
