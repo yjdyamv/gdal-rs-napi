@@ -5,8 +5,8 @@
 //! async entry points, a libuv worker. The JS callback lives on the main thread, so
 //! this module is the hop between the two.
 
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Condvar, Mutex};
 
 use napi::Status;
 use napi::threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode};
@@ -40,6 +40,10 @@ pub type ProgressCallback = ThreadsafeFunction<ProgressUpdate, bool, ProgressUpd
 /// what lets a `false` return stop the program: GDAL needs the answer before it can
 /// decide whether to carry on. The cost is that a slow callback slows the program
 /// down, which is worth remembering if the callback does real work.
+///
+/// One warning that follows from the same place: the worker is holding this
+/// binding's process-wide GDAL lock while it waits, so a callback that calls back
+/// into the library deadlocks. Report progress; do not read a raster from in there.
 pub struct JsProgressSink {
     /// An `Arc` because `ThreadsafeFunction` is not `Clone`, and the task that owns
     /// one is only borrowed while it runs.
@@ -47,10 +51,8 @@ pub struct JsProgressSink {
     /// Set when a callback has answered `false`, and sticky on purpose: once GDAL
     /// has been told to stop there is nothing to be gained by asking again.
     cancelled: AtomicBool,
-    /// The answer to the current call, shared with the closure that receives it.
-    /// A field rather than a local so that a progress callback, which can fire
-    /// thousands of times, does not allocate every time.
-    answered: Arc<AtomicBool>,
+    /// Where the callback's answer lands, and what to wait on for it. See `report`.
+    answer: Arc<(Mutex<Option<bool>>, Condvar)>,
 }
 
 impl JsProgressSink {
@@ -58,7 +60,7 @@ impl JsProgressSink {
         Self {
             callback,
             cancelled: AtomicBool::new(false),
-            answered: Arc::new(AtomicBool::new(true)),
+            answer: Arc::new((Mutex::new(None), Condvar::new())),
         }
     }
 }
@@ -69,8 +71,8 @@ impl ProgressSink for JsProgressSink {
             return false;
         }
 
-        self.answered.store(true, Ordering::SeqCst);
-        let answered = Arc::clone(&self.answered);
+        *self.answer.0.lock().unwrap() = None;
+        let answer = Arc::clone(&self.answer);
 
         let status = self.callback.call_with_return_value(
             ProgressUpdate {
@@ -79,20 +81,34 @@ impl ProgressSink for JsProgressSink {
             },
             ThreadsafeFunctionCallMode::Blocking,
             move |result, _env| {
-                // Only an explicit `false` cancels. A callback that returns nothing —
-                // the common shape, and what a callback that just logs looks like —
-                // means carry on, so it cannot stop the job by accident.
-                if matches!(result, Ok(false)) {
-                    answered.store(false, Ordering::SeqCst);
-                }
+                // Only an explicit `false` cancels. Anything else — and a callback
+                // that returns nothing is the common shape — means carry on, so a
+                // callback that only logs cannot stop the job by accident.
+                let keep_going = !matches!(result, Ok(false));
+                *answer.0.lock().unwrap() = Some(keep_going);
+                answer.1.notify_all();
                 Ok(())
             },
         );
 
-        // A callback that has been closed, or a queue that refused the call, reads as
-        // "carry on": a program is not the place to report a problem with its own
-        // reporter, and stopping the work would be the surprising answer.
-        let keep_going = matches!(status, Status::Ok) && self.answered.load(Ordering::SeqCst);
+        if !matches!(status, Status::Ok) {
+            // The call never reached the JS thread, so nothing will ever fill the
+            // slot. Carry on: a program is not the place to complain about its own
+            // reporter, and stopping would be the surprising answer.
+            return true;
+        }
+
+        // Blocking mode waits for the JS turn to *start*, not to finish: measured
+        // directly, the return value of call N arrives after call N+1 has begun, so
+        // reading it without waiting reports the previous answer. GDAL's callback is
+        // synchronous, so wait for this call's answer.
+        let (slot, signal) = &*self.answer;
+        let mut answer = slot.lock().unwrap();
+        while answer.is_none() {
+            answer = signal.wait(answer).unwrap();
+        }
+        let keep_going = answer.unwrap_or(true);
+
         if !keep_going {
             self.cancelled.store(true, Ordering::SeqCst);
         }

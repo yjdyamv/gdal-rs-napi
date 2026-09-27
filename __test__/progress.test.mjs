@@ -68,13 +68,7 @@ test('returning false cancels, and says so rather than reporting a failure', asy
     },
   )
 
-  // Measured, not assumed: GDAL calls back a handful of times while it unwinds, so
-  // this is not 1. Worth chasing, because `JsProgressSink` means to short-circuit
-  // once it has been told to stop, and the block above suggests that is not
-  // happening — each of these calls is a blocking hop to the JS thread.
-  assert.ok(calls >= 1, `the callback was called, ${calls} time(s)`)
-  assert.ok(
-    !existsSync(dest) || existsSync(dest),
-    'the destination is left in whatever state GDAL got to',
-  )
+  // With the answer actually waited for, the sink's short-circuit does its job:
+  // GDAL reports again while it unwinds, but the callback is not asked a second time.
+  assert.equal(calls, 1, 'the callback was not asked again after it said stop')
 })
