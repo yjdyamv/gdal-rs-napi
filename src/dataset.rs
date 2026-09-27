@@ -9,6 +9,7 @@
 
 use std::collections::HashMap;
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 
 #[cfg(gd_thread_safe)]
@@ -313,6 +314,39 @@ pub(crate) fn with_two<T>(
     f(first.get_mut()?, second.get_mut()?)
 }
 
+/// Write bytes into GDAL's memory file system — `/vsimem/` — and open them. On
+/// failure the file is unlinked again, so a `Buffer` that turns out not to be a
+/// dataset does not sit in memory for the life of the process; on success the caller
+/// owns the file and unlinks it when the dataset closes.
+fn open_bytes_gdal(path: &str, bytes: &[u8], update: bool) -> Result<GdalDataset> {
+    write_mem_file(path, bytes)?;
+    match open_gdal(path, update) {
+        Ok(dataset) => Ok(dataset),
+        Err(error) => {
+            let _guard = lock_gdal();
+            let _ = gdal::vsi::unlink_mem_file(path);
+            Err(error)
+        }
+    }
+}
+
+/// Hand bytes to GDAL's memory file system. They are GDAL's from here on: both what
+/// the dataset reads and what `gdal.fs.readFile` can hand back.
+fn write_mem_file(path: &str, bytes: &[u8]) -> Result<()> {
+    ensure_initialized();
+    let _guard = lock_gdal();
+    gdal::vsi::create_mem_file(path, bytes.to_vec()).gdal()
+}
+
+/// A unique `/vsimem/` name for bytes that arrive without one. The extension means
+/// nothing — the format is sniffed from the content — and is there only so the path
+/// looks like a file.
+fn mem_file_name() -> String {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    let count = NEXT.fetch_add(1, Ordering::Relaxed);
+    format!("/vsimem/gdal-rs-napi-{}-{count}.bin", std::process::id())
+}
+
 fn open_gdal(path: &str, update: bool) -> Result<GdalDataset> {
     ensure_initialized();
     let _guard = lock_gdal();
@@ -490,15 +524,33 @@ pub fn build_overviews_request(
 pub struct JsDataset {
     dataset: DatasetRef,
     path: String,
+    /// The `/vsimem/` file this binding created to hold the bytes of `open(buffer)`.
+    /// It is what the dataset reads from, it is named by `path`, and closing the
+    /// dataset is what unlinks it.
+    mem_file: Option<String>,
 }
 
 impl JsDataset {
     fn wrap_ref(dataset: DatasetRef, path: String) -> Self {
-        Self { dataset, path }
+        Self {
+            dataset,
+            path,
+            mem_file: None,
+        }
     }
 
     fn wrap(dataset: GdalDataset, path: String) -> Self {
         Self::wrap_ref(DatasetRef::serialised(dataset), path)
+    }
+
+    /// A dataset opened from bytes: `path` *is* the file they live in, so the same
+    /// string serves as the dataset's path and as what closing unlinks.
+    fn wrap_buffer(dataset: DatasetRef, path: String) -> Self {
+        Self {
+            dataset,
+            path: path.clone(),
+            mem_file: Some(path),
+        }
     }
 
     /// The handle behind this dataset, for the operations that need two datasets at
@@ -980,9 +1032,22 @@ impl JsDataset {
 
     /// Idempotent. After this every band object belonging to the dataset fails
     /// loudly instead of touching freed memory.
+    ///
+    /// A dataset opened from a `Buffer` also owns the `/vsimem/` file holding those
+    /// bytes — its `path` — and closing is when that file goes away. Read anything
+    /// you want to keep back first, with `gdal.fs.readFile(dataset.path)`, and
+    /// `flushSync()` before reading if the dataset was written to: GDAL keeps the
+    /// dirty blocks in memory until then, exactly as it would for a file on disk.
     #[napi]
     pub fn close(&self) -> Result<()> {
-        self.dataset.close()
+        self.dataset.close()?;
+        if let Some(mem_file) = &self.mem_file {
+            // A second close finds it already unlinked, and that is not worth
+            // reporting: the contract is "idempotent", not "exactly once".
+            let _guard = lock_gdal();
+            let _ = gdal::vsi::unlink_mem_file(mem_file);
+        }
+        Ok(())
     }
 
     /// Run one of `gdaldem`'s terrain algorithms on this dataset: `hillshade`,
@@ -1217,6 +1282,13 @@ enum OpenKind {
     Open {
         update: bool,
     },
+    /// Bytes that have no file yet. They are written to `OpenTask::path` — the
+    /// `/vsimem/` name `open(buffer)` generated — before anything is opened, so from
+    /// there on this is the plain `Open`, and the file is the dataset's to unlink.
+    OpenBytes {
+        bytes: Vec<u8>,
+        update: bool,
+    },
     CreateRaster(CreateOptions),
     CreateVector {
         driver: String,
@@ -1237,6 +1309,9 @@ impl Task for OpenTask {
     fn compute(&mut self) -> napi::Result<Self::Output> {
         Ok(op(match &self.kind {
             OpenKind::Open { update } => open_gdal(&self.path, *update).map(DatasetRef::serialised),
+            OpenKind::OpenBytes { bytes, update } => {
+                open_bytes_gdal(&self.path, bytes, *update).map(DatasetRef::serialised)
+            }
             OpenKind::CreateRaster(options) => {
                 create_gdal(&self.path, options).map(DatasetRef::serialised)
             }
@@ -1249,27 +1324,67 @@ impl Task for OpenTask {
     }
 
     fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
+        let from_bytes = matches!(self.kind, OpenKind::OpenBytes { .. });
         output
-            .map(|dataset| JsDataset::wrap_ref(dataset, self.path.clone()))
+            .map(|dataset| {
+                let path = self.path.clone();
+                if from_bytes {
+                    JsDataset::wrap_buffer(dataset, path)
+                } else {
+                    JsDataset::wrap_ref(dataset, path)
+                }
+            })
             .map_err(|(code, reason)| into_status_error(code, reason))
     }
 }
 
 /// Open an existing dataset. Runs on the libuv thread pool, so the event loop
 /// stays free while GDAL reads the header.
+///
+/// Pass a path — an ordinary one, or a `/vsimem/`, `/vsizip/`, `/vsicurl/` one — or
+/// a `Buffer` of bytes to open from memory, in which case they go to a `/vsimem/`
+/// file first. That file becomes the dataset's `path`, which is how bytes that were
+/// written to can be read back with `gdal.fs.readFile(dataset.path)`; closing the
+/// dataset unlinks it. Bytes have no filename, so they have to identify themselves —
+/// GDAL sniffs the content, which covers GTiff, PNG, JPEG, VRT, GeoJSON and GPKG,
+/// but not a format a driver only knows by its extension. When the name matters, use
+/// `gdal.fs.writeFile('/vsimem/data.tif', bytes)` and open that path.
 #[napi(ts_return_type = "Promise<Dataset>")]
-pub fn open(path: String, options: Option<OpenOptions>) -> AsyncTask<OpenTask> {
+pub fn open(source: Either<String, Buffer>, options: Option<OpenOptions>) -> AsyncTask<OpenTask> {
     let update = options.and_then(|options| options.update).unwrap_or(false);
-    AsyncTask::new(OpenTask {
-        path,
-        kind: OpenKind::Open { update },
-    })
+    match source {
+        Either::A(path) => AsyncTask::new(OpenTask {
+            path,
+            kind: OpenKind::Open { update },
+        }),
+        Either::B(bytes) => AsyncTask::new(OpenTask {
+            path: mem_file_name(),
+            kind: OpenKind::OpenBytes {
+                bytes: bytes.to_vec(),
+                update,
+            },
+        }),
+    }
 }
 
+/// The blocking twin of [`open`], bytes included.
 #[napi]
-pub fn open_sync(path: String, options: Option<OpenOptions>) -> Result<JsDataset> {
+pub fn open_sync(
+    source: Either<String, Buffer>,
+    options: Option<OpenOptions>,
+) -> Result<JsDataset> {
     let update = options.and_then(|options| options.update).unwrap_or(false);
-    Ok(JsDataset::wrap(open_gdal(&path, update)?, path))
+    match source {
+        Either::A(path) => Ok(JsDataset::wrap(open_gdal(&path, update)?, path)),
+        Either::B(bytes) => {
+            let path = mem_file_name();
+            let dataset = open_bytes_gdal(&path, &bytes, update)?;
+            Ok(JsDataset::wrap_buffer(
+                DatasetRef::serialised(dataset),
+                path,
+            ))
+        }
+    }
 }
 
 /// Open a read-only raster that several worker threads can read at the same time.

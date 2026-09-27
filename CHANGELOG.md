@@ -89,6 +89,22 @@ First working cut — everything here is new.
   now resets GDAL's error state after reading it, the way the `gdal` crate does. That
   keeps the promise `lastError` documents: a failure that became an exception is gone
   from there, and what remains is the errors that never did.
+- `open()` / `openSync()` take a `Buffer` as well as a path, which is where the
+  in-memory pipeline starts. The bytes go to a `/vsimem/` file, that file becomes the
+  dataset's `path`, and closing the dataset unlinks it — so bytes written to in place
+  come back out with `gdal.fs.readFile(dataset.path)`, after `flushSync()`, since GDAL
+  holds dirty blocks exactly as it does for a file on disk. Bytes have no filename, so
+  GDAL sniffs the content: GTiff, PNG, JPEG, VRT, GeoJSON and GPKG identify themselves,
+  and a format a driver only knows by its extension does not.
+- `gdal.fs` — GDAL's virtual file system: `readFile`, `writeFile`, `exists`, `stat`,
+  `mkdir`, `rmdir`, `unlink`, `readDir`. These are the `VSI*` functions, so the same
+  call takes `/vsimem/`, `/vsizip/`, `/vsicurl/` or a plain path. They are synchronous
+  deliberately: each one is a memory copy or a local syscall, and a `/vsicurl/` read is
+  the exception — `open(url)` is the version of that which runs on the pool. A missing
+  file answers `false` / `null` rather than throwing, while a call that was asked to
+  change something throws. `readDir` drops the `.` and `..` GDAL reports for a real
+  directory, and `/vsimem/` has no directories underneath at all: a name there is
+  opaque, so writing into a "directory" that was never created works.
 - Programs: `translate` / `translateSync`, `warp` / `warpSync`, `vectorTranslate` /
   `vectorTranslateSync` — `gdal_translate`, `gdalwarp` and `ogr2ogr`, each taking
   that tool's own command-line arguments. `warp` and `vectorTranslate` take a list
@@ -241,6 +257,10 @@ First working cut — everything here is new.
 
 ### Known gaps
 
+- A failed `open` / `openSync` says `GDALOpenEx: ` with an empty message, whether the
+  path was dead or the bytes were not a dataset. GDAL's own explanation is gone by the
+  time the `gdal` crate builds the error, and `lastError()` cannot recover it either —
+  it is already `null`. The only thing to go on is that the open failed.
 - CRS handling stops at points and bounding boxes: geometries are not transformed,
   `CoordTransformOptions` (a specific pipeline, an accuracy target) is not exposed,
   and the transformation is synchronous, so a million points has to be chunked by

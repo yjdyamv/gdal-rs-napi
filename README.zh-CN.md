@@ -78,6 +78,53 @@ gdal.lastError()
   `err.code` 与 `err.message`，其中 code 命名的就是这里报告的同一个 `CPLErr` class
   （`GDAL_CPL_FAILURE` 即 class 3）。
 
+## 文件 —— 内存与虚拟文件系统
+
+GDAL 的每个路径本来就走一层虚拟文件系统，`gdal.fs` 就是够到它的那几个 `VSI*` 调用：
+同一份代码能读普通路径、`/vsimem/`（内存）、`/vsizip/`（压缩包内）和 `/vsicurl/`（HTTP），
+不需要事先知道是哪种。
+
+```js
+gdal.fs.writeFile('/vsimem/data.tif', bytes)
+gdal.fs.exists('/vsimem/data.tif')   // true
+gdal.fs.stat('/vsimem/data.tif')     // { size, isFile, isDirectory, modifiedMs }
+const bytes = gdal.fs.readFile('/vsimem/data.tif')
+
+gdal.fs.mkdir('/tmp/scratch')
+gdal.fs.readDir('/tmp/scratch')      // ['a.txt', 'b.txt']，不含 '.' 和 '..'
+gdal.fs.unlink('/vsimem/data.tif')
+gdal.fs.rmdir('/tmp/scratch')
+```
+
+这一组是同步的，而且是刻意的：每次调用要么是内存拷贝，要么是本地系统调用。例外是
+`/vsicurl/` —— 一次网络往返，会卡住事件循环 —— 那种情况请用跑在线程池上的 `open(url)`。
+文件不存在不算错误（`exists` 是 `false`，`stat` 是 `null`）；被要求「改点什么」的调用才会抛。
+另外 `/vsimem/` 底下并不是真的文件系统：那里的路径只是个不透明名字，所以
+`writeFile('/vsimem/anything/nested.bin', bytes)` 不需要任何目录先存在。
+
+**`open()` 除了路径也能收 `Buffer`**，这是「数据本来就没有文件」时的入口：
+
+```js
+const dataset = gdal.openSync(bytes)   // 或 await gdal.open(bytes)
+dataset.driver                         // 'GTiff' —— 从内容嗅探出来的
+dataset.path                           // '/vsimem/gdal-rs-napi-1234-0.bin'
+```
+
+这些字节会写进一个 `/vsimem/` 文件，而那个文件**就是**数据集的 `path` —— 内存里改过的
+数据正是这样拿回来的（必须在数据集关闭之前）：
+
+```js
+const dataset = gdal.openSync(bytes, { update: true })
+dataset.band(0).fill(9)
+dataset.flushSync()                     // 在此之前脏块还在 GDAL 手里
+const edited = gdal.fs.readFile(dataset.path)
+dataset.close()                         // 这一步会把那个文件 unlink 掉
+```
+
+字节没有文件名，所以格式由 GDAL 嗅探内容判定：GTiff、PNG、JPEG、VRT、GeoJSON、GPKG
+都能自报家门；只认扩展名的驱动认不出来 —— 那就用
+`gdal.fs.writeFile('/vsimem/data.tif', bytes)` 再 `open('/vsimem/data.tif')`。
+
 ## 光栅
 
 ```js

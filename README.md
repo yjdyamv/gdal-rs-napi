@@ -104,6 +104,57 @@ Two things to know:
   one you caught — `err.code` and `err.message` are that error's record, and its code
   names the same `CPLErr` class this reports (`GDAL_CPL_FAILURE` is class 3).
 
+## Files — memory, and the virtual file system
+
+Every GDAL path already goes through a virtual file system, and `gdal.fs` is the
+`VSI*` calls that reach it: the same code reads a plain path, `/vsimem/` (memory),
+`/vsizip/` (inside an archive) and `/vsicurl/` (HTTP) without being told which.
+
+```js
+gdal.fs.writeFile('/vsimem/data.tif', bytes)
+gdal.fs.exists('/vsimem/data.tif')   // true
+gdal.fs.stat('/vsimem/data.tif')     // { size, isFile, isDirectory, modifiedMs }
+const bytes = gdal.fs.readFile('/vsimem/data.tif')
+
+gdal.fs.mkdir('/tmp/scratch')
+gdal.fs.readDir('/tmp/scratch')      // ['a.txt', 'b.txt'] — no '.' or '..'
+gdal.fs.unlink('/vsimem/data.tif')
+gdal.fs.rmdir('/tmp/scratch')
+```
+
+These are synchronous, and deliberately so: every call is a memory copy or a local
+syscall. A `/vsicurl/` read is the exception — a network round trip that will block the
+event loop — and for that case `open(url)` is the one that runs on the thread pool. A
+missing file is not an error (`exists` is `false`, `stat` is `null`); a call that was
+asked to change something throws instead. And `/vsimem/` is not a filesystem
+underneath: a path there is an opaque name, so
+`writeFile('/vsimem/anything/nested.bin', bytes)` works with no directory ever created.
+
+**`open()` takes bytes as well as a path**, which is where data that never had a file
+comes in:
+
+```js
+const dataset = gdal.openSync(bytes)   // or await gdal.open(bytes)
+dataset.driver                         // 'GTiff' — sniffed from the content
+dataset.path                           // '/vsimem/gdal-rs-napi-1234-0.bin'
+```
+
+The bytes go to a `/vsimem/` file, and that file *is* the dataset's `path` — which is
+how an edit made in memory gets back out, before the dataset is closed:
+
+```js
+const dataset = gdal.openSync(bytes, { update: true })
+dataset.band(0).fill(9)
+dataset.flushSync()                     // GDAL holds dirty blocks until then
+const edited = gdal.fs.readFile(dataset.path)
+dataset.close()                         // and this unlinks that file
+```
+
+Bytes have no filename, so GDAL identifies them by content: GTiff, PNG, JPEG, VRT,
+GeoJSON and GPKG all say what they are. A format a driver only knows by its extension
+does not — which is what `gdal.fs.writeFile('/vsimem/data.tif', bytes)` followed by
+`open('/vsimem/data.tif')` is for.
+
 ## Raster
 
 ```js

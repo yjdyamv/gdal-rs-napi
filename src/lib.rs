@@ -24,6 +24,7 @@ mod config;
 mod dataset;
 mod dtype;
 mod error;
+mod fs;
 mod json;
 mod programs;
 mod progress;
