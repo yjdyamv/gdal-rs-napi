@@ -8,8 +8,9 @@
 //! This module deliberately knows nothing about `napi`: it is the pure GDAL half,
 //! which keeps it unit-testable.
 
-use std::ffi::{CString, c_char, c_int};
+use std::ffi::{CStr, CString, c_char, c_int, c_void};
 use std::ptr::{null, null_mut};
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use gdal::Dataset as GdalDataset;
 use gdal::{DatasetOptions, GdalOpenFlags};
@@ -83,8 +84,104 @@ fn with_argv<T>(args: &[String], f: impl FnOnce(*mut *mut c_char) -> T) -> Resul
     Ok(f(pointers.as_mut_ptr()))
 }
 
+/// Where a program's progress goes.
+///
+/// This module deliberately knows nothing about `napi`, so the binding supplies the
+/// implementation that hops to the JS thread. `report` is called from whichever
+/// thread GDAL runs on — the libuv worker, for the async entry points — once per
+/// chunk of work, so a slow implementation slows the program down.
+pub(crate) trait ProgressSink: Send + Sync {
+    /// `complete` runs from 0.0 to 1.0. `message` is GDAL's own, and often absent.
+    ///
+    /// Returning `false` cancels. GDAL's progress callback is the only way to stop
+    /// a program that has already started.
+    fn report(&self, complete: f64, message: Option<&str>) -> bool;
+}
+
+/// The sink, plus the answer to "did it cancel?" — which is what the caller needs
+/// once the program has returned.
+struct ProgressBridge<'a> {
+    sink: &'a dyn ProgressSink,
+    cancelled: AtomicBool,
+}
+
+impl ProgressBridge<'_> {
+    /// Hand GDAL a pointer to this and it will call back into `sink`.
+    fn as_arg(&self) -> *mut c_void {
+        std::ptr::from_ref(self).cast_mut().cast()
+    }
+
+    fn cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::SeqCst)
+    }
+}
+
+/// GDAL's progress callback. Being a C function pointer it cannot capture
+/// anything, so the sink arrives through `pProgressArg` as a [`ProgressBridge`].
+///
+/// # Safety
+/// `arg` must point at a live `ProgressBridge` that outlives every call, which the
+/// `*_with_progress` functions below guarantee by keeping it on their stack.
+unsafe extern "C" fn progress_trampoline(
+    complete: f64,
+    message: *const c_char,
+    arg: *mut c_void,
+) -> c_int {
+    // A panic must not unwind into GDAL, which would be undefined behaviour. A
+    // panicking sink counts as a cancel: the program stops, and the caller gets an
+    // error through the ordinary path rather than a corrupted stack.
+    let keep_going = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        // SAFETY: the caller keeps the bridge alive for the whole program call, and
+        // it is only ever read back here.
+        let bridge = unsafe { &*arg.cast::<ProgressBridge<'_>>() };
+        let message = if message.is_null() {
+            None
+        } else {
+            // SAFETY: GDAL passes either null or a NUL-terminated string that lives
+            // for the duration of the call.
+            Some(
+                unsafe { CStr::from_ptr(message) }
+                    .to_string_lossy()
+                    .into_owned(),
+            )
+        };
+
+        let keep_going = bridge.sink.report(complete, message.as_deref());
+        if !keep_going {
+            bridge.cancelled.store(true, Ordering::SeqCst);
+        }
+        keep_going
+    }));
+
+    match keep_going {
+        Ok(true) => 1,
+        _ => 0,
+    }
+}
+
+/// Attach the bridge to one of the options objects, for the programs that have a
+/// progress callback at all.
+macro_rules! attach_progress {
+    ($options:expr, $bridge:expr) => {
+        if let Some(bridge) = $bridge {
+            // The bridge lives on the caller's stack for the whole program call,
+            // which is the only thing able to use this pointer.
+            $options.set_progress(Some(progress_trampoline), bridge.as_arg());
+        }
+    };
+}
+
+/// The error a cancelled program reports, so a caller can tell "I stopped it" from
+/// "it failed".
+fn cancelled(program: &str) -> Error<GdalErrorCode> {
+    Error::new(
+        GdalErrorCode::Cancelled,
+        format!("{program} was cancelled by the progress callback"),
+    )
+}
+
 macro_rules! options_wrapper {
-    ($(#[$doc:meta])* $name:ident, $c_ty:ident, $new:ident, $free:ident, $program:literal) => {
+    ($(#[$doc:meta])* $name:ident, $c_ty:ident, $new:ident, $free:ident, $progress:ident, $program:literal) => {
         $(#[$doc])*
         pub struct $name {
             c_options: *mut gdal_sys::$c_ty,
@@ -99,6 +196,21 @@ macro_rules! options_wrapper {
                     return Err(rejected($program, args));
                 }
                 Ok(Self { c_options })
+            }
+
+            /// Hand GDAL the callback it should report progress to.
+            ///
+            /// Safe on purpose: the only caller is `attach_progress!`, which always
+            /// passes a bridge that outlives the program call, so there is no way
+            /// for a caller to get the pointer's lifetime wrong.
+            pub fn set_progress(
+                &self,
+                callback: gdal_sys::GDALProgressFunc,
+                data: *mut c_void,
+            ) {
+                // SAFETY: GDAL stores both values and calls `callback` with `data`
+                // only while the options object is being used by a program call.
+                unsafe { gdal_sys::$progress(self.c_options, callback, data) };
             }
         }
 
@@ -116,6 +228,7 @@ options_wrapper!(
     GDALTranslateOptions,
     GDALTranslateOptionsNew,
     GDALTranslateOptionsFree,
+    GDALTranslateOptionsSetProgress,
     "gdal_translate"
 );
 
@@ -125,6 +238,7 @@ options_wrapper!(
     GDALWarpAppOptions,
     GDALWarpAppOptionsNew,
     GDALWarpAppOptionsFree,
+    GDALWarpAppOptionsSetProgress,
     "gdalwarp"
 );
 
@@ -134,6 +248,7 @@ options_wrapper!(
     GDALVectorTranslateOptions,
     GDALVectorTranslateOptionsNew,
     GDALVectorTranslateOptionsFree,
+    GDALVectorTranslateOptionsSetProgress,
     "ogr2ogr"
 );
 
@@ -143,6 +258,7 @@ options_wrapper!(
     GDALDEMProcessingOptions,
     GDALDEMProcessingOptionsNew,
     GDALDEMProcessingOptionsFree,
+    GDALDEMProcessingOptionsSetProgress,
     "gdaldem"
 );
 
@@ -209,6 +325,25 @@ pub(crate) fn run(
     sources: &[&GdalDataset],
     args: &[String],
 ) -> Result<GdalDataset> {
+    run_with_progress(program, dest, sources, args, None)
+}
+
+/// Run one of the programs, reporting progress to `sink`.
+///
+/// There is deliberately no sync form: a sync call holds the JS thread, so a
+/// callback that has to run *on* that thread could never run at all.
+pub(crate) fn run_with_progress(
+    program: Program,
+    dest: &str,
+    sources: &[&GdalDataset],
+    args: &[String],
+    progress: Option<&dyn ProgressSink>,
+) -> Result<GdalDataset> {
+    let bridge = progress.map(|sink| ProgressBridge {
+        sink,
+        cancelled: AtomicBool::new(false),
+    });
+
     if sources.is_empty() {
         return Err(bad_argument(format!(
             "{} needs at least one source dataset",
@@ -244,6 +379,7 @@ pub(crate) fn run(
         match program {
             Program::Translate => {
                 let options = TranslateOptions::new(&args)?;
+                attach_progress!(options, &bridge);
                 gdal_sys::GDALTranslate(
                     c_dest.as_ptr(),
                     sources[0].c_dataset(),
@@ -253,6 +389,7 @@ pub(crate) fn run(
             }
             Program::Warp => {
                 let options = WarpOptions::new(&args)?;
+                attach_progress!(options, &bridge);
                 let mut handles: Vec<_> = sources.iter().map(|source| source.c_dataset()).collect();
                 gdal_sys::GDALWarp(
                     c_dest.as_ptr(),
@@ -265,6 +402,7 @@ pub(crate) fn run(
             }
             Program::VectorTranslate => {
                 let options = VectorTranslateOptions::new(&args)?;
+                attach_progress!(options, &bridge);
                 let mut handles: Vec<_> = sources.iter().map(|source| source.c_dataset()).collect();
                 gdal_sys::GDALVectorTranslate(
                     c_dest.as_ptr(),
@@ -277,6 +415,14 @@ pub(crate) fn run(
             }
         }
     };
+
+    if bridge.as_ref().is_some_and(ProgressBridge::cancelled) {
+        // GDAL stops the moment the callback says no, and whatever it leaves behind
+        // is incomplete by definition, so report the cancellation rather than hand
+        // back a half-written dataset. Dropping the handle still closes it.
+        drop(take_result(program.name(), handle, usage_error));
+        return Err(cancelled(program.name()));
+    }
 
     take_result(program.name(), handle, usage_error)
 }
@@ -309,6 +455,25 @@ pub(crate) fn dem_process(
     source: &GdalDataset,
     args: &[String],
 ) -> Result<GdalDataset> {
+    dem_process_with_progress(dest, algorithm, color_file, source, args, None)
+}
+
+/// Run a terrain tool, reporting progress to `sink`.
+///
+/// No sync form, for the reason given on [`run_with_progress`].
+pub(crate) fn dem_process_with_progress(
+    dest: &str,
+    algorithm: &str,
+    color_file: Option<&str>,
+    source: &GdalDataset,
+    args: &[String],
+    progress: Option<&dyn ProgressSink>,
+) -> Result<GdalDataset> {
+    let bridge = progress.map(|sink| ProgressBridge {
+        sink,
+        cancelled: AtomicBool::new(false),
+    });
+
     let c_dest =
         CString::new(dest).map_err(|_| bad_argument("the destination path contains a NUL byte"))?;
     let c_algorithm = CString::new(algorithm)
@@ -324,6 +489,7 @@ pub(crate) fn dem_process(
     let mut usage_error: c_int = 0;
     let handle = unsafe {
         let options = DemOptions::new(args)?;
+        attach_progress!(options, &bridge);
         gdal_sys::GDALDEMProcessing(
             c_dest.as_ptr(),
             source.c_dataset(),
@@ -333,6 +499,11 @@ pub(crate) fn dem_process(
             &mut usage_error,
         )
     };
+
+    if bridge.as_ref().is_some_and(ProgressBridge::cancelled) {
+        drop(take_result("gdaldem", handle, usage_error));
+        return Err(cancelled("gdaldem"));
+    }
 
     take_result("gdaldem", handle, usage_error)
 }
@@ -480,6 +651,73 @@ mod tests {
             Err(err) => err,
         };
         assert!(err.reason.contains("gdaldem rejected"), "{}", err.reason);
+    }
+
+    /// A sink that records what it was told, and can say stop on demand.
+    struct FakeSink {
+        calls: std::sync::Mutex<Vec<(f64, Option<String>)>>,
+        cancel_at: Option<usize>,
+    }
+
+    impl ProgressSink for FakeSink {
+        fn report(&self, complete: f64, message: Option<&str>) -> bool {
+            let mut calls = self.calls.lock().unwrap();
+            calls.push((complete, message.map(str::to_string)));
+            match self.cancel_at {
+                Some(index) => calls.len() != index,
+                None => true,
+            }
+        }
+    }
+
+    #[test]
+    fn the_progress_trampoline_forwards_and_cancels() {
+        let sink = FakeSink {
+            calls: std::sync::Mutex::new(Vec::new()),
+            cancel_at: Some(3),
+        };
+        let bridge = ProgressBridge {
+            sink: &sink,
+            cancelled: AtomicBool::new(false),
+        };
+
+        let message = CString::new("warping").unwrap();
+        let answers: Vec<c_int> = (1..=3)
+            .map(|step| {
+                // SAFETY: `bridge` is alive for all three calls, which is exactly
+                // what the trampoline's contract asks for.
+                unsafe { progress_trampoline(step as f64 / 4.0, message.as_ptr(), bridge.as_arg()) }
+            })
+            .collect();
+
+        // GDAL reads anything non-zero as "keep going", so the third call is where
+        // it is told to stop — and the bridge remembers that it was asked to.
+        assert_eq!(answers, vec![1, 1, 0]);
+        assert!(bridge.cancelled());
+
+        let calls = sink.calls.lock().unwrap();
+        assert_eq!(calls.len(), 3);
+        assert_eq!(calls[0].0, 0.25);
+        assert_eq!(calls[0].1.as_deref(), Some("warping"));
+    }
+
+    #[test]
+    fn a_null_progress_message_is_not_a_message() {
+        let sink = FakeSink {
+            calls: std::sync::Mutex::new(Vec::new()),
+            cancel_at: None,
+        };
+        let bridge = ProgressBridge {
+            sink: &sink,
+            cancelled: AtomicBool::new(false),
+        };
+
+        // SAFETY: as above.
+        let answer = unsafe { progress_trampoline(1.0, null(), bridge.as_arg()) };
+
+        assert_eq!(answer, 1);
+        assert!(!bridge.cancelled());
+        assert_eq!(sink.calls.lock().unwrap()[0].1, None);
     }
 
     #[test]

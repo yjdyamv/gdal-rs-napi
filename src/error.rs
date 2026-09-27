@@ -24,6 +24,8 @@ pub enum GdalErrorCode {
     /// Anything that is not a GDAL CPL error: bad arguments, invalid field
     /// indexes/names, null pointers from the FFI layer, ...
     BadArgument,
+    /// The caller's progress callback returned `false` and the program stopped.
+    Cancelled,
     /// Reported when an operation needs a CRS database but PROJ data files
     /// could not be located.
     MissingProjData,
@@ -38,6 +40,7 @@ impl AsRef<str> for GdalErrorCode {
             Self::CplFailure => "GDAL_CPL_FAILURE",
             Self::CplFatal => "GDAL_CPL_FATAL",
             Self::BadArgument => "GDAL_BAD_ARGUMENT",
+            Self::Cancelled => "GDAL_CANCELLED",
             Self::MissingProjData => "GDAL_MISSING_PROJ_DATA",
         }
     }
