@@ -89,6 +89,22 @@ First working cut — everything here is new.
   now resets GDAL's error state after reading it, the way the `gdal` crate does. That
   keeps the promise `lastError` documents: a failure that became an exception is gone
   from there, and what remains is the errors that never did.
+- Band pixel accessors, for when a window in an options object is more ceremony than
+  the question deserves: `getPixel(x, y)` / `setPixel(x, y, value)` for one sample,
+  `readValues(x, y, width, height)` / `writeValues(x, y, width, height, data)` for a
+  window, and `readBlock(x, y)` / `writeBlock(x, y, data)` for GDAL's own unit of I/O.
+  The window is checked against the band before GDAL sees it, so a read off the edge is
+  an error naming the window rather than a quiet zero. A block is that block's
+  rectangle *clipped to the band*: GDAL's own block read pads the right and bottom
+  edges with whatever it likes, and a value that was never in the file is not worth
+  handing to JS.
+- `readValues` and `readBlock` return bytes rather than the typed array they were meant
+  to. napi's typed arrays in its prelude are owned and have no constructor from Rust
+  data, while the ones that do have `from_data(&env, values)` borrow the environment —
+  which does not survive this binding's generated return types — and `BigInt64Array` is
+  not in the prelude at all. So the view stays where this binding has always put it, one
+  line on the JS side: `new Float32Array(bytes.buffer, bytes.byteOffset,
+  bytes.byteLength / 4)`.
 - `open()` / `openSync()` take a `Buffer` as well as a path, which is where the
   in-memory pipeline starts. The bytes go to a `/vsimem/` file, that file becomes the
   dataset's `path`, and closing the dataset unlinks it — so bytes written to in place

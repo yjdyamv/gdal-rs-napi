@@ -215,6 +215,27 @@ const copy = Uint8Array.from(bytes)   // copy makes alignment a non-issue
 const values = new Float32Array(copy.buffer, 0, copy.length / gdal.bytesPerSample('Float32'))
 ```
 
+And for the small questions, where an options object is a lot of ceremony:
+
+```js
+band.getPixel(3, 4)                  // one sample, as a number
+band.setPixel(3, 4, 7)
+
+// The window `readPixelsSync` takes, as four numbers instead of an object.
+band.readValues(0, 0, 4, 4)
+band.writeValues(0, 0, 4, 4, bytes)
+
+// GDAL's own unit of I/O: the block holding that point, clipped to the band.
+band.readBlock(300, 200)
+band.writeBlock(300, 200, bytes)
+```
+
+A read off the edge of the band is an error naming the window, not a quiet zero.
+`readBlock` gives the block's rectangle *clipped to the band* — along the right and
+bottom edges that is smaller than `blockSize`, because GDAL's own block read pads
+those, and a value that was never in the file is not worth handing to JS. Both of
+these return bytes, for the reason above.
+
 Writing and creating:
 
 ```js

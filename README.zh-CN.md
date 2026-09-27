@@ -176,6 +176,25 @@ const copy = Uint8Array.from(bytes)   // 复制一下，对齐问题就不存在
 const values = new Float32Array(copy.buffer, 0, copy.length / gdal.bytesPerSample('Float32'))
 ```
 
+小问题就不必摆一个 options 对象了：
+
+```js
+band.getPixel(3, 4)                  // 一个采样值，返回 number
+band.setPixel(3, 4, 7)
+
+// 与 readPixelsSync 相同的窗口，只是写成四个数字
+band.readValues(0, 0, 4, 4)
+band.writeValues(0, 0, 4, 4, bytes)
+
+// GDAL 自己的 I/O 单位：包含该点的那一块，并按波段范围裁剪
+band.readBlock(300, 200)
+band.writeBlock(300, 200, bytes)
+```
+
+读越界会报错并指出是哪个窗口，不会悄悄返回 0。`readBlock` 给的是「该块的矩形按波段裁剪」
+之后的范围，所以在右、下边缘会比 `blockSize` 小 —— GDAL 自己的块读会给那些位置补值，
+而文件里从来没有的值不值得交给 JS。这两个都返回字节，原因同上。
+
 写入、创建、地理参考：
 
 ```js

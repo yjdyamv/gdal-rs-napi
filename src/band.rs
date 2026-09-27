@@ -866,7 +866,175 @@ impl JsRasterBand {
             data: data.to_vec(),
         })
     }
+
+    /// One sample, as a JS number, read in the band's own type.
+    ///
+    /// The two 64-bit integers are not exact here — a JS number is a double — so this
+    /// is for the types JS has always held. `readValues` is the one that gives
+    /// `BigInt` for those, rather than rounding them.
+    ///
+    /// A window outside the band is an error, not zeroes: the window is checked
+    /// against the band before GDAL is asked, and what does not fit is reported.
+    #[napi]
+    pub fn get_pixel(&self, x: u32, y: u32) -> Result<f64> {
+        let bytes = self.read_sync(None, &window(x, y, 1, 1))?;
+        sample_as_number(&bytes, self.data_type)
+    }
+
+    /// Write one sample from a JS number. The value is converted to the band's type,
+    /// so out-of-range integers wrap as GDAL wraps them.
+    #[napi]
+    pub fn set_pixel(&self, x: u32, y: u32, value: f64) -> Result<()> {
+        let bytes = number_as_sample(value, self.data_type)?;
+        self.write_sync(&bytes, &window(x, y, 1, 1))
+    }
+
+    /// Read a window of samples in the band's own type, as bytes — `readPixelsSync`
+    /// with the window given as four numbers instead of an options object.
+    ///
+    /// Bytes rather than the typed array this was meant to return. napi's typed
+    /// arrays are worth reading about twice before trying: the ones its prelude
+    /// exports are owned and have no constructor from Rust data, while the ones that
+    /// do have `from_data(&env, values)` borrow the environment — which does not
+    /// survive this binding's generated return types. `BigInt64Array` is not even in
+    /// the prelude. So the view stays where this binding has always put it, one line
+    /// on the JS side: `new Float32Array(bytes.buffer, bytes.byteOffset,
+    /// bytes.byteLength / 4)`.
+    #[napi]
+    pub fn read_values(&self, x: u32, y: u32, width: u32, height: u32) -> Result<Buffer> {
+        let bytes = self.read_sync(None, &window(x, y, width, height))?;
+        Ok(bytes.into())
+    }
+
+    /// Write a window from raw sample bytes — `width * height` samples of this band's
+    /// own type, the layout `readPixelsSync` returns.
+    ///
+    /// Bytes rather than a typed array, because every typed array is one line away
+    /// from its bytes (`Buffer.from(values.buffer, values.byteOffset, values.byteLength)`)
+    /// and one method that takes all ten of them would be ten signatures to read.
+    #[napi]
+    pub fn write_values(
+        &self,
+        x: u32,
+        y: u32,
+        width: u32,
+        height: u32,
+        data: Buffer,
+    ) -> Result<()> {
+        self.write_sync(data.as_ref(), &window(x, y, width, height))
+    }
+
+    /// Read the block of samples holding `(x, y)` — GDAL's own unit of I/O, and the
+    /// read that has to happen anyway.
+    ///
+    /// The window is the block's rectangle *clipped to the band*, so along the right
+    /// and bottom edges it is smaller than `blockSize`. GDAL's own block read pads
+    /// those with whatever it likes; a value that was never in the file is not worth
+    /// handing to JS, so it is left out instead.
+    #[napi]
+    pub fn read_block(&self, x: u32, y: u32) -> Result<Buffer> {
+        let options = self.block_window(x, y)?;
+        let bytes = self.read_sync(None, &options)?;
+        Ok(bytes.into())
+    }
+
+    /// Write into the block holding `(x, y)`, clipped to the band the same way
+    /// `readBlock` reads. `data` has to hold the whole clipped block: no resampling
+    /// and no partial writes.
+    #[napi]
+    pub fn write_block(&self, x: u32, y: u32, data: Buffer) -> Result<()> {
+        let options = self.block_window(x, y)?;
+        self.write_sync(data.as_ref(), &options)
+    }
 }
+
+/// The rectangle of the block that holds `(x, y)`, clipped to the band.
+impl JsRasterBand {
+    fn block_window(&self, x: u32, y: u32) -> Result<ReadOptions> {
+        let (block_width, block_height) = self.dataset.with_exclusive(|dataset| {
+            with_band(dataset, self.index, |band| {
+                let (width, height) = band.block_size();
+                Ok((width as u32, height as u32))
+            })
+        })?;
+        let (band_width, band_height) = self.dataset.with_exclusive(|dataset| {
+            with_band(dataset, self.index, |band| {
+                let (width, height) = band.size();
+                Ok((width as u32, height as u32))
+            })
+        })?;
+
+        // GDAL's blocks are laid out from the band's origin, so the one holding a
+        // sample starts at the largest multiple of the block size at or below it.
+        let left = x - x % block_width;
+        let top = y - y % block_height;
+        Ok(window(
+            left,
+            top,
+            block_width.min(band_width.saturating_sub(left)),
+            block_height.min(band_height.saturating_sub(top)),
+        ))
+    }
+}
+
+/// A `ReadOptions` for one window, which is all the accessors above need.
+fn window(x: u32, y: u32, width: u32, height: u32) -> ReadOptions {
+    ReadOptions {
+        x: Some(x),
+        y: Some(y),
+        width: Some(width),
+        height: Some(height),
+        ..ReadOptions::default()
+    }
+}
+
+/// The ten sample types a band can have, and the two conversions a single sample
+/// needs: a number out of one, and one out of a number.
+///
+/// A macro because the alternative is the same ten arms written twice, and because
+/// the list is the one `DataType` carries — which is what keeps the two from drifting
+/// apart without anyone noticing.
+macro_rules! sample_types {
+    ($($variant:ident => $rust:ty,)*) => {
+        /// A sample read out of a raw window as a number, in the band's own type.
+        fn sample_as_number(bytes: &[u8], data_type: DataType) -> Result<f64> {
+            match data_type {
+                $(DataType::$variant => {
+                    let sample = <$rust>::from_ne_bytes(
+                        bytes
+                            .try_into()
+                            .map_err(|_| bad_argument("exactly one sample"))?,
+                    );
+                    Ok(sample as f64)
+                })*
+                DataType::Unknown => Err(bad_argument("an unknown sample type")),
+            }
+        }
+
+        /// A sample written from a number, in the band's own type. The cast is what
+        /// GDAL does with the same value: a float truncates towards zero, and an
+        /// integer wraps in two's complement.
+        fn number_as_sample(value: f64, data_type: DataType) -> Result<Vec<u8>> {
+            Ok(match data_type {
+                $(DataType::$variant => (value as $rust).to_ne_bytes().to_vec(),)*
+                DataType::Unknown => return Err(bad_argument("an unknown sample type")),
+            })
+        }
+    };
+}
+
+sample_types!(
+    Uint8 => u8,
+    Int8 => i8,
+    Uint16 => u16,
+    Int16 => i16,
+    Uint32 => u32,
+    Int32 => i32,
+    Uint64 => u64,
+    Int64 => i64,
+    Float32 => f32,
+    Float64 => f64,
+);
 
 type OpResult<T> = std::result::Result<T, (GdalErrorCode, String)>;
 

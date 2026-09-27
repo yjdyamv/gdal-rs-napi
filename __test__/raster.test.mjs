@@ -614,6 +614,51 @@ test('contourGenerate takes an interval and an id field', async () => {
   raster.close()
 })
 
+test('the pixel accessors take single samples, windows and blocks', () => {
+  const path = tmp('pixel-accessors.tif')
+  const dataset = gdal.createSync(path, {
+    driver: 'GTiff',
+    width: 4,
+    height: 4,
+    bandCount: 1,
+    dataType: 'Int16',
+  })
+  const band = dataset.band(0)
+
+  // One sample in and out, in the band's own type.
+  band.setPixel(1, 2, -300)
+  assert.equal(band.getPixel(1, 2), -300)
+  assert.equal(band.getPixel(0, 0), 0) // never written
+
+  // A window is the options object `readPixelsSync` takes, spelled as four
+  // numbers, and it is the same bytes either way.
+  const window = { x: 0, y: 0, width: 2, height: 2 }
+  band.writeValues(0, 0, 2, 2, bytesOf(Int16Array.from([1, 2, 3, 4])))
+  assert.deepEqual(band.readValues(0, 0, 2, 2), band.readPixelsSync(window))
+  assert.deepEqual(Array.from(asTypedArray(band.readValues(0, 0, 2, 2), Int16Array)), [1, 2, 3, 4])
+  assert.equal(band.getPixel(1, 0), 2)
+
+  // Blocks are GDAL's own unit of I/O. At the origin the block is whole, so it is
+  // exactly the window of `blockSize`; away from it the result is the block's
+  // rectangle clipped to the band, so its length is a whole number of rows.
+  const [blockWidth, blockHeight] = band.blockSize
+  assert.ok(blockWidth > 0 && blockHeight > 0)
+  assert.deepEqual(band.readBlock(0, 0), band.readValues(0, 0, blockWidth, blockHeight))
+  assert.equal(band.readBlock(3, 3).length % (2 * blockWidth), 0)
+
+  // Writing a block is that same rectangle, and the values come back as they went
+  // in.
+  band.writeBlock(0, 0, bytesOf(new Int16Array(blockWidth * blockHeight).fill(7)))
+  assert.equal(band.getPixel(0, 0), 7)
+  assert.equal(band.getPixel(1, 1), 7)
+
+  // A window off the edge of the band is an error rather than a quiet zero, and
+  // the message names the window that did not fit.
+  assert.throws(() => band.getPixel(4, 0), /falls outside the band/i)
+
+  dataset.close()
+})
+
 test('buildVrt wraps rasters without copying them', async () => {
   const first = tmp('vrt-a.tif')
   const second = tmp('vrt-b.tif')
