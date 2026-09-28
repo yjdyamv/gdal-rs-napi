@@ -658,6 +658,64 @@ Two things to know, both of them GDAL's shape rather than this API's:
 On a feature, `fid` and `geometry` are `null` when absent — matching
 `properties`, where a SQL `NULL` is also `null`.
 
+### SQL
+
+`executeSql()` runs a query through GDAL's `GDALDatasetExecuteSQL` and hands back
+the rows as plain records, the same shape `featuresSync()` returns:
+
+```js
+const rows = dataset.executeSql(
+  'SELECT name, population FROM places WHERE population > 1000',
+)
+// [{ fid, properties: { name: 'beta', population: 4500 }, geometry: null }, ...]
+```
+
+A query gets records rather than a `Layer` on purpose: a result set has no layer
+index — it can join layers, alias or aggregate fields — so there is no
+`dataset.layer(i)` it belongs to. The second argument names GDAL's SQL dialect,
+`'OGRSQL'` or `'SQLITE'`; leave it out for the driver's own default. A statement
+with no result, an `ALTER TABLE` or `CREATE INDEX`, comes back as `[]`.
+
+### Transactions
+
+`startTransaction()`, `commitTransaction()` and `rollbackTransaction()` group
+writes into one unit — GDAL's `OGR_L_StartTransaction` and friends:
+
+```js
+layer.startTransaction()
+try {
+  layer.createFeature(point, { name: 'a' })
+  layer.createFeature(point, { name: 'b' })
+  layer.commitTransaction()
+} catch (error) {
+  layer.rollbackTransaction()
+  throw error
+}
+```
+
+Not every driver has them: `layer.testCapability('Transactions')` is the answer
+before you rely on the grouping. A driver without support warns and carries on as
+though there were no transaction, so the grouping silently means nothing there.
+
+One GeoPackage wrinkle: it creates the layer's table lazily, on the first write.
+Make that first write *outside* the transaction. Inside one, the `CREATE TABLE` is
+rolled back along with the features and every later write fails with `no such
+table`.
+
+### Feature ids, geometry columns and capabilities
+
+```js
+layer.fidColumn                           // 'fid', or null when GDAL generates ids
+layer.geomColumn                          // 'geom', or null for a layer with no geometry
+layer.testCapability('FastFeatureCount')  // true / false
+layer.testCapability('Transactions')
+```
+
+`testCapability` takes GDAL's own names — `FastFeatureCount`, `FastGetExtent`,
+`RandomRead`, `SequentialWrite`, `DeleteFeature`, `Transactions`, `CreateField`,
+`CreateGeomField`, and the rest. A name GDAL does not know answers `false` rather
+than throwing: the call is a question, and "no" is one of its answers.
+
 ## Programs — `gdal_translate`, `gdalwarp` and `ogr2ogr`
 
 Three of GDAL's command-line tools are available as one call each. `args` are that

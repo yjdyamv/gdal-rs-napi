@@ -522,6 +522,59 @@ for (;;) {
   请顺序读，并且不要混用两种读法。
 - **`close()` 不碰 GDAL。** 其它任何读取都会重新倒带，所以把位置停在半途没有代价。
 
+### SQL
+
+`executeSql()` 走 GDAL 的 `GDALDatasetExecuteSQL`，把查询结果作为普通记录数组返回，
+形状与 `featuresSync()` 一致：
+
+```js
+const rows = dataset.executeSql(
+  'SELECT name, population FROM places WHERE population > 1000',
+)
+// [{ fid, properties: { name: 'beta', population: 4500 }, geometry: null }, …]
+```
+
+查询给的是记录而不是 `Layer`，这是有意的：结果集没有图层序号 —— 它可以连接多个图层、
+给字段起别名或做聚合 —— 所以没有 `dataset.layer(i)` 与之对应。第二个参数指定 GDAL 的
+SQL 方言，`'OGRSQL'` 或 `'SQLITE'`；不传则用驱动自己的默认方言。没有结果集的语句
+（`ALTER TABLE`、`CREATE INDEX` 之类）返回 `[]`。
+
+### 事务
+
+`startTransaction()`、`commitTransaction()`、`rollbackTransaction()` 把多次写入并成一个单元
+—— 对应 GDAL 的 `OGR_L_StartTransaction` 系列：
+
+```js
+layer.startTransaction()
+try {
+  layer.createFeature(point, { name: 'a' })
+  layer.createFeature(point, { name: 'b' })
+  layer.commitTransaction()
+} catch (error) {
+  layer.rollbackTransaction()
+  throw error
+}
+```
+
+并非所有驱动都支持：依赖分组之前先问 `layer.testCapability('Transactions')`。
+不支持的驱动只会警告一句然后照常执行，等于事务没起作用。
+
+GeoPackage 有一个坑：它的表是**首次写入**时才惰性建的，所以首次写入要放在事务**外面**。
+放进事务里，`CREATE TABLE` 会跟着要素一起回滚，之后每次写入都会以 `no such table` 失败。
+
+### Feature id、几何列与能力
+
+```js
+layer.fidColumn                           // 'fid'；由 GDAL 生成 id 时为 null
+layer.geomColumn                          // 'geom'；图层没有几何时为 null
+layer.testCapability('FastFeatureCount')  // true / false
+layer.testCapability('Transactions')
+```
+
+`testCapability` 用 GDAL 自己的名字 —— `FastFeatureCount`、`FastGetExtent`、`RandomRead`、
+`SequentialWrite`、`DeleteFeature`、`Transactions`、`CreateField`、`CreateGeomField` 等等。
+GDAL 不认识的名字一律回答 `false` 而不是抛错：这是一次询问，而「没有」也是答案之一。
+
 ## 调用 GDAL 命令行工具（gdal_translate / gdalwarp / ogr2ogr）
 
 三个工具各对应一次调用。`args` 就是**该工具自己的命令行参数**，GDAL 文档里的任何选项都能

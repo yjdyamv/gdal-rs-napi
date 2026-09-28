@@ -39,7 +39,7 @@ use crate::raster_tools::{
 };
 use crate::runtime::{ensure_initialized, lock_gdal, lock_gdal_shared};
 use crate::spatial_ref::JsSpatialRef;
-use crate::vector::{FieldDefinition, JsLayer};
+use crate::vector::{FeatureRecord, FieldDefinition, JsLayer};
 
 pub struct DatasetHandle {
     /// `None` once closed. That is what makes `close()` idempotent and turns any
@@ -866,6 +866,29 @@ impl JsDataset {
         (0..layer_count as u32)
             .map(|index| self.layer(index))
             .collect()
+    }
+
+    /// Run a SQL query against this dataset — GDAL's `GDALDatasetExecuteSQL` —
+    /// and get the rows back.
+    ///
+    /// A query has no layer behind it, so the answer is an array of records rather
+    /// than a `Layer`: it can join layers, alias or aggregate fields, and none of
+    /// that maps back to a layer index. Each record has the shape `featuresSync()`
+    /// gives — `{ fid, properties, geometry }`, with `null` for what is absent.
+    ///
+    /// `dialect` names GDAL's SQL dialect, `"OGRSQL"` or `"SQLITE"`; omit it for
+    /// the driver's own default. A statement with no result (an `ALTER TABLE`, say)
+    /// comes back as an empty array.
+    ///
+    /// ```js
+    /// dataset.executeSql('SELECT name, population FROM places WHERE population > 1000')
+    /// ```
+    #[napi]
+    pub fn execute_sql(&self, sql: String, dialect: Option<String>) -> Result<Vec<FeatureRecord>> {
+        ensure_initialized();
+        self.dataset.ensure_vector_capable()?;
+        self.dataset
+            .with_exclusive(|dataset| crate::vector::execute_sql(dataset, &sql, dialect.as_deref()))
     }
 
     /// Burn GeoJSON geometries into this dataset's bands — GDAL's

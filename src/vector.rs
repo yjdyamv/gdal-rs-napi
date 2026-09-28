@@ -13,7 +13,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use gdal::Dataset as GdalDataset;
 use gdal::Metadata;
 use gdal::vector::{
-    Feature, FieldDefn, FieldValue, LayerAccess, OGRFieldType, OGRwkbGeometryType,
+    Defn, Feature, FieldDefn, FieldValue, LayerAccess, OGRFieldType, OGRwkbGeometryType,
     geometry_type_flatten, geometry_type_has_m, geometry_type_has_z,
 };
 use napi::bindgen_prelude::*;
@@ -1070,6 +1070,93 @@ fn read_batch(
         records.push(to_record(&feature, &field_names)?);
     }
     Ok(records)
+}
+
+/// Run a SQL query against a dataset and copy the rows out.
+///
+/// `dialect` is one of GDAL's own names — `"OGRSQL"` forces the OGR dialect,
+/// `"SQLITE"` asks for the SQLite one — or `None` for the driver's default.
+///
+/// The `gdal` crate's own `Dataset::execute_sql` hands back a `ResultSet` that
+/// borrows the dataset, which cannot cross to JS; calling
+/// `GDALDatasetExecuteSQL` directly also keeps the lifetime explicit, with the
+/// set released once the rows are out.
+pub(crate) fn execute_sql(
+    dataset: &GdalDataset,
+    sql: &str,
+    dialect: Option<&str>,
+) -> Result<Vec<FeatureRecord>> {
+    let query = std::ffi::CString::new(sql)
+        .map_err(|_| bad_argument("the SQL query cannot contain a NUL byte"))?;
+    let dialect = dialect
+        .map(|dialect| {
+            std::ffi::CString::new(dialect)
+                .map_err(|_| bad_argument("the dialect name cannot contain a NUL byte"))
+        })
+        .transpose()?;
+
+    // A stale error left by an earlier call must not be read as this query's.
+    unsafe { gdal_sys::CPLErrorReset() };
+
+    // SAFETY: the dataset handle is live for as long as `dataset` is, and a null
+    // spatial filter is GDAL's "no filter". GDAL copies both strings, so the
+    // `CString`s only have to outlive the call.
+    let layer = unsafe {
+        gdal_sys::GDALDatasetExecuteSQL(
+            dataset.c_dataset(),
+            query.as_ptr(),
+            std::ptr::null_mut(),
+            dialect.as_ref().map_or(std::ptr::null(), |d| d.as_ptr()),
+        )
+    };
+
+    // A warning is not a failure, so a non-null handle means the query ran,
+    // warnings and all. GDAL reports a null handle both for a statement with no
+    // result set — an `ALTER TABLE`, a `CREATE INDEX` — and for a query that
+    // failed, and the error state is what tells those two apart.
+    if layer.is_null() {
+        let error_class = unsafe { gdal_sys::CPLGetLastErrorType() };
+        if error_class != gdal_sys::CPLErr::CE_None {
+            return Err(crate::error::gdal_error(
+                gdal::errors::GdalError::CplError {
+                    class: error_class,
+                    number: unsafe { gdal_sys::CPLGetLastErrorNo() },
+                    msg: crate::runtime::c_string(unsafe { gdal_sys::CPLGetLastErrorMsg() }),
+                },
+            ));
+        }
+        // No layer and no error: nothing to copy out, so an empty array rather than
+        // a failure.
+        return Ok(Vec::new());
+    }
+
+    // The rows are read with the set alive; the closure holds the one release on
+    // every exit path, error included.
+    let result = (|| {
+        // SAFETY: the layer is live and its definition stays valid for as long as
+        // the set does.
+        let defn = unsafe { Defn::from_c_defn(gdal_sys::OGR_L_GetLayerDefn(layer)) };
+        let field_names: Vec<String> = defn.fields().map(|field| field.name()).collect();
+
+        let mut records = Vec::new();
+        loop {
+            // SAFETY: as in `read_batch` — the layer is live, and ownership of each
+            // feature passes to the `Feature`, whose drop frees it.
+            let handle = unsafe { gdal_sys::OGR_L_GetNextFeature(layer) };
+            if handle.is_null() {
+                break;
+            }
+            let feature = unsafe { Feature::from_c_feature(&defn, handle) };
+            records.push(to_record(&feature, &field_names)?);
+        }
+        Ok(records)
+    })();
+
+    // SAFETY: the set is ours, and this is its single release, after the rows have
+    // been copied out.
+    unsafe { gdal_sys::GDALDatasetReleaseResultSet(dataset.c_dataset(), layer) };
+
+    result
 }
 
 type OpResult<T> = std::result::Result<T, (GdalErrorCode, String)>;
