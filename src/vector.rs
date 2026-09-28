@@ -579,6 +579,61 @@ impl JsLayer {
         })
     }
 
+    /// Begin a transaction on this layer: everything written until the commit — or
+    /// the rollback — becomes one unit. GDAL's `StartTransaction`.
+    ///
+    /// Whether the driver has them at all is `testCapability('Transactions')`. A
+    /// driver without support warns and carries on as if there were no transaction, so
+    /// a `false` there is worth reading before relying on the grouping. Beginning a
+    /// transaction inside one is the failure this can report.
+    #[napi]
+    pub fn start_transaction(&self) -> Result<()> {
+        self.transaction(gdal_sys::OGR_L_StartTransaction, "start")
+    }
+
+    /// Keep everything the transaction wrote. GDAL's `CommitTransaction`.
+    #[napi]
+    pub fn commit_transaction(&self) -> Result<()> {
+        self.transaction(gdal_sys::OGR_L_CommitTransaction, "commit")
+    }
+
+    /// Throw everything the transaction wrote away. GDAL's `RollbackTransaction`.
+    #[napi]
+    pub fn rollback_transaction(&self) -> Result<()> {
+        self.transaction(gdal_sys::OGR_L_RollbackTransaction, "roll back")
+    }
+
+    /// The three transaction calls differ only in which one they are, so they come
+    /// through here. `with_mut` rather than `with_exclusive`, because a transaction is
+    /// a write like any other and a read-only dataset has to refuse it.
+    fn transaction(
+        &self,
+        call: unsafe extern "C" fn(gdal_sys::OGRLayerH) -> gdal_sys::OGRErr::Type,
+        what: &str,
+    ) -> Result<()> {
+        ensure_initialized();
+        self.dataset.with_mut(|dataset| {
+            // Not `mut`: `c_layer()` takes the layer by shared reference, unlike the
+            // iterating call sites where the layer is borrowed mutably.
+            let layer = dataset.layer(self.index).gdal()?;
+            let status = unsafe { call(layer.c_layer()) };
+            if status != 0 {
+                // There is no `CPLErr` behind an OGR layer status, but the class is
+                // still the honest one: this is a failure the driver reported.
+                return Err(crate::error::gdal_error(
+                    gdal::errors::GdalError::CplError {
+                        class: gdal_sys::CPLErr::CE_Failure,
+                        number: 0,
+                        msg: format!(
+                            "the driver refused to {what} the transaction (OGR error {status})"
+                        ),
+                    },
+                ));
+            }
+            Ok(())
+        })
+    }
+
     /// The field the layer stores its feature ids in, or `null` when it has none and
     /// GDAL generates them — the catalogue calls this the `FIDColumn`.
     #[napi(getter)]

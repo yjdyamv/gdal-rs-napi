@@ -113,6 +113,17 @@ First working cut — everything here is new.
   getter asks GDAL every time, so a level built after the band object was created shows
   up. Levels are read with raw `GDALRasterIO`: the `gdal` crate's readers start from a
   dataset and a band number, and an overview hangs off a band with no number of its own.
+- Transactions on a layer: `startTransaction()`, `commitTransaction()` and
+  `rollbackTransaction()`, so a group of writes can be one unit instead of one write at
+  a time. Whether the driver has them is `testCapability('Transactions')` — a driver
+  without support warns and carries on as if there were no transaction, which is worth
+  knowing before relying on the grouping. They go through `with_mut`, so a read-only
+  dataset refuses them like any other write, and a failure carries the OGR status in
+  its message (there is no `CPLErr` behind that call for a code to name). One thing the
+  tests turned up: GPKG creates its table lazily, on the first write — so a table whose
+  `CREATE TABLE` happens *inside* a transaction is rolled back with the features, and
+  every write after that fails with `no such table`. Write once outside the transaction
+  first.
 - `layer.fidColumn`, `layer.geomColumn` and `layer.testCapability(name)` — what GDAL
   says about where a layer keeps its feature ids and its geometry, and what the driver
   can actually do. The capability names are GDAL's own (`FastFeatureCount`,
