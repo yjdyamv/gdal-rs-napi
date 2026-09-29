@@ -100,10 +100,14 @@ the driver stores.
    an overload — `setProjection(wkt)` gaining a `SpatialRef` overload, not a new
    `setSrs()`. Existing calls keep working unchanged.
 3. **Vocabularies are frozen strings.** Field types (`'String'`, `'Integer64'`),
-   colour interpretations (`'Red'`), resampling names (`'bilinear'`) and
+   colour interpretations (`'RedBand'`), resampling names (`'bilinear'`) and
    capability names (`'FastFeatureCount'`) are part of the contract. They are
    matched case-insensitively on input where GDAL's own names allow it, and are
-   always reported in GDAL's canonical spelling.
+   always reported in GDAL's canonical spelling. `gdal.const` names them, so a
+   vocabulary can be referenced rather than retyped — and each value there is
+   checked against the runtime. Note that GDAL has two resampling vocabularies,
+   and `gdal.const` keeps them apart: `Resampling` (a pixel read, and a warp —
+   `nearestneighbour`) and `OverviewResampling` (`nearest`, plus `rms` / `none`).
 4. **Numeric GDAL enum codes are not exposed.** `GDT_*`, `OFT_*`, `GCI_*` and the
    rest are numbers in C and strings here, on purpose: a string survives a GDAL
    version that adds an enum value, and it is what `gdalinfo` prints. A caller who

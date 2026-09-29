@@ -24,6 +24,22 @@ First working cut — everything here is new.
   `info()` answers what GDAL was *compiled* with, where an absent key is the
   answer; this is the same question asked about the binding, and is the one to
   branch on in application code.
+- `gdal.const` freezes the string vocabularies this binding already reads and
+  writes: `DataType`, `FieldType`, `Justification`, `GeometryType`,
+  `ColorInterpretation`, `Resampling`, `OverviewResampling` and `SqlDialect`. So
+  `fieldType: gdal.const.FieldType.Integer64` is the same request as the literal,
+  and a misspelling is a caught typo rather than a runtime surprise. The values
+  are *strings*, not GDAL's numeric enum codes — this surface returns and accepts
+  names (`band.dataType === 'Float32'`), so a numeric constant would be a
+  vocabulary it neither returns nor accepts; the codes belong to the
+  compatibility layer. Two resampling vocabularies exist because GDAL has two: a
+  pixel read (and a warp) takes `Resampling`, where nearest is
+  `nearestneighbour`, while building overviews takes `OverviewResampling`, where
+  it is `nearest` and `rms` / `average_magphase` / `none` exist. `none` is not a
+  kernel — it is how a pyramid is deleted. A constant table needs nothing from
+  GDAL, so it lives in `index.js` rather than crossing the FFI boundary, and
+  `__test__/const.test.mjs` checks each value against the runtime so the two
+  cannot drift.
 - `docs/API-STABILITY.md` writes down the rules the surface was already following
   — naming (`xxxSync()` / `xxx()`), 0-based indexing with `band.id` as the single
   exception, `null` rather than `undefined`, `err.code` on the sync surface and

@@ -43,6 +43,27 @@ gdal.apiVersion // '0.1.0' —— 绑定的版本，不是 `version().gdal`
 `-simplify`）能不能用。答案是不能：GEOS 是 LGPL，静态链接会让整个产物变更许可证，所以是
 **故意**不链的——见文末许可证一节。
 
+## 常量
+
+`gdal.const` 把本绑定**已经在用**的那几套字符串词汇冻结成表，于是名字可以直接引用而不必重敲：
+
+```js
+gdal.const.FieldType.Integer64         // 'Integer64'
+gdal.const.ColorInterpretation.RedBand // 'RedBand'
+gdal.const.Resampling.Average          // 'average'
+gdal.const.OverviewResampling.Rms      // 'rms'
+gdal.const.SqlDialect.SQLITE           // 'SQLITE'
+```
+
+它们是本 API **返回并接受**的字符串，不是 GDAL 的数字枚举码：`band.dataType` 是
+`'Float32'`，`layer.fields[0].fieldType` 是 `'String'`。这些表是冻结的，且有一条测试逐值
+核对运行时真正使用的拼写，因此两者不会漂移。
+
+`Resampling` 与 `OverviewResampling` 是两套词汇，因为 GDAL 本来就是两套。像素读取（以及
+`warp` / `reprojectImage`）用 `Resampling`，那里最近邻是 `nearestneighbour`；
+`buildOverviews({ resampling })` 用 `OverviewResampling`，那里是 `nearest`，并且多出
+`rms` / `average_magphase` / `none`。`none` 不是核函数——它是**删除**金字塔的方式。
+
 ## 配置与 GDAL 的最后错误
 
 `gdal.config` 是 GDAL 自己的选项存储——也就是 `--config NAME=VALUE` 与 `GDAL_*` /

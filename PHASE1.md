@@ -14,7 +14,7 @@
 | WS-6 波段元数据写回 | ✅ 已完成 | `setScale` / `setOffset` / `setUnitType` / `setDescription` / `setCategoryNames` |
 | WS-6 直方图写回 | ✅ 已完成 | `defaultHistogram(force?)` / `setDefaultHistogram()`，与 `statistics()` / `setStatistics()` 对齐 |
 | B2 特性探测 | ✅ 已完成 | `gdal.apiVersion`、`gdal.features()` |
-| WS-5 常量枚举 | ⏳ 下一批 | `gdal.const` —— 冻结现有字符串词汇（不是 GDAL 数字码，见下） |
+| WS-5 常量枚举 | ✅ 已完成 | `gdal.const` —— `DataType`/`FieldType`/`Justification`/`GeometryType`/`ColorInterpretation`/`Resampling`/`OverviewResampling`/`SqlDialect`，纯 JS（`index.js`）+ 逐值对照运行时的测试 |
 | WS-1 几何对象模型 | ⏳ 待 C1 | 杠杆最大，需先定 GEOS 决策 |
 | WS-2 Driver/Dataset 对象模型 | 🟡 已过半 | `Driver` 对象 + `gdal.driver()`/`drivers()` + `dataset.driver` 对象化 + `open({drivers})` + `Dataset.description`/`rasterSize`/`getFileList`。**剩余**：`drivers`/`bands`/`layers` 的集合类与 `Symbol.iterator`、`srs` setter 收 `SpatialRef`、`Driver.createCopy` |
 | WS-3 Feature/Field 对象模型 | 🟡 已过半 | `layer.field(name)`/`addField`/`deleteField`/`reorderFields`、`FieldInfo` 全量定义（`nullable`/`unique`/`defaultValue`/`justification`）、`FieldDefinition` 同名字段、`layer.features()`（异步）、`layer.setSpatialFilter(geom)`。**剩余**：`Feature`/`FeatureFields` 类、`FeatureDefn`/`FieldDefn` 对象、`Layer.fields` 变为可变集合、`Symbol.iterator` |
@@ -25,14 +25,20 @@
 
 原计划（B2.5）说导出 `GDT_*` / `OFT_*` / `GCI_*` 等数字常量，让它们与现有字符串
 “两者都能用”。实测下来这是错的方向：本绑定的公开取值**本来就是字符串**
-（`band.colorInterpretation === 'Red'`、`fieldType === 'String'`、
+（`band.colorInterpretation === 'GrayIndex'`、`fieldType === 'String'`、
 `resampling: 'average'`），返回数字常量会给出一个本 API 既不返回也不接受的词汇表，
 反而制造“能用”的错觉。
 
-所以 `gdal.const` 改为冻结**现有字符串词汇**：`gdal.const.ColorInterpretation.Red === 'Red'`、
+所以 `gdal.const` 改为冻结**现有字符串词汇**：`gdal.const.ColorInterpretation.RedBand === 'RedBand'`、
 `gdal.const.FieldType.Integer64 === 'Integer64'`、`gdal.const.Resampling.Average === 'average'`。
 这才是真正的 API 稳定性收益 —— 把事实上已经在用的契约写成明文。
 GDAL 的数字码属于兼容层（WS-7），那里 `gdal-async` 的形状才是目标。
+
+（一个实现时才发现、值得记下的细节：GDAL 有**两套**重采样词汇。像素读取与 `warp` /
+`reprojectImage` 用 `Resampling`，最近邻拼作 `nearestneighbour`；`buildOverviews` 用
+`OverviewResampling`，最近邻是 `nearest`，另多出 `rms` / `average_magphase` / `none`
+（`none` 表示删除金字塔）。两者分别导出，不合并。色彩解释同理是 GDAL 的全名——`RedBand`
+而不是 `Red`。）
 
 ---
 
@@ -206,7 +212,7 @@ geometryFromWkb` + `transformGeometry`（走 GeoJSON `Value`）。**几何是 `a
 |---|---|
 | 风格未冻结 | 现在是 0.x，任何补全都可能顺手改命名，越晚冻结越贵 |
 | 生成的 `binding.d.ts` | 61KB 自动生成，用户直接依赖它，但没有"这是契约"的声明 |
-| 字符串即枚举 | `fieldType: 'String'`、`colorInterpretation: 'Red'`、`dataType: 'Float32'`——拼错只在运行时炸 |
+| 字符串即枚举 | `fieldType: 'String'`、`colorInterpretation: 'RedBand'`、`dataType: 'Float32'`——拼错只在运行时炸（`gdal.const` 已缓解：拼错变成一个可引用的名字） |
 | 错误码只覆盖同步路径 | 异步方法无法给 `err.code`（README 已承认） |
 | 索引基数 | 0-based 是我们的约定，但与 `gdal-async` 相反，必须写死在文档里 |
 | 无弃用机制 | 没有 `@deprecated` 流程，也没有 `apiVersion` 供用户特性探测 |

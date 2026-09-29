@@ -67,6 +67,30 @@ and still names the machine the library was built on; it is not the path in use.
 LGPL, and statically linking it would relicense this whole artifact, so it is left
 out on purpose — see the licence note at the end.
 
+## Constants
+
+`gdal.const` freezes the string vocabularies the rest of the surface already uses,
+so a name can be referenced rather than retyped:
+
+```js
+gdal.const.FieldType.Integer64         // 'Integer64'
+gdal.const.ColorInterpretation.RedBand // 'RedBand'
+gdal.const.Resampling.Average          // 'average'
+gdal.const.OverviewResampling.Rms      // 'rms'
+gdal.const.SqlDialect.SQLITE           // 'SQLITE'
+```
+
+These are the strings the API returns and accepts, not GDAL's numeric enum codes:
+`band.dataType` is `'Float32'`, `layer.fields[0].fieldType` is `'String'`. The
+tables are frozen, and a test asserts every value is the spelling the runtime
+actually uses, so the two cannot drift.
+
+`Resampling` and `OverviewResampling` are two vocabularies because GDAL has two.
+A pixel read — and `warp` / `reprojectImage` — takes `Resampling`, where nearest
+is `nearestneighbour`; `buildOverviews({ resampling })` takes
+`OverviewResampling`, where it is `nearest` and `rms` / `average_magphase` /
+`none` exist. `none` is not a kernel — it is how a pyramid is deleted.
+
 ## Configuration and GDAL's last error
 
 `gdal.config` is GDAL's own option store — the same one `--config NAME=VALUE` and the
