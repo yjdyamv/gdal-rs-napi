@@ -9,6 +9,7 @@ use napi_derive::napi;
 use serde_json::Value;
 
 use crate::error::{GdalErrorCode, IntoGdalResult, Result, bad_argument, into_status_error, split};
+use crate::geometry::JsGeometry;
 use crate::runtime::{ensure_initialized, lock_gdal};
 
 /// Axis-order strategies, as the strings this API takes.
@@ -385,10 +386,16 @@ impl JsCoordinateTransform {
     /// line stops being straight under most projections. Transform a feature's
     /// `geometry` and write it back if that is what you need.
     #[napi]
-    pub fn transform_geometry(&self, geometry: Value) -> Result<Value> {
+    pub fn transform_geometry(&self, geometry: Either<&JsGeometry, Unknown<'_>>) -> Result<Value> {
         ensure_initialized();
-        let _guard = lock_gdal();
 
+        // Resolved before the lock: a `Geometry`'s `toJson()` takes it itself.
+        let geometry = match geometry {
+            Either::A(object) => object.to_json()?,
+            Either::B(unknown) => crate::vector::json_value(unknown)?,
+        };
+
+        let _guard = lock_gdal();
         let geometry = crate::vector::from_geojson(&geometry)?;
         let moved = geometry.transform(&self.inner).gdal()?;
         crate::vector::to_geojson(&moved)

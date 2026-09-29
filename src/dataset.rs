@@ -28,6 +28,7 @@ use crate::band::JsRasterBand;
 use crate::driver::JsDriver;
 use crate::dtype::DataType;
 use crate::error::{GdalErrorCode, IntoGdalResult, Result, bad_argument, into_status_error, split};
+use crate::geometry::JsGeometry;
 use crate::programs;
 use crate::progress::{JsProgressSink, ProgressCallback, ProgressUpdate};
 use crate::raster_io::{
@@ -1021,7 +1022,12 @@ impl JsDataset {
     /// })
     /// ```
     #[napi]
-    pub fn rasterize_sync(&self, geometries: Vec<Value>, options: RasterizeOptions) -> Result<()> {
+    pub fn rasterize_sync(
+        &self,
+        geometries: Vec<Either<&JsGeometry, Unknown<'_>>>,
+        options: RasterizeOptions,
+    ) -> Result<()> {
+        let geometries = geometry_values(geometries)?;
         let request = rasterize_request(Some(options), geometries.len())?;
         self.dataset.with_mut(|dataset| {
             let geometries = geometries
@@ -1037,9 +1043,10 @@ impl JsDataset {
     #[napi(ts_return_type = "Promise<void>")]
     pub fn rasterize(
         &self,
-        geometries: Vec<Value>,
+        geometries: Vec<Either<&JsGeometry, Unknown<'_>>>,
         options: RasterizeOptions,
     ) -> Result<AsyncTask<RasterizeTask>> {
+        let geometries = geometry_values(geometries)?;
         // Resolved here, so a burn-value mismatch is thrown by the call rather than
         // surfacing on the worker.
         let request = rasterize_request(Some(options), geometries.len())?;
@@ -1946,6 +1953,19 @@ impl Task for FlushTask {
     fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
         output.map_err(|(code, reason)| into_status_error(code, reason))
     }
+}
+
+/// Resolve a geometry list to GeoJSON — a `Geometry` object and the GeoJSON plain
+/// object are both accepted. Converted **before** the caller takes the lock,
+/// because the object form's `toJson()` takes it itself.
+fn geometry_values(geometries: Vec<Either<&JsGeometry, Unknown<'_>>>) -> Result<Vec<Value>> {
+    geometries
+        .into_iter()
+        .map(|geometry| match geometry {
+            Either::A(object) => object.to_json(),
+            Either::B(unknown) => crate::vector::json_value(unknown),
+        })
+        .collect()
 }
 
 /// `createCopy` driven by a named driver, for `Dataset.createCopySync` and

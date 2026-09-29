@@ -725,9 +725,22 @@ Geometry.fromJson(point).transform(gdal.SpatialRef.fromEpsg(4326), gdal.SpatialR
 ```
 
 A geometry carries no CRS of its own, so `transform` names both ends — the
-layer's `spatialRefWkt` is the `from` for a feature you read. The GEOS predicates
-(`intersects`, `buffer`, `simplify`, …) are not in the default build; see
-`docs/GEOS.md`.
+layer's `spatialRefWkt` is the `from` for a feature you read.
+
+And every writer that takes a geometry takes **either** shape, so the two never
+have to be converted by hand:
+
+```js
+layer.createFeature(Geometry.fromWkt('POINT (1 2)'), { name: 'a' })
+layer.createFeature({ type: 'Point', coordinates: [3, 4] }, { name: 'b' })
+layer.setSpatialFilter(Geometry.fromWkt('POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))'))
+layer.updateFeature(fid, Geometry.fromWkt('POINT (5 6)'))
+feature.setGeometry(Geometry.fromWkt('POINT (7 8)'))
+raster.rasterizeSync([Geometry.fromWkt(box), geojsonBox], { burnValues: [1, 2] })
+```
+
+The GEOS predicates (`intersects`, `buffer`, `simplify`, …) are not in the default
+build; see `docs/GEOS.md`.
 
 ### Writing
 

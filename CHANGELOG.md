@@ -74,6 +74,15 @@ First working cut — everything here is new.
   for a second independent handle. `transform` names both CRSes because a bare OGR
   geometry carries none of its own. The GEOS predicates (`intersects`, `buffer`,
   …) land with the `geos` build — see `docs/GEOS.md`.
+- Every writer that takes a geometry now takes a `Geometry` **or** the GeoJSON
+  plain object: `createFeature`, `updateFeature`, `setSpatialFilter`,
+  `Feature.setGeometry`, `rasterize` (a mixed list is fine) and
+  `CoordinateTransform.transformGeometry`. An overload, not a second name — the
+  GeoJSON form is unchanged and still what `featuresSync()` returns. The object
+  form is resolved before any lock is taken, since its `toJson()` takes that lock
+  itself. (napi's `Either` cannot pair with a `serde_json::Value`, so the JSON arm
+  arrives as `Unknown` and is cast back — which is why the parameter is a union
+  rather than the `Value` it used to be.)
 - `layer.defn` groups a layer's schema into one object: `name`, `geometryType`,
   `geometryColumn`, `fidColumn`, `fieldCount` and `fields`. `Feature.defn` returns
   the same object, so the two cannot describe one layer differently. `FieldInfo`

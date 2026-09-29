@@ -597,8 +597,20 @@ Geometry.fromJson(point).transform(gdal.SpatialRef.fromEpsg(4326), gdal.SpatialR
 ```
 
 几何自身不带 CRS，所以 `transform` 两端都要点名 —— 读出来的要素用图层的
-`spatialRefWkt` 当 `from`。GEOS 谓词（`intersects`、`buffer`、`simplify`…）不在默认构建里，
-见 `docs/GEOS.md`。
+`spatialRefWkt` 当 `from`。
+
+而且**每个收几何的写入接口两种形状都收**，不需要手工转换：
+
+```js
+layer.createFeature(Geometry.fromWkt('POINT (1 2)'), { name: 'a' })
+layer.createFeature({ type: 'Point', coordinates: [3, 4] }, { name: 'b' })
+layer.setSpatialFilter(Geometry.fromWkt('POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))'))
+layer.updateFeature(fid, Geometry.fromWkt('POINT (5 6)'))
+feature.setGeometry(Geometry.fromWkt('POINT (7 8)'))
+raster.rasterizeSync([Geometry.fromWkt(box), geojsonBox], { burnValues: [1, 2] })
+```
+
+GEOS 谓词（`intersects`、`buffer`、`simplify`…）不在默认构建里，见 `docs/GEOS.md`。
 
 写入：
 

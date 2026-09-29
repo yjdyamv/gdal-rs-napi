@@ -118,6 +118,65 @@ test('a geometry from a feature is the same shape the feature carried', () => {
   dataset.close()
 })
 
+test('a Geometry object goes wherever a GeoJSON geometry goes', () => {
+  const path = tmp('geometry-accepted.gpkg')
+  const dataset = gdal.createVectorSync(path, 'GPKG')
+  const layer = dataset.createLayer({ name: 'things', geometryType: 'Point', epsg: 4326 })
+
+  // createFeature takes either shape, in the same layer.
+  layer.createFeature(Geometry.fromJson({ type: 'Point', coordinates: [1, 2] }), { name: 'a' })
+  layer.createFeature({ type: 'Point', coordinates: [100, 100] }, { name: 'b' })
+  assert.equal(layer.featuresSync().length, 2)
+
+  // setSpatialFilter takes either shape and narrows identically.
+  layer.setSpatialFilter(Geometry.fromWkt('POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))'))
+  assert.equal(layer.featuresSync().length, 1)
+  layer.setSpatialFilter(null)
+  assert.equal(layer.featuresSync().length, 2)
+
+  // updateFeature takes either shape.
+  const [first] = layer.featuresSync()
+  layer.updateFeature(first.fid, Geometry.fromJson({ type: 'Point', coordinates: [5, 6] }))
+  assert.deepEqual(layer.feature(first.fid).geometry, { type: 'Point', coordinates: [5, 6] })
+
+  // ... and so does Feature.setGeometry.
+  const feature = layer.getFeature(first.fid)
+  feature.setGeometry(Geometry.fromWkt('POINT (7 8)'))
+  assert.deepEqual(layer.feature(first.fid).geometry, { type: 'Point', coordinates: [7, 8] })
+  feature.setGeometry({ type: 'Point', coordinates: [9, 9] })
+  assert.deepEqual(layer.feature(first.fid).geometry, { type: 'Point', coordinates: [9, 9] })
+
+  // rasterize takes both shapes in one call, which is the point of the overload.
+  const raster = gdal.createSync(tmp('geometry-rasterize.tif'), {
+    driver: 'GTiff',
+    width: 10,
+    height: 10,
+    bandCount: 1,
+    dataType: 'Uint8',
+  })
+  raster.rasterizeSync(
+    [
+      Geometry.fromWkt('POLYGON ((0 0, 5 0, 5 5, 0 5, 0 0))'),
+      { type: 'Polygon', coordinates: [[[5, 5], [10, 5], [10, 10], [5, 10], [5, 5]]] },
+    ],
+    { burnValues: [1, 2] },
+  )
+  assert.equal(raster.band(0).getPixel(1, 1), 1)
+  assert.equal(raster.band(0).getPixel(6, 6), 2)
+  raster.close()
+
+  // CoordinateTransform.transformGeometry takes either shape.
+  const transform = new gdal.CoordinateTransform(
+    gdal.SpatialRef.fromEpsg(4326),
+    gdal.SpatialRef.fromEpsg(3857),
+  )
+  const moved = transform.transformGeometry(Geometry.fromWkt('POINT (13.4 52.5)'))
+  assert.equal(moved.type, 'Point')
+  assert.ok(moved.coordinates[0] > 1_000_000)
+
+  dataset.close()
+})
+
 test('a malformed input is refused at the call, not accepted as an empty geometry', () => {
   assert.throws(() => Geometry.fromWkt('NOT A GEOMETRY'), /Geometry|WKT|parse/i)
   assert.throws(() => Geometry.fromJson({ type: 'Nonsense' }), /Unsupported geometry type/)

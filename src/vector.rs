@@ -27,6 +27,7 @@ use crate::dataset::DatasetRef;
 use crate::error::{
     GdalErrorCode, IntoGdalResult, Result, bad_argument, gdal_error, into_status_error, split,
 };
+use crate::geometry::JsGeometry;
 use crate::json::{is_scalar, json_f64, json_i64, json_joined_text, json_text};
 use crate::runtime::{ensure_initialized, lock_gdal};
 use crate::spatial_ref::JsSpatialRef;
@@ -1138,7 +1139,12 @@ impl JsLayer {
     /// for why not a list field). A `null` or a nested object creates nothing.
     /// Fields that already exist keep their declared type, lists included.
     #[napi]
-    pub fn create_feature(&self, geometry: Option<Value>, properties: Option<Value>) -> Result<()> {
+    pub fn create_feature(
+        &self,
+        geometry: Option<Either<&JsGeometry, Unknown<'_>>>,
+        properties: Option<Value>,
+    ) -> Result<()> {
+        let geometry = geometry_argument(geometry)?;
         ensure_initialized();
         // `with_mut` rather than `with_exclusive` so that a write is refused on a
         // read-only thread-safe dataset.
@@ -1157,9 +1163,10 @@ impl JsLayer {
     pub fn update_feature(
         &self,
         fid: i64,
-        geometry: Option<Value>,
+        geometry: Option<Either<&JsGeometry, Unknown<'_>>>,
         properties: Option<Value>,
     ) -> Result<()> {
+        let geometry = geometry_argument(geometry)?;
         ensure_initialized();
         self.dataset.with_mut(|dataset| {
             let layer = dataset.layer(self.index).gdal()?;
@@ -1292,7 +1299,11 @@ impl JsLayer {
     /// layer.setSpatialFilter({ type: 'Polygon', coordinates: [ring] })
     /// ```
     #[napi]
-    pub fn set_spatial_filter(&self, geometry: Option<Value>) -> Result<()> {
+    pub fn set_spatial_filter(
+        &self,
+        geometry: Option<Either<&JsGeometry, Unknown<'_>>>,
+    ) -> Result<()> {
+        let geometry = geometry_argument(geometry)?;
         ensure_initialized();
         // Converted before the lock, so a malformed geometry is thrown by the call.
         let geometry = geometry.as_ref().map(from_geojson).transpose()?;
@@ -1619,6 +1630,33 @@ pub(crate) fn from_geojson(geometry: &Value) -> Result<gdal::vector::Geometry> {
     gdal::vector::Geometry::from_geojson(&encoded).gdal()
 }
 
+/// A geometry parameter that takes either a `Geometry` object or a GeoJSON plain
+/// object, resolved to the GeoJSON the writers below already speak — so both
+/// shapes travel the same road once they are here.
+///
+/// The `Geometry` form is converted **before** the caller takes the lock:
+/// `toJson()` takes it itself, and the lock is not reentrant.
+pub(crate) fn geometry_argument(
+    geometry: Option<Either<&JsGeometry, Unknown<'_>>>,
+) -> Result<Option<Value>> {
+    match geometry {
+        None => Ok(None),
+        Some(Either::A(object)) => Ok(Some(object.to_json()?)),
+        // The other arm is the GeoJSON plain object, which is what a
+        // `serde_json::Value` parameter was before this overload existed. It has
+        // to come through `Unknown` because napi's `Either` needs both variants
+        // to be *validatable*, and `serde_json::Value` is not.
+        Some(Either::B(unknown)) => Ok(Some(json_value(unknown)?)),
+    }
+}
+
+/// A raw JS value as the JSON the geometry writers understand, with this
+/// binding's error type rather than napi's plain one.
+pub(crate) fn json_value(unknown: Unknown<'_>) -> Result<Value> {
+    unsafe { unknown.cast::<Value>() }
+        .map_err(|err| bad_argument(format!("expected a Geometry or a GeoJSON object: {err}")))
+}
+
 #[napi]
 pub fn geometry_type_of(geometry: Value) -> Result<String> {
     ensure_initialized();
@@ -1765,9 +1803,14 @@ impl JsFeature {
         Ok(self.record()?.geometry)
     }
 
-    /// Replace the geometry, as GeoJSON — the same shape `createFeature` takes.
+    /// Replace the geometry — a `Geometry` object or the GeoJSON `createFeature`
+    /// takes.
     #[napi]
-    pub fn set_geometry(&self, geometry: Value) -> Result<()> {
+    pub fn set_geometry(&self, geometry: Either<&JsGeometry, Unknown<'_>>) -> Result<()> {
+        let geometry = match geometry {
+            Either::A(object) => object.to_json()?,
+            Either::B(unknown) => json_value(unknown)?,
+        };
         write_existing(
             self.dataset.clone(),
             self.index,
