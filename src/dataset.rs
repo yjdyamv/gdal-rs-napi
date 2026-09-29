@@ -17,7 +17,7 @@ use gdal::ThreadSafeDataset;
 use gdal::cpl::CslStringList;
 use gdal::programs::raster::{BuildVRTOptions, build_vrt as gdal_build_vrt};
 use gdal::spatial_ref::SpatialRef;
-use gdal::vector::{FieldDefn, LayerAccess, LayerOptions, OGRFieldType, OGRwkbGeometryType};
+use gdal::vector::{LayerAccess, LayerOptions, OGRwkbGeometryType};
 use gdal::{Dataset as GdalDataset, DatasetOptions, DriverManager, GdalOpenFlags, Metadata};
 use napi::bindgen_prelude::*;
 use napi::threadsafe_function::ThreadsafeFunction;
@@ -851,20 +851,16 @@ impl JsDataset {
             (None, None) => None,
         };
 
-        // Declared fields are checked here, before the lock, so a typo is thrown by
-        // the call rather than half-way through creating the layer.
-        let declared_fields: Vec<(String, OGRFieldType::Type, Option<i32>, Option<i32>)> = options
+        // Declared fields are built here, before the lock, so a typo is thrown by
+        // the call rather than half-way through creating the layer. The builder is
+        // shared with `Layer.addField`, so a schema declared up front and one grown
+        // afterwards cannot differ.
+        let declared_fields: Vec<crate::vector::FieldDefnHandle> = options
             .fields
+            .as_deref()
             .unwrap_or_default()
-            .into_iter()
-            .map(|field| {
-                Ok((
-                    field.name,
-                    crate::vector::field_type_from_name(&field.field_type)?,
-                    field.width,
-                    field.precision,
-                ))
-            })
+            .iter()
+            .map(crate::vector::build_field_defn)
             .collect::<Result<_>>()?;
 
         // GDAL takes layer creation options as `name=value` strings.
@@ -894,15 +890,8 @@ impl JsDataset {
             // Declared fields go in while the layer is in hand, so the schema
             // exists before the first feature does — and so a field keeps the type
             // it was declared with rather than the one inference would have picked.
-            for (name, field_type, width, precision) in &declared_fields {
-                let definition = FieldDefn::new(name, *field_type).gdal()?;
-                if let Some(width) = width {
-                    definition.set_width(*width);
-                }
-                if let Some(precision) = precision {
-                    definition.set_precision(*precision);
-                }
-                definition.add_to_layer(&layer).gdal()?;
+            for definition in &declared_fields {
+                crate::vector::add_field_to_layer(definition, &layer)?;
             }
             Ok(index)
         })?;

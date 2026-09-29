@@ -7,11 +7,14 @@
 //! is only valid while the feature lives. Copying the fields out removes the
 //! whole class of problems, and the values are what JS wants anyway.
 
+use std::collections::HashSet;
+use std::ffi::{CString, c_int};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use gdal::Dataset as GdalDataset;
 use gdal::Metadata;
+use gdal::errors::GdalError;
 use gdal::vector::{
     Defn, Feature, FieldDefn, FieldValue, LayerAccess, OGRFieldType, OGRwkbGeometryType,
     geometry_type_flatten, geometry_type_has_m, geometry_type_has_z,
@@ -21,7 +24,9 @@ use napi_derive::napi;
 use serde_json::{Map, Value};
 
 use crate::dataset::DatasetRef;
-use crate::error::{GdalErrorCode, IntoGdalResult, Result, bad_argument, into_status_error, split};
+use crate::error::{
+    GdalErrorCode, IntoGdalResult, Result, bad_argument, gdal_error, into_status_error, split,
+};
 use crate::json::{is_scalar, json_f64, json_i64, json_joined_text, json_text};
 use crate::runtime::{ensure_initialized, lock_gdal};
 use crate::spatial_ref::JsSpatialRef;
@@ -34,6 +39,25 @@ pub struct FieldInfo {
     pub field_type: String,
     pub width: i32,
     pub precision: i32,
+    /// Whether the field accepts `NULL`. Independent of the *value* being `null`:
+    /// a non-nullable field with nothing written reads back as the driver's
+    /// default, not as `null`.
+    pub nullable: bool,
+    /// Whether the driver enforces uniqueness on the field. Few drivers do, and
+    /// GDAL itself does not check it, so read it as a declared intent.
+    pub unique: bool,
+    /// The default, **as text** — GDAL stores a field's default as a string
+    /// whatever the field's type, so an `Integer` default reads back as `'0'`. That
+    /// is also the value a caller gets here to hand back to `FieldDefinition`.
+    ///
+    /// `null` when the field has none, which is a `Value` rather than an
+    /// `Option<String>` so that "no default" is an explicit `null` rather than a
+    /// property that is merely absent — the same reason `FeatureRecord.fid` is one.
+    #[napi(ts_type = "string | null")]
+    pub default_value: Value,
+    /// `Undefined`, `Left` or `Right`: how a display should align the field. A
+    /// rendering hint rather than a constraint.
+    pub justification: String,
 }
 
 /// A field to declare when creating a layer.
@@ -56,6 +80,16 @@ pub struct FieldDefinition {
     /// and has nothing for a precision to describe.
     pub width: Option<i32>,
     pub precision: Option<i32>,
+    /// Whether the field accepts `NULL`. Left alone when omitted, which means the
+    /// driver's own default — usually nullable.
+    pub nullable: Option<bool>,
+    /// Declare the field unique. Few drivers enforce it.
+    pub unique: Option<bool>,
+    /// A default value, written as text — GDAL's own representation, so an integer
+    /// default is the string `'0'`. Omit for no default.
+    pub default_value: Option<String>,
+    /// `Undefined` (default), `Left` or `Right`.
+    pub justification: Option<String>,
 }
 
 /// A feature, copied out of GDAL.
@@ -164,6 +198,24 @@ fn layer_field_names(layer: &impl LayerAccess) -> Vec<String> {
     layer.defn().fields().map(|field| field.name()).collect()
 }
 
+/// A field's **0-based** index in the layer's schema, by name.
+///
+/// OGR's own `OGR_L_GetFieldIndex` answers a negative number for a miss, and the
+/// message a caller needs is the list of names that *would* have worked.
+fn field_position(layer: &impl LayerAccess, name: &str) -> Result<c_int> {
+    let names = layer_field_names(layer);
+    names
+        .iter()
+        .position(|candidate| candidate == name)
+        .map(|index| index as c_int)
+        .ok_or_else(|| {
+            bad_argument(format!(
+                "no field named {name:?}; the layer has {}",
+                names.join(", ")
+            ))
+        })
+}
+
 /// The layer's fields as `(name, type)` pairs.
 ///
 /// The type is needed when writing: several drivers have no list columns and
@@ -260,6 +312,176 @@ pub(crate) fn field_type_from_name(name: &str) -> Result<OGRFieldType::Type> {
         }
     };
     Ok(field_type)
+}
+
+/// Every justification name this binding understands.
+pub(crate) const JUSTIFICATION_NAMES: [&str; 3] = ["Undefined", "Left", "Right"];
+
+/// `OGRJustification::Type` as one of [`JUSTIFICATION_NAMES`].
+fn justification_name(justification: gdal_sys::OGRJustification::Type) -> &'static str {
+    match justification {
+        gdal_sys::OGRJustification::OJLeft => "Left",
+        gdal_sys::OGRJustification::OJRight => "Right",
+        // The enum is extensible and `OJUndefined` is the default, so anything
+        // unrecognised reads as undefined rather than as an error.
+        _ => "Undefined",
+    }
+}
+
+/// The inverse of [`justification_name`], compared the way the other name maps
+/// compare: case, spaces, underscores and hyphens are ignored.
+fn justification_from_name(name: &str) -> Result<gdal_sys::OGRJustification::Type> {
+    let normalised: String = name
+        .chars()
+        .filter(|c| !matches!(c, ' ' | '_' | '-'))
+        .flat_map(char::to_lowercase)
+        .collect();
+
+    Ok(match normalised.as_str() {
+        "undefined" => gdal_sys::OGRJustification::OJUndefined,
+        "left" => gdal_sys::OGRJustification::OJLeft,
+        "right" => gdal_sys::OGRJustification::OJRight,
+        other => {
+            return Err(bad_argument(format!(
+                "unknown justification {other:?}; expected one of {}",
+                JUSTIFICATION_NAMES.join(", ")
+            )));
+        }
+    })
+}
+
+/// A layer's schema, as [`FieldInfo`]s.
+///
+/// The `gdal` crate's `Field` exposes everything here except the justification,
+/// and keeps its `OGRFieldDefnH` private — so that one value comes off the feature
+/// definition by index while the rest come from the wrapper.
+fn layer_field_infos(layer: &impl LayerAccess) -> Vec<FieldInfo> {
+    let defn = layer.defn();
+    let c_defn = unsafe { defn.c_defn() };
+
+    defn.fields()
+        .enumerate()
+        .map(|(index, field)| {
+            let c_field = unsafe { gdal_sys::OGR_FD_GetFieldDefn(c_defn, index as c_int) };
+            FieldInfo {
+                name: field.name(),
+                field_type: field_type_name(field.field_type()),
+                width: field.width(),
+                precision: field.precision(),
+                nullable: field.is_nullable(),
+                unique: field.is_unique(),
+                default_value: field.default_value().map_or(Value::Null, Value::from),
+                justification: justification_name(unsafe { gdal_sys::OGR_Fld_GetJustify(c_field) })
+                    .to_string(),
+            }
+        })
+        .collect()
+}
+
+/// A field definition built directly through the C API, destroyed on drop.
+///
+/// The `gdal` crate's `FieldDefn` sets only width and precision and keeps its
+/// `OGRFieldDefnH` private, so `nullable`, `unique`, `default` and `justification`
+/// would be unreachable through it. Building from `OGR_Fld_Create` instead gives one
+/// path for every attribute this binding exposes — and the `Drop` is what keeps the
+/// C object from leaking when a definition is rejected half-way through.
+pub(crate) struct FieldDefnHandle(gdal_sys::OGRFieldDefnH);
+
+impl Drop for FieldDefnHandle {
+    fn drop(&mut self) {
+        unsafe { gdal_sys::OGR_Fld_Destroy(self.0) };
+    }
+}
+
+/// Build a field definition from the JS shape `createLayer` and `addField` share,
+/// so a field declared one way and added the other cannot differ.
+///
+/// The defaults are GDAL's own: omitting `width` / `precision` / `nullable` /
+/// `unique` / `defaultValue` / `justification` leaves whatever `OGR_Fld_Create`
+/// started with, which is what a caller who does not care wants.
+pub(crate) fn build_field_defn(definition: &FieldDefinition) -> Result<FieldDefnHandle> {
+    let field_type = field_type_from_name(&definition.field_type)?;
+    let name = CString::new(definition.name.as_str())
+        .map_err(|_| bad_argument("a field name cannot contain a NUL byte"))?;
+
+    let field = unsafe { gdal_sys::OGR_Fld_Create(name.as_ptr(), field_type) };
+    if field.is_null() {
+        return Err(bad_argument(format!(
+            "GDAL could not build a field definition for {:?}",
+            definition.name
+        )));
+    }
+    let field = FieldDefnHandle(field);
+
+    if let Some(width) = definition.width {
+        unsafe { gdal_sys::OGR_Fld_SetWidth(field.0, width as c_int) };
+    }
+    if let Some(precision) = definition.precision {
+        unsafe { gdal_sys::OGR_Fld_SetPrecision(field.0, precision as c_int) };
+    }
+    if let Some(nullable) = definition.nullable {
+        unsafe { gdal_sys::OGR_Fld_SetNullable(field.0, c_int::from(nullable)) };
+    }
+    if let Some(unique) = definition.unique {
+        unsafe { gdal_sys::OGR_Fld_SetUnique(field.0, c_int::from(unique)) };
+    }
+    if let Some(default) = &definition.default_value {
+        let text = CString::new(default.as_str())
+            .map_err(|_| bad_argument("a field default cannot contain a NUL byte"))?;
+        unsafe { gdal_sys::OGR_Fld_SetDefault(field.0, text.as_ptr()) };
+    }
+    if let Some(justification) = &definition.justification {
+        unsafe { gdal_sys::OGR_Fld_SetJustify(field.0, justification_from_name(justification)?) };
+    }
+
+    Ok(field)
+}
+
+/// Add a built field definition to a layer — `OGR_L_CreateField`, with
+/// `bApproxOK` set so a driver may widen the type rather than refuse.
+///
+/// A driver that cannot add fields at all reports the refusal here; GDAL's warning
+/// becomes this binding's error, which is what `testCapability('CreateField')`
+/// exists to predict.
+pub(crate) fn add_field_to_layer(
+    definition: &FieldDefnHandle,
+    layer: &impl LayerAccess,
+) -> Result<()> {
+    ogr_result(
+        unsafe { gdal_sys::OGR_L_CreateField(layer.c_layer(), definition.0, 1) },
+        "add the field",
+    )
+}
+
+/// An `OGRErr` as this binding's error.
+///
+/// OGR has no `CPLErr` behind a layer status, so the class is synthesised — but GDAL
+/// still leaves its own explanation in the last-error store, and that message is
+/// usually the useful half: an `ALTER TABLE` that failed says *why* it failed
+/// ("cannot drop UNIQUE column") while the status is a bare number.
+///
+/// The read-then-reset is the same discipline [`crate::raster_tools::cpl_result`]
+/// follows: a failure that became an exception is gone from `lastError()`, which is
+/// left for the errors that never did.
+fn ogr_result(status: gdal_sys::OGRErr::Type, what: &str) -> Result<()> {
+    if status == 0 {
+        return Ok(());
+    }
+
+    let number = unsafe { gdal_sys::CPLGetLastErrorNo() };
+    let detail = crate::runtime::c_string(unsafe { gdal_sys::CPLGetLastErrorMsg() });
+    unsafe { gdal_sys::CPLErrorReset() };
+
+    let message = if detail.is_empty() {
+        format!("the driver could not {what} (OGR error {status})")
+    } else {
+        format!("the driver could not {what}: {detail} (OGR error {status})")
+    };
+    Err(gdal_error(GdalError::CplError {
+        class: gdal_sys::CPLErr::CE_Failure,
+        number,
+        msg: message,
+    }))
 }
 
 /// Canonical name for a geometry type.
@@ -616,21 +838,10 @@ impl JsLayer {
             // Not `mut`: `c_layer()` takes the layer by shared reference, unlike the
             // iterating call sites where the layer is borrowed mutably.
             let layer = dataset.layer(self.index).gdal()?;
-            let status = unsafe { call(layer.c_layer()) };
-            if status != 0 {
-                // There is no `CPLErr` behind an OGR layer status, but the class is
-                // still the honest one: this is a failure the driver reported.
-                return Err(crate::error::gdal_error(
-                    gdal::errors::GdalError::CplError {
-                        class: gdal_sys::CPLErr::CE_Failure,
-                        number: 0,
-                        msg: format!(
-                            "the driver refused to {what} the transaction (OGR error {status})"
-                        ),
-                    },
-                ));
-            }
-            Ok(())
+            ogr_result(
+                unsafe { call(layer.c_layer()) },
+                &format!("{what} the transaction"),
+            )
         })
     }
 
@@ -705,16 +916,99 @@ impl JsLayer {
         ensure_initialized();
         self.dataset.with_exclusive(|dataset| {
             let layer = dataset.layer(self.index).gdal()?;
-            Ok(layer
-                .defn()
-                .fields()
-                .map(|field| FieldInfo {
-                    name: field.name(),
-                    field_type: field_type_name(field.field_type()),
-                    width: field.width(),
-                    precision: field.precision(),
-                })
-                .collect())
+            Ok(layer_field_infos(&layer))
+        })
+    }
+
+    /// One field by name, or `null`. The lookup `fields` exists to make possible
+    /// without walking the array.
+    #[napi]
+    pub fn field(&self, name: String) -> Result<Option<FieldInfo>> {
+        ensure_initialized();
+        self.dataset.with_exclusive(|dataset| {
+            let layer = dataset.layer(self.index).gdal()?;
+            Ok(layer_field_infos(&layer)
+                .into_iter()
+                .find(|field| field.name == name))
+        })
+    }
+
+    /// Add a field to a layer that already exists — the missing half of declaring
+    /// a schema in `createLayer`.
+    ///
+    /// `FieldDefinition` is the same shape `createLayer` takes, so `fieldType` is
+    /// chosen rather than inferred, and `width` / `precision` / `nullable` /
+    /// `unique` / `defaultValue` / `justification` are all settable here.
+    ///
+    /// The driver decides whether it can: `testCapability('CreateField')` is the
+    /// question to ask first, and a driver without it reports the refusal rather
+    /// than silently ignoring the call.
+    ///
+    /// ```js
+    /// layer.addField({ name: 'population', fieldType: 'Integer64' })
+    /// ```
+    #[napi]
+    pub fn add_field(&self, field: FieldDefinition) -> Result<()> {
+        ensure_initialized();
+        // Built before the lock, so a typo in the type name is thrown by the call
+        // rather than inside it.
+        let definition = build_field_defn(&field)?;
+        self.dataset.with_mut(|dataset| {
+            let layer = dataset.layer(self.index).gdal()?;
+            add_field_to_layer(&definition, &layer)
+        })
+    }
+
+    /// Drop a field by name — the counterpart of `addField`.
+    ///
+    /// By name rather than by index for the same reason `deleteLayer` is: dropping
+    /// one shifts every later index, so a list of indices is a trap. The data in
+    /// the column goes with it, and there is no undo beyond a transaction.
+    #[napi]
+    pub fn delete_field(&self, name: String) -> Result<()> {
+        ensure_initialized();
+        self.dataset.with_mut(|dataset| {
+            let layer = dataset.layer(self.index).gdal()?;
+            let index = field_position(&layer, &name)?;
+            ogr_result(
+                unsafe { gdal_sys::OGR_L_DeleteField(layer.c_layer(), index) },
+                &format!("delete the field {name:?}"),
+            )
+        })
+    }
+
+    /// Reorder the schema.
+    //
+    // The names have to be exactly the fields the layer already has, each once: a
+    // partial list is rejected here rather than handed to GDAL, whose own answer to
+    // one is to build a malformed schema.
+    #[napi]
+    pub fn reorder_fields(&self, names: Vec<String>) -> Result<()> {
+        ensure_initialized();
+        self.dataset.with_mut(|dataset| {
+            let layer = dataset.layer(self.index).gdal()?;
+            let existing = layer_field_names(&layer);
+
+            let mut seen = HashSet::with_capacity(names.len());
+            let mut map = Vec::with_capacity(names.len());
+            for name in &names {
+                if !seen.insert(name.as_str()) {
+                    return Err(bad_argument(format!("the field {name:?} is named twice")));
+                }
+                map.push(field_position(&layer, name)?);
+            }
+            if names.len() != existing.len() {
+                return Err(bad_argument(format!(
+                    "reordering has to name every field, and the layer has {}: {}",
+                    existing.len(),
+                    existing.join(", ")
+                )));
+            }
+
+            ogr_result(
+                unsafe { gdal_sys::OGR_L_ReorderFields(layer.c_layer(), map.as_mut_ptr()) },
+                "reorder the fields",
+            )
         })
     }
 
@@ -780,11 +1074,30 @@ impl JsLayer {
 
     /// Read every feature the current filters leave visible.
     ///
-    /// Materialising the whole layer is the simple half of the API; a streaming
-    /// version that pulls batches on the thread pool belongs with the async
-    /// work, and until then a huge layer costs one array of plain objects.
+    /// Materialising the whole layer is the simple half of the API; `features()` is
+    /// the same read on the thread pool, and `openCursor` is the one that streams.
     #[napi]
     pub fn features_sync(&self) -> Result<Vec<FeatureRecord>> {
+        self.read_features()
+    }
+
+    /// The same read, on the libuv thread pool.
+    ///
+    /// `featuresSync()` holds the event loop for the whole read; this one does not,
+    /// which is the difference that matters for a layer too large to want to block
+    /// on. It is still all-or-nothing — one array of every visible feature — so a
+    /// layer that will not fit in memory wants `openCursor` instead.
+    #[napi(ts_return_type = "Promise<Array<FeatureRecord>>")]
+    pub fn features(&self) -> AsyncTask<FeaturesTask> {
+        AsyncTask::new(FeaturesTask {
+            dataset: self.dataset.clone(),
+            index: self.index,
+        })
+    }
+
+    /// The body both of the above share, so the sync and thread-pool forms cannot
+    /// drift apart.
+    fn read_features(&self) -> Result<Vec<FeatureRecord>> {
         ensure_initialized();
         self.dataset.with_exclusive(|dataset| {
             let mut layer = dataset.layer(self.index).gdal()?;
@@ -921,6 +1234,31 @@ impl JsLayer {
         self.dataset.with_mut(|dataset| {
             let mut layer = dataset.layer(self.index).gdal()?;
             layer.set_spatial_filter_rect(min_x, min_y, max_x, max_y);
+            Ok(())
+        })
+    }
+
+    /// Limit the layer to features whose geometry intersects `geometry` — the
+    /// arbitrary-shape counterpart of `setSpatialFilterRect`.
+    ///
+    /// `geometry` is any GeoJSON geometry, the same shape `createFeature` and
+    /// `rasterize` take. Pass `null` to clear, which is what `clearSpatialFilter`
+    /// does too; the two exist because both read better at their own call site.
+    ///
+    /// ```js
+    /// layer.setSpatialFilter({ type: 'Polygon', coordinates: [ring] })
+    /// ```
+    #[napi]
+    pub fn set_spatial_filter(&self, geometry: Option<Value>) -> Result<()> {
+        ensure_initialized();
+        // Converted before the lock, so a malformed geometry is thrown by the call.
+        let geometry = geometry.as_ref().map(from_geojson).transpose()?;
+        self.dataset.with_mut(|dataset| {
+            let mut layer = dataset.layer(self.index).gdal()?;
+            match &geometry {
+                Some(geometry) => layer.set_spatial_filter(geometry),
+                None => layer.clear_spatial_filter(),
+            }
             Ok(())
         })
     }
@@ -1193,9 +1531,33 @@ impl Task for CursorTask {
     }
 }
 
+/// Materialising a whole layer on the thread pool: reading every visible feature is
+/// I/O, and a large layer is exactly what should not hold up the event loop.
+///
+/// The work itself is `JsLayer::read_features`, the same body `featuresSync()` runs,
+/// so the two answer identically.
+pub struct FeaturesTask {
+    dataset: DatasetRef,
+    index: usize,
+}
+
+impl Task for FeaturesTask {
+    type Output = OpResult<Vec<FeatureRecord>>;
+    type JsValue = Vec<FeatureRecord>;
+
+    fn compute(&mut self) -> napi::Result<Self::Output> {
+        Ok(op(
+            JsLayer::new(self.dataset.clone(), self.index).read_features()
+        ))
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
+        output.map_err(|(code, reason)| into_status_error(code, reason))
+    }
+}
+
 // ---------------------------------------------------------------------------
-// Geometry conversion helpers
-//
+// Geometry conversion helpers//
 // Geometries are exchanged as GeoJSON objects, which is what JS code already
 // speaks. These are free functions rather than a class because the interesting
 // operations are pure conversions; a `Geometry` wrapper earns its keep once
