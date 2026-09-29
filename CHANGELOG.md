@@ -84,6 +84,13 @@ First working cut — everything here is new.
   statically, the way GDAL and PROJ are, so the shipped package has it and stays a
   single self-contained artifact; see `docs/GEOS.md` for why static rather than a
   shared library, and for the LGPL-2.1 §6 material a release owes.
+- `THIRD-PARTY.md` lists what is compiled into the package and under which
+  licences, and spells out the one that is not permissive: GEOS is LGPL-2.1 and
+  statically linked, so §6 applies. A release meets it with `npm run lgpl`, which
+  gathers the exact GEOS source the build compiled, the static archives it
+  produced and a `RELINK.md`, into a per-platform tarball beside the package one.
+  That step is wired into CI; the file ships inside the package so a consumer sees
+  it without going looking.
 - Every writer that takes a geometry now takes a `Geometry` **or** the GeoJSON
   plain object: `createFeature`, `updateFeature`, `setSpatialFilter`,
   `Feature.setGeometry`, `rasterize` (a mixed list is fine) and

@@ -26,6 +26,9 @@ const ROOT_FILES = [
   'README.zh-CN.md',
   'CHANGELOG.md',
   'LICENSE',
+  // GEOS is LGPL-2.1 and statically linked, so the package has to say so where a
+  // consumer will see it — and point at the release material for §6.
+  'THIRD-PARTY.md',
 ]
 
 function fail(message) {

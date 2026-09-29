@@ -1314,11 +1314,13 @@ artifact.
 
 ## Licence
 
-MIT. GDAL and PROJ are MIT/X11; see `LICENSE`.
+MIT. GDAL and PROJ are MIT/X11; see `LICENSE`, and `THIRD-PARTY.md` for everything
+else that is compiled into the package.
 
-GEOS is the exception: it is LGPL-2.1, and it is linked **statically** into the
-shipped `.node`. LGPL-2.1 §6 asks the distributor of a statically linked work for
-the means to relink it against a modified GEOS, so a release carries the matching
-GEOS source and the build recipe beside the tarball. That is a condition on what a
-release *publishes*, not a change to the licence of this code — see
+GEOS is the exception there: it is LGPL-2.1, and it is linked **statically** into
+the shipped `.node`. LGPL-2.1 §6 asks the distributor of a statically linked work
+for the means to relink it against a modified GEOS, so each release carries
+`…-lgpl-geos.tar.gz` beside the platform tarball — the GEOS source that built it,
+the static archives, and a relink note (`npm run lgpl`). That is a condition on
+what a release *publishes*, not a change to the licence of this code — see
 `docs/GEOS.md`.

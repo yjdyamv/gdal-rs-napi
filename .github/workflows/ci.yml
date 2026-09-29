@@ -192,6 +192,15 @@ jobs:
       - name: Pack
         run: npm run pack
 
+      # GEOS is LGPL-2.1 and is linked statically into the `.node`, so LGPL-2.1 §6
+      # asks this release for the means to relink it against a modified GEOS:
+      # `scripts/lgpl-geos.mjs` gathers the source this build compiled, the
+      # archives it produced, and a relink note. It is a second tarball with the
+      # platform in its name, so the release job below picks it up unchanged —
+      # see THIRD-PARTY.md.
+      - name: LGPL materials
+        run: npm run lgpl
+
       - uses: actions/upload-artifact@v5
         with:
           name: gdal-rs-napi-${{ matrix.target }}-${{ env.PLATFORM }}

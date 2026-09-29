@@ -77,6 +77,6 @@ materials reviewed.)
 | Non-GEOS geometry object model, predicates, set algebra | done |
 | `geos` feature selecting `gdal-src/geos_static`, in `bundled` | done |
 | The GEOS build itself (`geos-src` compiles GEOS, GDAL links it statically) | verified on Windows/MSVC |
-| LGPL-2.1 §6 release materials (corresponding source + relink notes/objects) | **not yet** — a release item |
-| A CI leg asserting `features().geos === true` and exercising a predicate | **not yet** |
+| LGPL-2.1 §6 release materials | done: `THIRD-PARTY.md` ships in the package, and `npm run lgpl` produces the source + archives + relink note, wired into the CI release |
+| A CI leg asserting `features().geos === true` and exercising a predicate | partly: the test branches on it, so it exercises whichever build is present — but CI runs only the default now, which is the GEOS one |
 | The remaining platforms (macOS, Linux gnu/musl) | expected to work the same way; unverified |

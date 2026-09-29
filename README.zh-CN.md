@@ -1098,8 +1098,10 @@ Intel macOS 与 32 位目标未构建。
 
 ## 许可证
 
-MIT。GDAL 与 PROJ 均为 MIT/X11；详见 [LICENSE](./LICENSE)。
+MIT。GDAL 与 PROJ 均为 MIT/X11；详见 [LICENSE](./LICENSE)，以及 [THIRD-PARTY.md](./THIRD-PARTY.md)
+（打出包里的全部第三方组件及各自许可证）。
 
-GEOS 是例外：它是 LGPL-2.1，且被**静态链接**进发布出去的 `.node`。LGPL-2.1 §6 要求静态链接
-作品的发布者提供「把它与修改过的 GEOS 重新链接」的手段，因此发布时会随 tarball 附上对应版本
-的 GEOS 源码与构建配方。这约束的是**发布物**，不是本仓库代码的许可证 —— 见 `docs/GEOS.md`。
+其中 GEOS 是例外：它是 LGPL-2.1，且被**静态链接**进发布出去的 `.node`。LGPL-2.1 §6 要求静态
+链接作品的发布者提供「把它与修改过的 GEOS 重新链接」的手段，因此每次发布都会在平台 tarball
+旁附上 `…-lgpl-geos.tar.gz` —— 构建所用的 GEOS 源码、静态库，以及一份重新链接说明
+（`npm run lgpl` 生成）。这约束的是**发布物**，不是本仓库代码的许可证 —— 见 `docs/GEOS.md`。
