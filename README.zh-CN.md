@@ -541,6 +541,28 @@ first.geometry     // { type: 'Point', coordinates: [10, 20] }，没有几何时
 
 因为要素是**拷贝出来**的而不是包装的，即使之后关掉 layer 或 dataset 这些值依然有效。
 
+### 要素对象
+
+`feature(fid)` 与 `featuresSync()` 返回的是普通数据。想要带方法的形式时，`getFeature(fid)`
+返回同一条要素的对象：
+
+```js
+const feature = layer.getFeature(3)     // 或 null
+feature.fid                             // 3
+feature.geometry                        // GeoJSON，没有几何则 null
+feature.fields.get('population')        // 4500
+feature.fields.has('nope')              // false
+feature.fields.set('population', 4600)  // 直接写穿
+feature.fields.toObject()               // { name: 'beta', population: 4600 }
+feature.toObject()                      // feature(3) 返回的那份普通记录
+```
+
+每一次读写都会回到图层，因此没有需要保持同步的本地副本，也没有会忘记调用的 `save()` ——
+`fields.set` 就是 `updateFeature(fid, null, { population: 4600 })` 那次写。
+
+`layer.defn` 把图层的 schema 收进一个对象 —— `name`、`geometryType`、`geometryColumn`、
+`fidColumn`、`fieldCount`、`fields` —— `feature.defn` 返回的是同一个对象。
+
 几何工具函数收发 GeoJSON 对象：
 
 ```js

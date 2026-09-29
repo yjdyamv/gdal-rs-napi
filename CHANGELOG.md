@@ -56,6 +56,18 @@ First working cut — everything here is new.
 - `dataset.setProjection` takes a `SpatialRef` as well as a WKT string, so the
   object `dataset.spatialRef` hands back can go straight back in. An overload
   rather than a new `setSrs()`, as the stability rules call for.
+- `layer.getFeature(fid)` returns a feature as an **object** rather than the
+  copied-out record `feature(fid)` hands back: `fid`, `geometry` (GeoJSON,
+  replaceable with `setGeometry`), `defn`, `toObject()`, and a `fields` object with
+  `get` / `has` / `set` / `names` / `count` / `toObject` / `toArray`. Every read
+  and write goes *through the layer* — `fields.set` writes immediately, the same
+  write `updateFeature` makes — so there is no cached copy to keep in sync and no
+  `save()` to forget. An id that is not there is `null`.
+- `layer.defn` groups a layer's schema into one object: `name`, `geometryType`,
+  `geometryColumn`, `fidColumn`, `fieldCount` and `fields`. `Feature.defn` returns
+  the same object, so the two cannot describe one layer differently. `FieldInfo`
+  already carries a field's whole definition, so it *is* the `FieldDefn`; a
+  separate wrapper would only rename it.
 - `docs/API-STABILITY.md` writes down the rules the surface was already following
   — naming (`xxxSync()` / `xxx()`), 0-based indexing with `band.id` as the single
   exception, `null` rather than `undefined`, `err.code` on the sync surface and

@@ -16,8 +16,8 @@
 | B2 特性探测 | ✅ 已完成 | `gdal.apiVersion`、`gdal.features()` |
 | WS-5 常量枚举 | ✅ 已完成 | `gdal.const` —— `DataType`/`FieldType`/`Justification`/`GeometryType`/`ColorInterpretation`/`Resampling`/`OverviewResampling`/`SqlDialect`，纯 JS（`index.js`）+ 逐值对照运行时的测试 |
 | WS-1 几何对象模型 | ⏳ 待 C1 | 杠杆最大，需先定 GEOS 决策 |
-| WS-2 Driver/Dataset 对象模型 | 🟡 已过半 | `Driver` 对象 + `gdal.driver()`/`drivers()` + `dataset.driver` 对象化 + `open({drivers})` + `Dataset.description`/`rasterSize`/`getFileList`。**剩余**：`drivers`/`bands`/`layers` 的集合类与 `Symbol.iterator`、`srs` setter 收 `SpatialRef`、`Driver.createCopy` |
-| WS-3 Feature/Field 对象模型 | 🟡 已过半 | `layer.field(name)`/`addField`/`deleteField`/`reorderFields`、`FieldInfo` 全量定义（`nullable`/`unique`/`defaultValue`/`justification`）、`FieldDefinition` 同名字段、`layer.features()`（异步）、`layer.setSpatialFilter(geom)`。**剩余**：`Feature`/`FeatureFields` 类、`FeatureDefn`/`FieldDefn` 对象、`Layer.fields` 变为可变集合、`Symbol.iterator` |
+| WS-2 Driver/Dataset 对象模型 | ✅ 已完成 | `Driver` 对象（+`createCopy`）、`dataset.driver` 对象化、`open({drivers})`、`Dataset.description`/`rasterSize`/`getFileList`、`setProjection` 收 `SpatialRef`。集合类**不做**，见下 |
+| WS-3 Feature/Field 对象模型 | ✅ 已完成 | `layer.field(name)`/`addField`/`deleteField`/`reorderFields`、`FieldInfo` 全量定义、`layer.features()`（异步）、`layer.setSpatialFilter(geom)`、`layer.defn`（`FeatureDefn`）、`layer.getFeature(fid)` → `Feature`（`fields` 直写穿、`geometry`、`defn`、`toObject`） |
 | WS-4 异步人体工学 | ⏳ 与 Phase 2 锁模型同批 | |
 | WS-7 兼容层 | ⏳ 依赖 WS-1..3 | |
 
@@ -33,6 +33,20 @@
 `gdal.const.FieldType.Integer64 === 'Integer64'`、`gdal.const.Resampling.Average === 'average'`。
 这才是真正的 API 稳定性收益 —— 把事实上已经在用的契约写成明文。
 GDAL 的数字码属于兼容层（WS-7），那里 `gdal-async` 的形状才是目标。
+
+### 两个已定案的分歧：集合类，与 `Feature.geometry`
+
+**1. 集合类不做。** 本 API 的 `drivers()` / `bands()` / `layers()` 返回**就是数组** ——
+数组本身已经具备 `for…of`、`forEach`、`map` 与 `Symbol.iterator`；而 `gdal-async` 集合对象多出来的
+`.get()` / `.count()`，在这里等价于现成的单数访问器：`band(i)` / `layer(i)` / `driver(name)` 与
+`bandCount` / `layerCount` / `drivers().length`。再套一层集合对象，要么改掉数组返回（违反「只增不改」），
+要么在 JS 侧包装数组 —— 而**生成的 `binding.d.ts` 拥有这些方法的返回类型**，包装后的类型没有地方声明。
+因此集合那层形状留给兼容层（WS-7），那里类型本来就是手写的。`Layer.fields` 同理：它是快照数组，
+增删改由 `addField` / `deleteField` / `reorderFields` 承担，`get(name)` 由 `field(name)` 承担。
+
+**2. `Feature.geometry` 仍是 GeoJSON。** 几何对象模型（WS-1）尚未落地，所以 `feature.geometry`
+与 `createFeature` / `setGeometry` 收发的是同一套 GeoJSON，而不是 `Geometry` 实例。WS-1 落地时
+在这里加一个 `Geometry` 重载即可，现有形状不变 —— 与 `setProjection` 收 `SpatialRef` 是同一种做法。
 
 （一个实现时才发现、值得记下的细节：GDAL 有**两套**重采样词汇。像素读取与 `warp` /
 `reprojectImage` 用 `Resampling`，最近邻拼作 `nearestneighbour`；`buildOverviews` 用

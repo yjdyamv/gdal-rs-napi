@@ -242,3 +242,58 @@ test('setSpatialFilter narrows by an arbitrary geometry, and null clears it', ()
 
   dataset.close()
 })
+
+test('getFeature reads and writes through the layer, with no save() to forget', () => {
+  const { dataset, layer } = pointLayer('feature-object.gpkg', { fields: TWO_FIELDS })
+  layer.createFeature({ type: 'Point', coordinates: [1, 2] }, { name: 'alpha', population: 10 })
+  const [record] = layer.featuresSync()
+
+  const feature = layer.getFeature(record.fid)
+  assert.equal(feature.fid, record.fid)
+  assert.deepEqual(feature.geometry, { type: 'Point', coordinates: [1, 2] })
+
+  assert.equal(feature.fields.get('population'), 10)
+  assert.equal(feature.fields.has('name'), true)
+  assert.equal(feature.fields.has('nobody'), false)
+  assert.deepEqual(feature.fields.names(), ['name', 'population'])
+  assert.equal(feature.fields.count(), 2)
+  assert.deepEqual(feature.fields.toObject(), { name: 'alpha', population: 10 })
+  assert.deepEqual(feature.fields.toArray(), ['alpha', 10])
+
+  // `toObject` is the same record `feature(fid)` returns, plain data and all.
+  assert.deepEqual(feature.toObject(), record)
+
+  // A write goes straight through — there is no in-memory copy to persist.
+  feature.fields.set('population', 11)
+  assert.equal(layer.feature(record.fid).properties.population, 11)
+
+  feature.setGeometry({ type: 'Point', coordinates: [3, 4] })
+  assert.deepEqual(layer.feature(record.fid).geometry, { type: 'Point', coordinates: [3, 4] })
+
+  // An unknown field is an error that names what the feature does have.
+  assert.throws(() => feature.fields.get('nobody'), /no field named "nobody".*name, population/s)
+
+  // An id that is not there is null, not an error.
+  assert.equal(layer.getFeature(9999), null)
+
+  dataset.close()
+})
+
+test('layer.defn groups the schema, and Feature.defn agrees with it', () => {
+  const { dataset, layer } = pointLayer('feature-defn.gpkg', { fields: TWO_FIELDS })
+  layer.createFeature({ type: 'Point', coordinates: [0, 0] }, { name: 'a', population: 1 })
+
+  const defn = layer.defn
+  assert.equal(defn.name, 'things')
+  assert.equal(defn.geometryType, 'Point')
+  assert.equal(defn.fieldCount, 2)
+  assert.deepEqual(defn.fields.map((field) => field.name), ['name', 'population'])
+  // The grouped columns are the ones the flat accessors report.
+  assert.equal(defn.fidColumn, layer.fidColumn)
+  assert.equal(defn.geometryColumn, layer.geomColumn)
+
+  const [record] = layer.featuresSync()
+  assert.deepEqual(layer.getFeature(record.fid).defn, defn)
+
+  dataset.close()
+})

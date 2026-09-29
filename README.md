@@ -667,6 +667,30 @@ Because features are **copied out** rather than wrapped, the values stay valid
 after the layer or the dataset is closed. `fieldType` uses GDAL's own vocabulary
 (`String`, `Integer`, `Integer64`, `Real`, `Date`, `StringList`, ...).
 
+### Features as objects
+
+`feature(fid)` and `featuresSync()` hand back plain data. When you would rather
+have methods, `getFeature(fid)` is the same feature as an object:
+
+```js
+const feature = layer.getFeature(3)     // or null
+feature.fid                             // 3
+feature.geometry                        // GeoJSON, or null
+feature.fields.get('population')        // 4500
+feature.fields.has('nope')              // false
+feature.fields.set('population', 4600)  // written straight through
+feature.fields.toObject()               // { name: 'beta', population: 4600 }
+feature.toObject()                      // the plain record feature(3) returns
+```
+
+Every read and write goes back to the layer, so there is no cached copy to keep in
+sync and no `save()` to remember — `fields.set` is the same write
+`updateFeature(fid, null, { population: 4600 })` makes.
+
+`layer.defn` is a layer's schema in one object — `name`, `geometryType`,
+`geometryColumn`, `fidColumn`, `fieldCount` and `fields` — and `feature.defn` is
+the same object.
+
 Geometry helpers take and return GeoJSON objects:
 
 ```js

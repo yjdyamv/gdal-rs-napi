@@ -33,6 +33,7 @@ use crate::spatial_ref::JsSpatialRef;
 
 /// One attribute of a layer.
 #[napi(object)]
+#[derive(Debug, Clone)]
 pub struct FieldInfo {
     pub name: String,
     /// GDAL's name for the field type, e.g. `String`, `Integer64`, `RealList`.
@@ -1166,6 +1167,48 @@ impl JsLayer {
         })
     }
 
+    /// This layer's schema as one object — the things `name`, `geometryType`,
+    /// `fidColumn`, `geomColumn` and `fields` report, grouped.
+    ///
+    /// A snapshot taken at the call, like `fields`: it describes the schema now,
+    /// and a later `addField` does not change what an earlier read returned.
+    #[napi(getter)]
+    pub fn defn(&self) -> Result<FeatureDefn> {
+        ensure_initialized();
+        self.dataset.with_exclusive(|dataset| {
+            let layer = dataset.layer(self.index).gdal()?;
+            Ok(feature_defn(&layer))
+        })
+    }
+
+    /// One feature as an object with methods, rather than the copied-out record
+    /// `feature(fid)` returns.
+    ///
+    /// `null` when there is no feature with that id. This is the object form: its
+    /// `fields` reads and writes through the layer, and `geometry` is the GeoJSON
+    /// the record would have carried. `feature(fid)` stays the plain-data read.
+    ///
+    /// ```js
+    /// const feature = layer.getFeature(3)
+    /// feature.fields.get('population')   // 4500
+    /// feature.fields.set('population', 4600)   // written straight through
+    /// ```
+    #[napi]
+    pub fn get_feature(&self, fid: i64) -> Result<Option<JsFeature>> {
+        ensure_initialized();
+        self.dataset.with_exclusive(|dataset| {
+            let layer = dataset.layer(self.index).gdal()?;
+            if layer.feature(fid as u64).is_none() {
+                return Ok(None);
+            }
+            Ok(Some(JsFeature {
+                dataset: self.dataset.clone(),
+                index: self.index,
+                fid,
+            }))
+        })
+    }
+
     /// Read this layer in batches, rather than materialising all of it the way
     /// `featuresSync` does.
     ///
@@ -1609,6 +1652,241 @@ pub fn geometry_from_wkb(wkb: Buffer) -> Result<Value> {
     ensure_initialized();
     let _guard = lock_gdal();
     to_geojson(&gdal::vector::Geometry::from_wkb(wkb.as_ref()).gdal()?)
+}
+
+/// A layer's schema, grouped the way `Layer.defn` reports it.
+#[napi(object)]
+#[derive(Debug, Clone)]
+pub struct FeatureDefn {
+    /// The layer's name.
+    pub name: String,
+    /// Canonical geometry type, as `layer.geometryType` reports it.
+    pub geometry_type: String,
+    /// The column the geometry lives in, or `null` — `Layer.geomColumn`.
+    pub geometry_column: Option<String>,
+    /// The column the feature ids come from, or `null` — `Layer.fidColumn`.
+    pub fid_column: Option<String>,
+    /// How many fields the layer has.
+    pub field_count: u32,
+    /// Each field's whole definition, in schema order.
+    pub fields: Vec<FieldInfo>,
+}
+
+/// Build the schema snapshot. `Layer.defn` and `Feature.defn` share it, so the two
+/// describe one layer identically.
+fn feature_defn(layer: &impl LayerAccess) -> FeatureDefn {
+    let fields = layer_field_infos(layer);
+    FeatureDefn {
+        name: layer.name(),
+        geometry_type: geometry_type_name(layer.defn().geometry_type()),
+        geometry_column: named_column(unsafe {
+            gdal_sys::OGR_L_GetGeometryColumn(layer.c_layer())
+        }),
+        fid_column: named_column(unsafe { gdal_sys::OGR_L_GetFIDColumn(layer.c_layer()) }),
+        field_count: fields.len() as u32,
+        fields,
+    }
+}
+
+/// Read one feature by id, as the copied-out record. Shared by the `Feature`
+/// object's reads, so every one of them sees the layer as it is *now*.
+fn read_feature(dataset: DatasetRef, index: usize, fid: i64) -> Result<FeatureRecord> {
+    ensure_initialized();
+    dataset.with_exclusive(|dataset| {
+        let layer = dataset.layer(index).gdal()?;
+        let field_names = layer_field_names(&layer);
+        match layer.feature(fid as u64) {
+            Some(feature) => to_record(&feature, &field_names),
+            None => Err(bad_argument(format!(
+                "no feature with fid {fid} in this layer — it may have been deleted"
+            ))),
+        }
+    })
+}
+
+/// Write to one existing feature. The single path behind `Feature.setGeometry`,
+/// `FeatureFields.set` and `Layer.updateFeature`.
+fn write_existing(
+    dataset: DatasetRef,
+    index: usize,
+    fid: i64,
+    geometry: Option<&Value>,
+    properties: Option<Value>,
+) -> Result<()> {
+    ensure_initialized();
+    dataset.with_mut(|dataset| {
+        let layer = dataset.layer(index).gdal()?;
+        update_existing(&layer, fid as u64, geometry, properties)
+    })
+}
+
+/// A feature as an object with methods — the `getFeature(fid)` counterpart of the
+/// copied-out `FeatureRecord`.
+///
+/// Everything reads and writes **through the layer** rather than holding a copy:
+/// `fields.get` re-reads the feature and `fields.set` writes immediately (the same
+/// write `updateFeature(fid, …)` makes). Nothing is cached, so two reads with a
+/// write between them cannot disagree, and there is no `save()` to forget.
+#[napi(js_name = "Feature")]
+pub struct JsFeature {
+    dataset: DatasetRef,
+    index: usize,
+    fid: i64,
+}
+
+impl JsFeature {
+    fn record(&self) -> Result<FeatureRecord> {
+        read_feature(self.dataset.clone(), self.index, self.fid)
+    }
+}
+
+#[napi]
+impl JsFeature {
+    /// The feature's id — the number `feature(fid)` and `updateFeature(fid, …)`
+    /// take.
+    #[napi(getter)]
+    pub fn fid(&self) -> i64 {
+        self.fid
+    }
+
+    /// The schema this feature belongs to — the same object `layer.defn` returns.
+    #[napi(getter)]
+    pub fn defn(&self) -> Result<FeatureDefn> {
+        ensure_initialized();
+        self.dataset.with_exclusive(|dataset| {
+            let layer = dataset.layer(self.index).gdal()?;
+            Ok(feature_defn(&layer))
+        })
+    }
+
+    /// The geometry as GeoJSON, or `null` when the feature has none.
+    #[napi(getter)]
+    pub fn geometry(&self) -> Result<Value> {
+        Ok(self.record()?.geometry)
+    }
+
+    /// Replace the geometry, as GeoJSON — the same shape `createFeature` takes.
+    #[napi]
+    pub fn set_geometry(&self, geometry: Value) -> Result<()> {
+        write_existing(self.dataset.clone(), self.index, self.fid, Some(&geometry), None)
+    }
+
+    /// The feature's fields, read and written through the layer.
+    #[napi(getter)]
+    pub fn fields(&self) -> JsFeatureFields {
+        JsFeatureFields {
+            dataset: self.dataset.clone(),
+            index: self.index,
+            fid: self.fid,
+        }
+    }
+
+    /// The whole feature as the plain record `feature(fid)` would have returned —
+    /// `fid`, `properties` and `geometry`.
+    #[napi]
+    pub fn to_object(&self) -> Result<FeatureRecord> {
+        self.record()
+    }
+}
+
+/// A feature's fields, as `Feature.fields`. Every call goes back to the layer, so a
+/// value read here is the value in the file, not a snapshot.
+#[napi(js_name = "FeatureFields")]
+pub struct JsFeatureFields {
+    dataset: DatasetRef,
+    index: usize,
+    fid: i64,
+}
+
+/// The "no such field" error, naming what the feature does have.
+fn unknown_field(name: &str, record: &FeatureRecord) -> Error<GdalErrorCode> {
+    let known: Vec<String> = record
+        .properties
+        .as_object()
+        .map(|object| object.keys().cloned().collect())
+        .unwrap_or_default();
+    bad_argument(format!(
+        "no field named {name:?}; the feature has {}",
+        known.join(", ")
+    ))
+}
+
+impl JsFeatureFields {
+    fn record(&self) -> Result<FeatureRecord> {
+        read_feature(self.dataset.clone(), self.index, self.fid)
+    }
+}
+
+#[napi]
+impl JsFeatureFields {
+    /// Field names, in schema order.
+    #[napi]
+    pub fn names(&self) -> Result<Vec<String>> {
+        Ok(self
+            .record()?
+            .properties
+            .as_object()
+            .map(|object| object.keys().cloned().collect())
+            .unwrap_or_default())
+    }
+
+    /// How many fields the feature has.
+    #[napi]
+    pub fn count(&self) -> Result<u32> {
+        Ok(self
+            .record()?
+            .properties
+            .as_object()
+            .map_or(0, |object| object.len() as u32))
+    }
+
+    /// One field's value. An unknown name is an error rather than `null`, so a
+    /// typo reads as one — `has` is the question that answers `false`.
+    #[napi]
+    pub fn get(&self, name: String) -> Result<Value> {
+        let record = self.record()?;
+        match record.properties.get(&name) {
+            Some(value) => Ok(value.clone()),
+            None => Err(unknown_field(&name, &record)),
+        }
+    }
+
+    #[napi]
+    pub fn has(&self, name: String) -> Result<bool> {
+        Ok(self.record()?.properties.get(&name).is_some())
+    }
+
+    /// Write one field, straight through to the layer — the same write
+    /// `updateFeature(fid, null, { name: value })` makes.
+    #[napi]
+    pub fn set(&self, name: String, value: Value) -> Result<()> {
+        let mut properties = Map::new();
+        properties.insert(name, value);
+        write_existing(
+            self.dataset.clone(),
+            self.index,
+            self.fid,
+            None,
+            Some(Value::Object(properties)),
+        )
+    }
+
+    /// Every field as an object — the `properties` of the copied-out record.
+    #[napi]
+    pub fn to_object(&self) -> Result<Value> {
+        Ok(self.record()?.properties)
+    }
+
+    /// Every value, in field order.
+    #[napi]
+    pub fn to_array(&self) -> Result<Vec<Value>> {
+        Ok(self
+            .record()?
+            .properties
+            .as_object()
+            .map(|object| object.values().cloned().collect())
+            .unwrap_or_default())
+    }
 }
 
 #[cfg(test)]
