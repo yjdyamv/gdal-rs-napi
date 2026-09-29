@@ -93,8 +93,10 @@ test('open() takes bytes as well as a path', async () => {
   again.close()
 
   // Bytes that are not a dataset are refused rather than opened as something
-  // arbitrary. GDAL's own explanation does not survive the trip — the error reads
-  // `GDALOpenEx: ` with an empty message, and does so for a garbage *path* as much
-  // as for a buffer — so all this can assert is that it is refused.
-  assert.throws(() => gdal.openSync(Buffer.from('definitely not a raster')), /GDALOpenEx/)
+  // arbitrary, and the error carries GDAL's own reason — the bytes are written to
+  // a `/vsimem/` file, so the message names that path and says why it was not read.
+  assert.throws(
+    () => gdal.openSync(Buffer.from('definitely not a raster')),
+    (error) => error.code === 'GDAL_BAD_ARGUMENT' && /not recognized/.test(error.message),
+  )
 })

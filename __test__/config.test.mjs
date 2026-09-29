@@ -60,6 +60,13 @@ test('lastError reports an error that never became an exception', () => {
   // A failure that *is* thrown has been consumed and reset on the way out — the
   // rust `gdal` crate calls CPLErrorReset after reading it — so by the time JS
   // sees the exception there is nothing left here. This is the documented split.
-  assert.throws(() => gdal.openSync(tmp('does-not-exist.tif')), /GDALOpenEx/)
+  //
+  // The message is not empty, though: the open asks GDAL for
+  // `GDAL_OF_VERBOSE_ERROR`, so a failed open explains itself rather than being
+  // the bare `GDALOpenEx: ` it once was. GDAL names the path it could not read.
+  assert.throws(
+    () => gdal.openSync(tmp('does-not-exist.tif')),
+    (error) => /GDALOpenEx/.test(error.message) && /does-not-exist\.tif/.test(error.message),
+  )
   assert.equal(gdal.lastError(), null)
 })

@@ -26,7 +26,7 @@
 
 1. **分发方式不是主流。** 用户必须 `npm install <github release url>`，无法 `npm install gdal-rs-napi`，也没有版本范围/镜像/审计链。
 2. **文档与代码漂移。** `CHANGELOG.md` 的 Known gaps 仍写"geometries are not transformed"，但 `transformGeometry` 已实现且有测试通过。
-3. **`open` 失败信息丢失。** `GDALOpenEx:` 后为空，`lastError()` 也是 `null`，排障体验差（已知缺口里最影响实用性的一条）。
+3. ~~**`open` 失败信息丢失。**~~ 已修：加 `GDAL_OF_VERBOSE_ERROR` 后，失败会带上 GDAL 的原始原因（见 Phase 0）。
 4. **代码集中。** `dataset.rs` 2108 行、`band.rs` 1573、`vector.rs` 1382，审阅与扩展成本在上升。
 5. **musl 两个 leg 仍是 `experimental`**，`all_drivers` 的 vendored HDF5/netCDF/curl/libpq 是脆弱点。
 6. **异步错误无 `err.code`**（`napi::Task` 限制），只能用消息前缀判断。
@@ -61,7 +61,7 @@
 - [ ] **发布流水线**：tag → 构建 6 平台 → 发平台包 → 发根包；`npm publish --provenance`。
 - [ ] **安装冒烟测试**：新增 CI job，在一个干净容器里 `npm install <tarball>` 后跑 `diagnostics()` + `drivers().length`，证明"零宿主依赖"的承诺成立。
 - [ ] **审计 Known gaps**：逐条对代码核验，修掉文档漂移（`transformGeometry`、统计写回、批量读等）。
-- [ ] **修 `open` 错误消息**：在 `GDALOpenEx` 前后接管 `CPLGetLastErrorMsg`，把 GDAL 的真实原因带出来；这是投入产出比最高的一条。
+- [x] **修 `open` 错误消息**：已修 —— 失败原因是漏了 `GDAL_OF_VERBOSE_ERROR`：不设这个标志时 GDAL 静默返回空句柄，last-error 里什么都没有。加上标志即可，消息走原有错误路径。
 - [ ] **CI 策略定案**：musl 要么转正（`experimental: false`），要么在 README 明确为"尽力而为"。
 - [ ] 补 `SECURITY.md` / issue 模板 / 贡献指南。
 

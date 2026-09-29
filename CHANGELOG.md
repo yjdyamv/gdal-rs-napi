@@ -40,6 +40,14 @@ First working cut — everything here is new.
   GDAL, so it lives in `index.js` rather than crossing the FFI boundary, and
   `__test__/const.test.mjs` checks each value against the runtime so the two
   cannot drift.
+- A failed `open` / `openSync` now carries GDAL's own explanation — "No such file
+  or directory", "not recognized as being in a supported file format" — instead
+  of the bare `GDALOpenEx: ` it used to be. The cause was a single missing flag:
+  GDAL returns a null handle *in silence* unless the open asks for
+  `GDAL_OF_VERBOSE_ERROR`, so its last-error store was empty by the time the
+  `gdal` crate read it. Setting the flag is the whole fix; the message travels
+  through the existing error path, and `lastError()` still answers `null` for it
+  (a thrown failure has been read and reset, as documented).
 - `docs/API-STABILITY.md` writes down the rules the surface was already following
   — naming (`xxxSync()` / `xxx()`), 0-based indexing with `band.id` as the single
   exception, `null` rather than `undefined`, `err.code` on the sync surface and
@@ -394,10 +402,6 @@ First working cut — everything here is new.
 
 ### Known gaps
 
-- A failed `open` / `openSync` says `GDALOpenEx: ` with an empty message, whether the
-  path was dead or the bytes were not a dataset. GDAL's own explanation is gone by the
-  time the `gdal` crate builds the error, and `lastError()` cannot recover it either —
-  it is already `null`. The only thing to go on is that the open failed.
 - CRS handling stops at points and bounding boxes: geometries are not transformed,
   `CoordTransformOptions` (a specific pipeline, an accuracy target) is not exposed,
   and the transformation is synchronous, so a million points has to be chunked by

@@ -363,7 +363,14 @@ fn open_gdal(path: &str, update: bool, drivers: Option<&[String]>) -> Result<Gda
     ensure_initialized();
     let _guard = lock_gdal();
 
-    let mut flags = GdalOpenFlags::GDAL_OF_RASTER | GdalOpenFlags::GDAL_OF_VECTOR;
+    // `GDAL_OF_VERBOSE_ERROR` is what makes a failed open *say why*. Without it
+    // GDAL returns a null handle in silence — no message in its last-error store —
+    // and the `gdal` crate can only report the bare `GDALOpenEx: ` the caller
+    // saw. With it, GDAL explains ("No such file or directory", "not recognized
+    // as a supported file format"), which is the half of the failure that helps.
+    let mut flags = GdalOpenFlags::GDAL_OF_RASTER
+        | GdalOpenFlags::GDAL_OF_VECTOR
+        | GdalOpenFlags::GDAL_OF_VERBOSE_ERROR;
     if update {
         flags |= GdalOpenFlags::GDAL_OF_UPDATE;
     }
@@ -396,7 +403,9 @@ fn open_thread_safe_gdal(path: &str) -> Result<DatasetRef> {
     let dataset = GdalDataset::open_ex(
         path,
         DatasetOptions {
-            open_flags: GdalOpenFlags::GDAL_OF_RASTER | GdalOpenFlags::GDAL_OF_THREAD_SAFE,
+            open_flags: GdalOpenFlags::GDAL_OF_RASTER
+                | GdalOpenFlags::GDAL_OF_THREAD_SAFE
+                | GdalOpenFlags::GDAL_OF_VERBOSE_ERROR,
             ..DatasetOptions::default()
         },
     )
