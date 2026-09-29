@@ -57,9 +57,9 @@
 
 > 目标：把 v0.1.0 从"能用"变成"可依赖"。
 
-- [ ] **上 npm**：`private: false`；采用 napi 标准布局——根包 + `optionalDependencies` 平台包（`@gdal-rs-napi/win32-x64-msvc` 等），保留 tarball 直装作为备选。
-- [ ] **发布流水线**：tag → 构建 6 平台 → 发平台包 → 发根包；`npm publish --provenance`。
-- [ ] **安装冒烟测试**：新增 CI job，在一个干净容器里 `npm install <tarball>` 后跑 `diagnostics()` + `drivers().length`，证明"零宿主依赖"的承诺成立。
+- [ ] **上 npm** —— **刻意推迟**：接口尚未打磨完，包保持 `private`。布局与打包已经就位（`scripts/pack-packages.mjs` 产出 napi 标准形状的根包 + `gdal-rs-napi-<platform>` 平台包；`binding.js` 本来就是按 `optionalDependencies` 那套生成的），`npm publish` 那一步不做——也还没有做。届时需要：`private: false`、在根包写出六个 `optionalDependencies`、加一个 tag 触发的发布 job（平台包先、根包后，`--provenance`）。
+- [ ] **发布流水线**：tag → 构建 6 平台 → GH Release 附自包含 tarball + LGPL 材料（**已在跑**）；npm 发布那半段同上，未做。
+- [x] **安装冒烟测试**：`npm run smoke` —— 在一个空目录里 `npm install <tarball>`，再跑一个消费者程序（`diagnostics()`、`drivers().length`、GEOS 谓词、栅格往返）。CI 每个平台都跑，而 CI runner 正是"干净机器"本身。
 - [ ] **审计 Known gaps**：逐条对代码核验，修掉文档漂移（`transformGeometry`、统计写回、批量读等）。
 - [x] **修 `open` 错误消息**：已修 —— 失败原因是漏了 `GDAL_OF_VERBOSE_ERROR`：不设这个标志时 GDAL 静默返回空句柄，last-error 里什么都没有。加上标志即可，消息走原有错误路径。
 - [ ] **CI 策略定案**：musl 要么转正（`experimental: false`），要么在 README 明确为"尽力而为"。

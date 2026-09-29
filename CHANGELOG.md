@@ -454,7 +454,14 @@ First working cut — everything here is new.
 - Requires Ninja (`CMAKE_GENERATOR`) and a `sqlite3` CLI from outside MSYS2. MSYS2
   must stay off `PATH` or GDAL's configure aborts; see the README for why.
 - CI builds six targets on native runners and attaches one self-contained tarball
-  per platform to a GitHub Release. **Nothing is published to npm.**
+  per platform to a GitHub Release. **Nothing is published to npm** — the package
+  is `private`, and installing is still from a release tarball.
+- `npm run pack:npm` builds the npm-format artifacts — the root package plus one
+  `gdal-rs-napi-<platform>` per binary, in the layout `binding.js` was generated
+  for (it requires that name, and checks its version against the root's). It runs
+  on every build so the packaging cannot rot, but nothing uploads it: publishing
+  is **deliberately deferred** until the surface is settled. `ROADMAP.md` Phase 0
+  lists what publishing will take.
 - The two musl legs are marked experimental (`continue-on-error`). They build —
   and test — inside a musl-native Alpine container (`docker/musl.Dockerfile`) on a
   runner of their own architecture, so the container's own toolchain already
@@ -489,6 +496,12 @@ First working cut — everything here is new.
 - `scripts/bench-parallel.mjs` measures the thread-safe path against the serialised
   one: the same concurrent workload, on real data, with the numbers and their
   spread printed. It is a benchmark, not a test, and asserts nothing.
+- `npm run smoke` installs the packed tarball into an **empty directory** and then
+  uses it: the packaged CRS database resolves, the driver count is right, a GEOS
+  predicate runs (so the statically linked GEOS works with nothing installed), and
+  a raster round-trips. It is the check the "nothing on the host" claim stands on,
+  and CI runs it on every platform — a runner being exactly the clean machine the
+  claim is about.
 
 ### Known gaps
 

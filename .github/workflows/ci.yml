@@ -192,6 +192,20 @@ jobs:
       - name: Pack
         run: npm run pack
 
+      # The npm-format artifacts — the root package plus one
+      # `gdal-rs-napi-<platform>` per binary. Nothing is published to npm yet
+      # (the package is still `private`), but the packing runs on every build so
+      # the layout cannot rot between now and the day it is published. They are
+      # not uploaded: the self-contained tarball below is the release artifact.
+      - name: Pack the npm-format packages
+        run: npm run pack:npm
+
+      # The claim this package makes is "nothing on the host", so prove it: install
+      # the artifact into an empty directory and use it. A CI runner is a clean
+      # machine, which is exactly the machine the claim is about.
+      - name: Smoke-test the packed tarball
+        run: npm run smoke
+
       # GEOS is LGPL-2.1 and is linked statically into the `.node`, so LGPL-2.1 §6
       # asks this release for the means to relink it against a modified GEOS:
       # `scripts/lgpl-geos.mjs` gathers the source this build compiled, the

@@ -11,6 +11,17 @@ GDAL 与 PROJ 被**静态编译**进插件，PROJ/GDAL 的数据文件随 npm �
 
 ## 安装与使用
 
+**尚未发布到 npm。** 每个 release 会在 GitHub Release 上附带各平台的**自包含 tarball**，
+从它安装不需要 registry，也不需要主机上有 GDAL：
+
+```sh
+npm install https://github.com/yjdyamv/gdal-rs-napi/releases/download/v0.1.0/gdal-rs-napi-0.1.0-linux-x64-gnu.tgz
+```
+
+tarball 里写明了 `os` / `cpu` / `libc`，装在别的机器上 npm 会直接拒绝。发布到 npm 已在计划中，
+打包脚本也已就位（`npm run pack:npm`，见 `ROADMAP.md` 的 Phase 0），但接口稳定之前包保持
+`private`。
+
 ```js
 const gdal = require('gdal-rs-napi')
 

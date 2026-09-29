@@ -15,9 +15,18 @@ host system.
 
 ## Install
 
+**Not on npm yet.** Each release attaches one self-contained tarball per platform
+to the GitHub Release, and installing from it needs no registry and no GDAL on the
+host:
+
 ```sh
-npm install gdal-rs-napi
+npm install https://github.com/yjdyamv/gdal-rs-napi/releases/download/v0.1.0/gdal-rs-napi-0.1.0-linux-x64-gnu.tgz
 ```
+
+The tarball names its `os` / `cpu` / `libc`, so npm refuses one built for a
+different machine. Publishing to npm is planned — the packing already exists
+(`npm run pack:npm`, and Phase 0 of `ROADMAP.md`) — but the package stays
+`private` until the surface is settled.
 
 ## Usage
 
