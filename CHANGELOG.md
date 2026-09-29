@@ -118,6 +118,20 @@ First working cut — everything here is new.
   written. `createFeature` and `updateFeature` now make those two calls directly and
   keep the status, relaying GDAL's own explanation ("unsupported operation on a
   read-only datasource"), the way `deleteFeature` already did.
+- An async failure now carries `err.code` as well. napi pins a `Task`'s error type,
+  so the stable token has always had to travel as a `[GDAL_…]` prefix on the
+  message — and `err.code` was the useless `'GenericFailure'`. The JavaScript shell
+  lifts that prefix back out, so `error.code === 'GDAL_CANCELLED'` works on the
+  async surface exactly as it does on the sync one; the prefix stays in the message
+  too, so nothing that matched on text breaks. `async-methods.js` is the list of
+  what gets wrapped, and a test checks it against the generated declarations, so a
+  new async method cannot quietly go uncovered.
+- A `FeatureCursor` is async-iterable: `for await (const feature of
+  layer.openCursor())` yields one feature per turn — not a batch — and stops when
+  the layer runs out, with `break` stopping early without draining it. The iterator
+  is the shell's, because napi cannot put `Symbol.asyncIterator` on a generated
+  class, but it reads through the same `read()` a manual loop calls, so the two
+  cannot disagree.
 - `gdal-rs-napi/compat` — the `gdal-async`-shaped adapter, so a port is an import
   change rather than a rewrite. Pure JavaScript over the same native binding: it
   adds no capability, and the native API keeps its own conventions. It translates
@@ -319,10 +333,11 @@ First working cut — everything here is new.
   already has, and the return value says how many strips were handed out. `rows`
   defaults to the band's block height — the strip GDAL reads anyway — so a raster
   larger than memory can be processed a strip at a time, each strip whole. It is
-  synchronous on purpose: the alternative was napi's `AsyncGenerator`, the only way to
-  give a class a real `Symbol.asyncIterator`, and it cannot be reached from here — the
-  trait lives in the private `bindgen_runtime` module, its prelude re-export does not
-  exist in napi 3.13, and turning on the `experimental` feature changes neither. For a
+  synchronous on purpose: the alternative is napi's `AsyncGenerator`, which cannot be
+  reached from here — the trait lives in the private `bindgen_runtime` module, its
+  prelude re-export does not exist in napi 3.13, and turning on the `experimental`
+  feature changes neither, which is why a `FeatureCursor` gets its `for await` from
+  the JavaScript shell instead. For a
   long walk, run it in a worker.
 - `open()` / `openSync()` take a `Buffer` as well as a path, which is where the
   in-memory pipeline starts. The bytes go to a `/vsimem/` file, that file becomes the
@@ -429,8 +444,9 @@ First working cut — everything here is new.
   update-mode dataset stores them in the file; a read-only one gets a
   `<file>.aux.xml` sidecar, because that is what GDAL's PAM layer does.
 - Errors carry a stable `err.code` (`GDAL_CPL_FAILURE`, `GDAL_BAD_ARGUMENT`, …) on
-  the sync surface. `napi::Task` fixes its error type, so async methods throw the
-  same token at the front of the message instead.
+  both surfaces. `napi::Task` fixes its error type, so an async method's token
+  still travels at the front of the message — the shell lifts it into `err.code`
+  on the way out, and leaves it in the message.
 
 ### Build
 
@@ -515,8 +531,8 @@ First working cut — everything here is new.
 - `buildOverviews({ bands })` is passed through, but GTiff — the only writable
   overview driver compiled in — refuses anything short of every band.
 - No terrain algorithms beyond the ones `gdaldem` itself offers.
-- Reading a layer in batches is a cursor rather than a JS async iterator, and GDAL
-  keeps the reading position on the layer, so one reader per layer at a time.
+- GDAL keeps the reading position on the layer, so a layer takes one reader at a
+  time — a second cursor, or a `featuresSync()`, rewinds the first.
 - Array-valued properties are written as comma-joined text rather than list fields,
   unless the field is declared as a list one — see `FieldDefinition`.
 - Intel macOS and 32-bit targets are not built.

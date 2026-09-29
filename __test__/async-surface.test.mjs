@@ -1,0 +1,129 @@
+// The async surface: what the shell adds on top of the generated binding.
+//
+// Two things live here. An async failure carries `err.code` now, because napi
+// pins a `Task`'s error type and the token has to travel in the message otherwise
+// — and the list of methods that get that treatment is checked against the
+// generated declarations rather than trusted. And a cursor is async-iterable, so
+// a paged layer can be read with `for await`.
+
+import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
+import { test } from 'node:test'
+
+import { gdal, tmp } from './helpers.mjs'
+import asyncMethods from '../async-methods.js'
+
+const types = readFileSync(new URL('../binding.d.ts', import.meta.url), 'utf8').split('\n')
+
+/** Module functions whose declared return type is a promise. */
+function declaredFunctions() {
+  const found = []
+  for (const line of types) {
+    if (!line.includes(': Promise<')) continue
+    const match = /^export declare function (\w+)[<(]/.exec(line)
+    if (match) found.push(match[1])
+  }
+  return found
+}
+
+/** Class methods whose declared return type is a promise. */
+function declaredMethods() {
+  const found = []
+  for (const line of types) {
+    if (!line.includes(': Promise<')) continue
+    const match = /^\s+(\w+)\s*[<(]/.exec(line)
+    if (match) found.push(match[1])
+  }
+  return found
+}
+
+test('every async member the binding declares is one the shell wraps', () => {
+  const expectedFunctions = [...asyncMethods.functions].sort()
+  const actualFunctions = [...new Set(declaredFunctions())].sort()
+  assert.deepEqual(actualFunctions, expectedFunctions, 'async module functions')
+
+  const expectedMethods = [
+    ...new Set(Object.values(asyncMethods.methods).flat()),
+  ].sort()
+  const actualMethods = [...new Set(declaredMethods())].sort()
+  assert.deepEqual(actualMethods, expectedMethods, 'async methods')
+
+  // A member that is listed but absent from the binding makes `index.js` throw at
+  // require time, so reaching this point means every listed name exists.
+})
+
+test('an async failure carries err.code, and keeps the prefix in its message', async () => {
+  await assert.rejects(
+    gdal.open(tmp('does-not-exist.tif')),
+    (error) => {
+      // The same token the sync surface reports, now as a field.
+      assert.equal(error.code, 'GDAL_BAD_ARGUMENT')
+      // ... and still at the front of the message, so a caller matching text is
+      // unaffected by the field appearing.
+      assert.match(error.message, /^\[GDAL_BAD_ARGUMENT\]/)
+      assert.match(error.message, /does-not-exist\.tif/)
+      return true
+    },
+  )
+})
+
+test('the token in the field is the one in the message, for a different failure', async () => {
+  // A second one, to show the code is lifted rather than hard-coded somewhere.
+  await assert.rejects(
+    gdal.buildVrt(tmp('built.vrt'), []),
+    (error) => {
+      assert.equal(error.code, 'GDAL_BAD_ARGUMENT')
+      assert.match(error.message, /^\[GDAL_BAD_ARGUMENT\]/)
+      assert.match(error.message, /at least one source/)
+      return true
+    },
+  )
+})
+
+test('a cursor is async-iterable, and yields one feature at a time', async () => {
+  const path = tmp('async-cursor.gpkg')
+  const dataset = gdal.createVectorSync(path, 'GPKG')
+  const layer = dataset.createLayer({ name: 'places', geometryType: 'Point', epsg: 4326 })
+  for (let index = 0; index < 5; index += 1) {
+    layer.createFeature({ type: 'Point', coordinates: [index, index] }, { n: index })
+  }
+  dataset.close()
+
+  const reopened = gdal.openSync(path)
+  const cursor = reopened.layer(0).openCursor({ batchSize: 2 })
+
+  const seen = []
+  for await (const feature of cursor) {
+    // A record, not a batch — the batches are an implementation detail here.
+    assert.equal(typeof feature.fid, 'number')
+    seen.push(feature.properties.n)
+  }
+  assert.deepEqual(seen, [0, 1, 2, 3, 4], 'every feature, in order')
+
+  // Breaking out stops without draining the layer, the way `read()` lets a caller
+  // stop after a batch.
+  const second = reopened.layer(0).openCursor({ batchSize: 2 })
+  const firstTwo = []
+  for await (const feature of second) {
+    firstTwo.push(feature.properties.n)
+    if (firstTwo.length === 2) break
+  }
+  assert.deepEqual(firstTwo, [0, 1])
+
+  reopened.close()
+})
+
+test('an empty layer iterates zero times rather than once with nothing', async () => {
+  const path = tmp('async-cursor-empty.gpkg')
+  const dataset = gdal.createVectorSync(path, 'GPKG')
+  dataset.createLayer({ name: 'places', geometryType: 'Point', epsg: 4326 })
+  dataset.close()
+
+  const reopened = gdal.openSync(path)
+  const seen = []
+  for await (const feature of reopened.layer(0).openCursor()) {
+    seen.push(feature)
+  }
+  assert.deepEqual(seen, [])
+  reopened.close()
+})

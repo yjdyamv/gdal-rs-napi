@@ -76,11 +76,12 @@ the driver stores.
    `null`. `undefined` in a return position is a bug.
 3. **`void` returns only for calls whose whole point is a side effect**
    (`close()`, `flushSync()`, `setMetadataItem()`).
-4. **Sync errors carry `err.code`** — a stable token such as `GDAL_CPL_FAILURE`,
-   `GDAL_BAD_ARGUMENT`, `GDAL_MISSING_PROJ_DATA`. Async errors cannot, because
-   `napi::Task` pins the status type, so they prefix the same token to the
-   message: `[GDAL_CPL_FAILURE] ...`. Prefer a sync method when you need to
-   branch on the code.
+4. **Errors carry `err.code`** — a stable token such as `GDAL_CPL_FAILURE`,
+   `GDAL_BAD_ARGUMENT`, `GDAL_MISSING_PROJ_DATA` — on **both** surfaces. An async
+   failure also has the token at the front of its message (`[GDAL_CPL_FAILURE] …`),
+   because `napi::Task` pins the status type and the message is therefore where the
+   token has to travel; the shell lifts it back into `err.code`, so branch on
+   either.
 5. **A NUL byte in a string is refused**, not truncated. It cannot survive the
    trip into C, so it is reported as a bad argument.
 

@@ -113,3 +113,23 @@ export interface GdalConstants {
 declare const constants: GdalConstants
 
 export { constants as const }
+
+/**
+ * A cursor pages a layer, and the natural way to read a paged source is
+ *
+ * ```js
+ * for await (const feature of layer.openCursor()) { … }
+ * ```
+ *
+ * The iterator is added by the shell (`index.js`) rather than generated, because
+ * napi cannot put `Symbol.asyncIterator` on a `#[napi]` class — its
+ * `AsyncGenerator` support is unreachable from a dependent crate. So the
+ * declaration is hand-written here, alongside the other hand-written exports. It
+ * yields feature records, one at a time; `read()` is still the batch-at-a-time
+ * call, and `readSync()` the blocking one.
+ */
+declare module './binding' {
+  interface FeatureCursor {
+    [Symbol.asyncIterator](): AsyncIterator<FeatureRecord>
+  }
+}

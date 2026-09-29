@@ -20,6 +20,9 @@ const binaryName = pkg.napi?.binaryName ?? pkg.name
 const ROOT_FILES = [
   'index.js',
   'index.d.ts',
+  // The list of async methods the shell wraps, so an async failure carries
+  // `err.code`.
+  'async-methods.js',
   // The `gdal-async`-shaped adapter: `require('gdal-rs-napi/compat')`.
   'compat/index.js',
   'compat/index.d.ts',

@@ -312,8 +312,8 @@ const strips = band.readChunksSync({ rows: 64 }, (chunk) => {
 
 `rows` 默认取该带的块高 —— 也就是 GDAL 反正要读的那一条；每一条都是完整的，不会是半条。
 回调在事件循环上、两次读之间执行，它的返回值就是背压 —— 所以真正耗时的走法应该放进 worker。
-（async iterator 那条路可以 `for await`，但需要 napi 的 async generator 支持，这个版本没有公开；
-`readChunksSync` 就是它剩下的形态。）
+（波段没法做成可异步迭代：napi 无法给生成的类挂 `Symbol.asyncIterator`，所以这里就是同步的。
+图层的游标可以，因为那是外壳加的 —— 见「按批读取」。）
 
 写入、创建、地理参考：
 
@@ -753,6 +753,22 @@ for (;;) {
 每一批的内容与 `featuresSync()` 对这几行给出的结果完全相同，
 所以这样的循环可以直接替换整层物化的调用。
 
+游标**同时是可异步迭代的** —— 同一次读取，只是把批次隐掉：每轮给一条记录，读完为止。
+
+```js
+for await (const feature of layer.openCursor({ batchSize: 1000 })) {
+  consume(feature) // 是要素，不是一批
+}
+
+// 提前 break 就是提前停下，不会把整层读完。
+for await (const feature of layer.openCursor()) {
+  if (enough(feature)) break
+}
+```
+
+迭代器给出的正是 `read()` 各批次里的内容，并以那个结束它的空批次为终点 ——
+所以 `for await` 与手写循环不可能给出不同结果。
+
 两点要知道，这两点都是 GDAL 的形态、而不是本 API 的：
 
 - **同一图层同时只能有一个读取者。** GDAL 把读取位置放在**图层**上 —— 这既是批次能续读的原因，
@@ -947,8 +963,21 @@ node scripts/bench-parallel.mjs big.tif --concurrency 4
 同步失败会把 `err.code` 设成稳定的记号（`GDAL_CPL_FAILURE`、`GDAL_BAD_ARGUMENT`、
 `GDAL_MISSING_PROJ_DATA` 等），并把 GDAL 自己的 class/number 放进消息：`[CPLErr=3 #4] …`。
 
-`napi::Task` 把错误类型写死成 `napi::Error<Status>`，所以**异步**方法设不了这个 code，
-改为把同一个记号放在消息开头：`[GDAL_CPL_FAILURE] …`。需要按 `err.code` 分支时请用同步版。
+异步失败给的是**同一个**记号，并且**同时**把它放在消息开头：
+
+```js
+try {
+  await gdal.demProcess(dest, source, 'hillshade', [], undefined, () => false)
+} catch (error) {
+  error.code              // 'GDAL_CANCELLED'
+  error.message           // '[GDAL_CANCELLED] cancelled by the progress callback'
+}
+```
+
+两者都要有，是因为这个记号**必须**走消息：`napi::Task` 把错误类型写死成 `napi::Error<Status>`，
+绑定没法给 rejection 挂自定义 status —— `err.code` 只会是没用的 `'GenericFailure'`。
+所以外壳在异常交到你手上之前，把前缀重新提取成 `err.code`：于是在两条路径上都能按 code 分支，
+而按消息前缀匹配的老写法也依然成立。
 
 ## 示例
 
@@ -1111,8 +1140,8 @@ MapInfo、DXF、DGN、CAD、S57、VDV、VFK、CSV、GTFS、Selafin、KMLSUPEROVE
 CRS 变换覆盖点、坐标数组、包围盒和整个几何对象（`transformGeometry`），但不暴露
 `CoordTransformOptions`（指定转换管线、精度目标），且变换是同步的 —— 上百万个点需要调用方自行分块。
 
-读图层可以按批读（游标），但那是游标而不是 JS 的 async iterator；且 GDAL 的读取位置在图层上，
-同一图层同时只能有一个读取者。
+GDAL 的读取位置在图层上，所以同一图层同时只能有一个读取者 —— 第二个游标（或一次
+`featuresSync()`）会把第一个倒回开头。
 
 波段的元数据与直方图现在可读可写（`setScale` / `setOffset` / `setUnitType` / `setDescription` /
 `setCategoryNames`，以及 `defaultHistogram` / `setDefaultHistogram`），与 `setStatistics()` 对齐。

@@ -99,12 +99,12 @@ test('returning false cancels, and says so rather than reporting a failure', asy
     }),
     (error) => {
       // Not a generic failure, and not `GDAL_BAD_ARGUMENT`: the caller needs to be
-      // able to tell "I stopped it" from "it went wrong". On the async surface the
-      // token arrives in the message rather than as `err.code`, because
-      // `napi::Task` pins the error type — the same asymmetry the README describes
-      // for every other async method.
-      assert.equal(error.code, 'GenericFailure')
-      assert.match(error.message, /\[GDAL_CANCELLED\]/)
+      // able to tell "I stopped it" from "it went wrong". The token is on
+      // `err.code` — the shell lifts it out of the message, which is where it has
+      // to travel because `napi::Task` pins the error type — and stays in the
+      // message as well, so matching either way works.
+      assert.equal(error.code, 'GDAL_CANCELLED')
+      assert.match(error.message, /^\[GDAL_CANCELLED\]/)
       assert.match(error.message, /cancelled by the progress callback/)
       return true
     },

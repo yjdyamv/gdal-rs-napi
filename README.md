@@ -359,9 +359,10 @@ const strips = band.readChunksSync({ rows: 64 }, (chunk) => {
 
 `rows` defaults to the band's block height, which is the strip GDAL reads anyway, and
 every strip arrives whole. The callback runs on the event loop, between reads, and its
-answer is the backpressure — so a walk long enough to matter belongs in a worker. (An
-async iterator, and with it `for await`, needs napi's async-generator support, which
-this version does not expose; `readChunksSync` is what that leaves.)
+answer is the backpressure — so a walk long enough to matter belongs in a worker. (A
+band cannot be async-iterable — napi cannot put `Symbol.asyncIterator` on a generated
+class — which is why this one is synchronous. A layer's cursor can, because the shell
+adds it; see *Reading in batches*.)
 
 Writing and creating:
 
@@ -901,6 +902,23 @@ for (;;) {
 Every batch holds exactly what `featuresSync()` would have returned for those rows,
 so a loop like this is a drop-in replacement for the materialising call.
 
+A cursor is also **async-iterable**, which is the same read with the batches left
+implicit — one record per turn, and stopping when the layer runs out:
+
+```js
+for await (const feature of layer.openCursor({ batchSize: 1000 })) {
+  consume(feature) // a feature, not a batch
+}
+
+// Breaking out stops early without draining the layer.
+for await (const feature of layer.openCursor()) {
+  if (enough(feature)) break
+}
+```
+
+The iterator yields what `read()`'s batches contain, and stops on the empty batch
+that ends them — so `for await` and the manual loop cannot disagree.
+
 Two things to know, both of them GDAL's shape rather than this API's:
 
 - **One reader per layer at a time.** GDAL keeps the reading position *on the
@@ -1130,10 +1148,23 @@ A sync failure sets `err.code` to a stable token — `GDAL_CPL_FAILURE`,
 `GDAL_CPL_WARNING`, `GDAL_BAD_ARGUMENT`, `GDAL_MISSING_PROJ_DATA`, ... — and puts
 GDAL's own class and number in the message: `[CPLErr=3 #4] ...`.
 
-`napi::Task` pins its error type to `napi::Error<Status>`, so the **async**
-methods cannot set that code. They throw with the same token prefixed to the
-message instead — `[GDAL_CPL_FAILURE] ...`. Prefer the sync methods when you need
-to branch on `err.code`.
+An async failure sets the **same** token, and *also* prefixes it to the message:
+
+```js
+try {
+  await gdal.demProcess(dest, source, 'hillshade', [], undefined, () => false)
+} catch (error) {
+  error.code              // 'GDAL_CANCELLED'
+  error.message           // '[GDAL_CANCELLED] cancelled by the progress callback'
+}
+```
+
+Both hold because the token *has* to travel in the message: `napi::Task` pins its
+error type to `napi::Error<Status>`, so the binding cannot attach a custom status
+to a rejection — `err.code` would be the useless `'GenericFailure'`. The shell
+lifts the prefix back out into `err.code` on the way to you, so a `catch` can
+branch on the code on either surface, and a caller matching the message prefix
+keeps working.
 
 ## Examples
 

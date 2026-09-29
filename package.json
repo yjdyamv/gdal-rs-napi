@@ -19,6 +19,7 @@
   "files": [
     "index.js",
     "index.d.ts",
+    "async-methods.js",
     "compat/",
     "binding.js",
     "binding.d.ts",

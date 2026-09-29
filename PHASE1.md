@@ -19,7 +19,7 @@
 | WS-1 几何对象模型 | 🟡 进行中 | `gdal.Geometry` 类已落地（`fromWkt`/`fromWkb`/`fromJson`、`toWkt`/`toWkb`/`toJson`、`type`/`isEmpty`/`pointCount`/`area`/`length`/`envelope`、`flattenTo2D`/`segmentize`/`swapXY`/`transform`）；写入端已能收 `Geometry` 或 GeoJSON（`createFeature`/`updateFeature`/`setSpatialFilter`/`Feature.setGeometry`/`rasterize`/`transformGeometry`）；GEOS 谓词与集合运算已写好并带 `has_geos()` 守卫（`intersects`/`contains`/…/`buffer`/`union`…，共 19 个）；按形状的访问器（`x`/`y`/`z`、`points`、`rings`/`exteriorRing`/`interiorRings`、`children`、`coordinates`）；GEOS 已**默认静态链入**（Windows/MSVC 上实测 `features().geos === true`，谓词与集合运算跑通）。**类族不做**（见下）。**待**：其余平台验证 |
 | WS-2 Driver/Dataset 对象模型 | ✅ 已完成 | `Driver` 对象（+`createCopy`）、`dataset.driver` 对象化、`open({drivers})`、`Dataset.description`/`rasterSize`/`getFileList`、`setProjection` 收 `SpatialRef`。集合类**不做**，见下 |
 | WS-3 Feature/Field 对象模型 | ✅ 已完成 | `layer.field(name)`/`addField`/`deleteField`/`reorderFields`、`FieldInfo` 全量定义、`layer.features()`（异步）、`layer.setSpatialFilter(geom)`、`layer.defn`（`FeatureDefn`）、`layer.getFeature(fid)` → `Feature`（`fields` 直写穿、`geometry`、`defn`、`toObject`） |
-| WS-4 异步人体工学 | ⏳ 与 Phase 2 锁模型同批 | |
+| WS-4 异步人体工学 | 🟡 部分完成 | `FeatureCursor` 已可用 `for await`（外壳加的，读的仍是同一个 `read()`）；异步错误已带 `err.code`（外壳从消息前缀提取）。**未做**：`Dataset.bands/layers` 的异步迭代、异步 getter、`eventLoopWarning` —— 理由见下 |
 | WS-7 兼容层 | 🟡 进行中 | `gdal-rs-napi/compat` 已落地：1-based 索引、`xxx()`/`xxxAsync()`（含 node 回调形态）、setter 赋值（`noDataValue`/`geoTransform`/`srs`）、`Driver` 与各集合、`Feature`（`fields.toObject`/`toArray`、可赋值 `geometry`）、`SpatialReference`、几何类族（含 `instanceof`、`toWKT`/`toJSON`/`get*`）。**不做**：Streams、MDArray、`calcAsync`、像素函数 |
 
 ### 一个修正：`gdal.const` 应该是字符串词汇，不是 GDAL 数字码
@@ -161,7 +161,7 @@ GDAL 的数字码属于兼容层（WS-7），那里 `gdal-async` 的形状才是
 | `FeatureFields`（`.get/.set/.toObject/.toArray/.forEach`） | ❌ | 直接给 `properties` 普通对象 |
 | `FeatureDefn` / `FieldDefn` | ❌ | **无 schema 对象**；`FieldInfo` 只是快照 |
 | `Layer.fields`（可 `add/remove/reorder/alter`） | ❌ | 只能在 `createLayer` 时声明；**无法改已存在图层的 schema** |
-| `Layer.features`（集合：`get/first/last/next/previous/count/forEach/Symbol.iterator/Symbol.asyncIterator`） | 🟡 `featuresSync()` + `openCursor()` | 无迭代器协议、无 `first/last/next/previous` |
+| `Layer.features`（集合：`get/first/last/next/previous/count/forEach/Symbol.iterator/Symbol.asyncIterator`） | 🟡 `featuresSync()` + `openCursor()`（游标已有 `Symbol.asyncIterator`） | 无 `first/last/next/previous` 语法糖；`layer.features` 本身不是集合 |
 | `Layer.getFeature(fid)` | ✅ `feature(fid)` | |
 | `Layer.setSpatialFilter(geom)`（收几何对象） | ❌ | 只有 `setSpatialFilterRect()` |
 | `Layer.srs`（getter/setter） | 🟡 只读 `spatialRef`/`spatialRefWkt` | |
@@ -239,7 +239,7 @@ geometryFromWkb` + `transformGeometry`（走 GeoJSON `Value`）。**几何是 `a
 | 风格未冻结 | 现在是 0.x，任何补全都可能顺手改命名，越晚冻结越贵 |
 | 生成的 `binding.d.ts` | 61KB 自动生成，用户直接依赖它，但没有"这是契约"的声明 |
 | 字符串即枚举 | `fieldType: 'String'`、`colorInterpretation: 'RedBand'`、`dataType: 'Float32'`——拼错只在运行时炸（`gdal.const` 已缓解：拼错变成一个可引用的名字） |
-| 错误码只覆盖同步路径 | 异步方法无法给 `err.code`（README 已承认） |
+| ~~错误码只覆盖同步路径~~ | ✅ 已解决：异步错误现在也带 `err.code`（外壳把消息前缀提回字段），两条路径一致 |
 | 索引基数 | 0-based 是我们的约定，但与 `gdal-async` 相反，必须写死在文档里 |
 | 无弃用机制 | 没有 `@deprecated` 流程，也没有 `apiVersion` 供用户特性探测 |
 
@@ -358,10 +358,18 @@ compat 层用测试锁住形状即可。它的价值是——**让 `gdal-async` 
 - `Layer.setSpatialFilter(geometry)` 重载（收 `Geometry` 或 GeoJSON）。
 - 验收：不用 `createLayer` 声明 schema，也能给已存在图层加字段。
 
-**WS-4 · 异步人体工学**
-- 集合的 `Symbol.asyncIterator`（`Layer.features`、`cursor`、`Dataset.bands/layers`）。
-- 异步 getter：`rasterSize()`、`srs()`、`colorTable()` —— 与锁模型配套，避免"启动 I/O 后读同步 getter"。
-- `eventLoopWarning` 等价物：同步操作阻塞事件循环超阈值时告警（可选，但能与 `gdal-async` 行为对齐）。
+**WS-4 · 异步人体工学** —— 🟡 部分完成
+- ✅ `FeatureCursor` 的 `Symbol.asyncIterator`：napi 给不了生成类这个属性（`AsyncGenerator`
+  够不到，见 CHANGELOG），所以由**外壳**（`index.js`）加上，读的仍是同一个 `read()`，
+  以空批次为终点 —— 两种读法不可能不一致。`Dataset.bands/layers` 的异步迭代**不做**：
+  它们返回的就是数组，数组本来就有同步迭代器，而给每次调用返回的数组现挂一个 async 迭代器，
+  收益不抵那份怪异。
+- ❌ 异步 getter（`rasterSize()`、`srs()`、`colorTable()`）：**与命名约定冲突** ——
+  本 API 的规则是「阻塞版 `xxxSync()`、异步版 `xxx()`」，getter 没有 `xxxSync` 之分，
+  加一个 `rasterSizeAsync()` 等于引入 `Async` 后缀，而那正是兼容层才用的拼法。
+  而且它要解决的问题（gdal-async 的 per-dataset I/O 队列下"启动 I/O 后读同步 getter 会卡"）
+  在这里形态不同：我们是一把全局锁，同步 getter 只是等锁。**记为设计取舍。**
+- ❌ `eventLoopWarning`：诊断类的锦上添花，留给需要它的人提需求时再做。
 - 与 Phase 2 的锁优化的接口约定：getter 一律先尝试非阻塞路径。
 
 **WS-5 · 常量与枚举**

@@ -29,7 +29,7 @@
 3. ~~**`open` 失败信息丢失。**~~ 已修：加 `GDAL_OF_VERBOSE_ERROR` 后，失败会带上 GDAL 的原始原因（见 Phase 0）。
 4. **代码集中。** `dataset.rs` 2108 行、`band.rs` 1573、`vector.rs` 1382，审阅与扩展成本在上升。
 5. **musl 两个 leg 仍是 `experimental`**，`all_drivers` 的 vendored HDF5/netCDF/curl/libpq 是脆弱点。
-6. **异步错误无 `err.code`**（`napi::Task` 限制），只能用消息前缀判断。
+6. ~~**异步错误无 `err.code`**。~~ 已解决：外壳把消息前缀提回 `err.code`，与同步路径一致（令牌仍留在消息里，两种匹配方式都成立）。
 7. **GEOS 缺席是刻意的许可证决策** —— 已定案改为**自行构建 + 静态链接**（与 GDAL/PROJ 同一条路，默认就有），分发仍是单个自包含产物；见 [`docs/GEOS.md`](./docs/GEOS.md)。
 
 ---
@@ -77,7 +77,7 @@
 
 **错误与诊断**
 - [ ] `open/openSync` 保留 GDAL 原始错误；错误对象补充 `err.gdalClass` / `err.gdalNumber`。
-- [ ] 让异步方法也能带 `err.code`：若 `napi::Task` 无法承载，统一在 `Error` 上挂自定义字段。
+- [x] 让异步方法也能带 `err.code`：`napi::Task` 无法承载，所以由外壳从消息前缀提取成字段（`async-methods.js` 列出要包的方法，并有测试对照 `binding.d.ts` 防止漏包）。
 
 **CRS / 几何**
 - [ ] 暴露 `CoordTransformOptions`（指定 pipeline、精度目标）。
@@ -89,7 +89,7 @@
 - [ ] `buildOverviews({ bands })` 的 per-band 限制：要么绕过 GTiff 约束，要么显式报"只支持全波段"。
 
 **矢量**
-- [ ] `FeatureCursor` 实现 `Symbol.asyncIterator`（现在只能手写 `read` 循环）。
+- [x] `FeatureCursor` 实现 `Symbol.asyncIterator`：`for await (const feature of layer.openCursor())`，由外壳加上，读的是同一个 `read()`。
 - [ ] 列表字段写入（不再逗号拼接），与 `FieldDefinition` 对齐。
 - [ ] 评估"每图层单读者"限制的缓解（副本/独立 dataset 句柄）。
 
