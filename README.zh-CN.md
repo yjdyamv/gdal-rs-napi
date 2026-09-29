@@ -570,7 +570,35 @@ gdal.geometryTypeOf({ type: 'Point', coordinates: [10, 20] })  // 'Point'
 gdal.geometryToWkt(point)                                      // 'POINT (10 20)'
 gdal.geometryToWkb(point)                                      // Buffer
 gdal.geometryFromWkt('POINT (10 20)')                          // GeoJSON 对象
+gdal.geometryFromWkb(buffer)                                   // GeoJSON 对象
 ```
+
+上面是普通数据形式的工具函数。`gdal.Geometry` 是同一个几何的**对象**形式，
+用于不想每次都绕回 JSON 的度量与变换：
+
+```js
+const { Geometry } = gdal
+
+const square = Geometry.fromWkt('POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))')
+square.type        // 'Polygon'
+square.area()      // 100
+square.length()    // 40
+square.envelope()  // { minX: 0, minY: 0, maxX: 10, maxY: 10 }
+square.toJson()    // 就是要素 `geometry` 会带的那份 GeoJSON
+
+// 三种编码都能构造 —— 包括要素身上那份 GeoJSON。
+Geometry.fromJson(record.geometry)
+Geometry.fromWkb(gdal.geometryToWkb(point))
+
+// 变换返回**新**几何；手里的那个永远不变。
+Geometry.fromWkt('POINT (1 2 3)').flattenTo2D().toWkt()   // 'POINT (1 2)'
+Geometry.fromWkt('LINESTRING (0 0, 0 10)').segmentize(1)  // …pointCount 为 11
+Geometry.fromJson(point).transform(gdal.SpatialRef.fromEpsg(4326), gdal.SpatialRef.fromEpsg(3857))
+```
+
+几何自身不带 CRS，所以 `transform` 两端都要点名 —— 读出来的要素用图层的
+`spatialRefWkt` 当 `from`。GEOS 谓词（`intersects`、`buffer`、`simplify`…）不在默认构建里，
+见 `docs/GEOS.md`。
 
 写入：
 

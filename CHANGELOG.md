@@ -63,6 +63,17 @@ First working cut — everything here is new.
   and write goes *through the layer* — `fields.set` writes immediately, the same
   write `updateFeature` makes — so there is no cached copy to keep in sync and no
   `save()` to forget. An id that is not there is `null`.
+- `Geometry` — an OGR geometry as an object, the other half of the GeoJSON plain
+  objects this binding has always exchanged. `Geometry.fromWkt` / `fromWkb` /
+  `fromJson` build one, and `toWkt()` / `toWkb()` / `toJson()` (`toObject()`) take
+  it back out — `toJson()` produces exactly what a feature's `geometry` carries,
+  so the two worlds meet in one call. Reads that need no GEOS: `type`, `isEmpty`,
+  `pointCount`, `area()`, `length()`, `envelope()`. Transforms that **return a new
+  geometry** rather than mutating this one: `flattenTo2D()`,
+  `segmentize(maxLength)`, `swapXY()`, `transform(from, to)`. `clone()` exists only
+  for a second independent handle. `transform` names both CRSes because a bare OGR
+  geometry carries none of its own. The GEOS predicates (`intersects`, `buffer`,
+  …) land with the `geos` build — see `docs/GEOS.md`.
 - `layer.defn` groups a layer's schema into one object: `name`, `geometryType`,
   `geometryColumn`, `fidColumn`, `fieldCount` and `fields`. `Feature.defn` returns
   the same object, so the two cannot describe one layer differently. `FieldInfo`

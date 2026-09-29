@@ -26,6 +26,7 @@ mod driver;
 mod dtype;
 mod error;
 mod fs;
+mod geometry;
 mod json;
 mod programs;
 mod progress;

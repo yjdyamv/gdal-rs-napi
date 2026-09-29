@@ -83,6 +83,12 @@ impl JsSpatialRef {
         inner.set_axis_mapping_strategy(AxisMappingStrategy::TraditionalGisOrder);
         Self { inner }
     }
+
+    /// The CRS behind this object, for the callers that need it rather than its
+    /// WKT — `Geometry.transform` builds a `CoordTransform` from two of these.
+    pub(crate) fn inner(&self) -> &SpatialRef {
+        &self.inner
+    }
 }
 
 #[napi]

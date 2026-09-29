@@ -16,7 +16,7 @@
 | B2 特性探测 | ✅ 已完成 | `gdal.apiVersion`、`gdal.features()` |
 | WS-5 常量枚举 | ✅ 已完成 | `gdal.const` —— `DataType`/`FieldType`/`Justification`/`GeometryType`/`ColorInterpretation`/`Resampling`/`OverviewResampling`/`SqlDialect`，纯 JS（`index.js`）+ 逐值对照运行时的测试 |
 | C1 GEOS 决策 | ✅ 已定（方案 B） | 动态链接 GEOS 的可选变体构建，见 [`docs/GEOS.md`](./docs/GEOS.md) |
-| WS-1 几何对象模型 | 🟡 进行中 | `gdal.Geometry` 类（工厂/转换/度量/变换）；谓词按 `has_geos()` 答复 |
+| WS-1 几何对象模型 | 🟡 进行中 | `gdal.Geometry` 类已落地（`fromWkt`/`fromWkb`/`fromJson`、`toWkt`/`toWkb`/`toJson`、`type`/`isEmpty`/`pointCount`/`area`/`length`/`envelope`、`flattenTo2D`/`segmentize`/`swapXY`/`transform`）。**待**：GEOS 谓词（与变体构建同批）、`Point`/`Polygon`… 类族、以及让 `createFeature`/`setGeometry` 也收 `Geometry` |
 | WS-2 Driver/Dataset 对象模型 | ✅ 已完成 | `Driver` 对象（+`createCopy`）、`dataset.driver` 对象化、`open({drivers})`、`Dataset.description`/`rasterSize`/`getFileList`、`setProjection` 收 `SpatialRef`。集合类**不做**，见下 |
 | WS-3 Feature/Field 对象模型 | ✅ 已完成 | `layer.field(name)`/`addField`/`deleteField`/`reorderFields`、`FieldInfo` 全量定义、`layer.features()`（异步）、`layer.setSpatialFilter(geom)`、`layer.defn`（`FeatureDefn`）、`layer.getFeature(fid)` → `Feature`（`fields` 直写穿、`geometry`、`defn`、`toObject`） |
 | WS-4 异步人体工学 | ⏳ 与 Phase 2 锁模型同批 | |

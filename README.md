@@ -701,6 +701,34 @@ gdal.geometryFromWkt('POINT (10 20)')                          // GeoJSON object
 gdal.geometryFromWkb(buffer)                                   // GeoJSON object
 ```
 
+Those are the plain-data helpers. `gdal.Geometry` is the same geometry as an
+object, for when you want to measure or move it without going back through JSON:
+
+```js
+const { Geometry } = gdal
+
+const square = Geometry.fromWkt('POLYGON ((0 0, 10 0, 10 10, 0 10, 0 0))')
+square.type        // 'Polygon'
+square.area()      // 100
+square.length()    // 40
+square.envelope()  // { minX: 0, minY: 0, maxX: 10, maxY: 10 }
+square.toJson()    // what a feature's `geometry` would have carried
+
+// Build from any of the three encodings — including the GeoJSON a feature has.
+Geometry.fromJson(record.geometry)
+Geometry.fromWkb(gdal.geometryToWkb(point))
+
+// Transforms return a *new* geometry; the one you hold never changes.
+Geometry.fromWkt('POINT (1 2 3)').flattenTo2D().toWkt()   // 'POINT (1 2)'
+Geometry.fromWkt('LINESTRING (0 0, 0 10)').segmentize(1)  // ...pointCount 11
+Geometry.fromJson(point).transform(gdal.SpatialRef.fromEpsg(4326), gdal.SpatialRef.fromEpsg(3857))
+```
+
+A geometry carries no CRS of its own, so `transform` names both ends — the
+layer's `spatialRefWkt` is the `from` for a feature you read. The GEOS predicates
+(`intersects`, `buffer`, `simplify`, …) are not in the default build; see
+`docs/GEOS.md`.
+
 ### Writing
 
 ```js
