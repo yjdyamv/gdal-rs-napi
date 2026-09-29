@@ -596,6 +596,20 @@ Geometry.fromWkt('LINESTRING (0 0, 0 10)').segmentize(1)  // …pointCount 为 1
 Geometry.fromJson(point).transform(gdal.SpatialRef.fromEpsg(4326), gdal.SpatialRef.fromEpsg(3857))
 ```
 
+分形状的访问器只对自己的形状作答，其他形状一律 `null`，所以不必先问 `type` 就能读：
+
+```js
+Geometry.fromWkt('POINT (3 4)').x                     // 3
+Geometry.fromWkt('POINT (3 4)').z                     // null —— 二维点没有 z
+Geometry.fromWkt('LINESTRING (0 0, 1 1)').points()    // [[0, 0], [1, 1]]
+Geometry.fromWkt('POLYGON ((…), (…))').exteriorRing   // 外环
+Geometry.fromWkt('POLYGON ((0 0, 1 0, 1 1, 0 0))').interiorRings  // [] —— 没有洞
+Geometry.fromWkt('MULTIPOINT ((0 0), (1 1))').children().map((p) => p.x)  // [0, 1]
+```
+
+`children()` 返回的是 `Geometry` 对象（拷贝，各自独立可用）。这里**没有** `Point` / `Polygon`
+子类：我们的几何就是单一类，访问器按形状作答，`type` 告诉你它是哪种形状。
+
 几何自身不带 CRS，所以 `transform` 两端都要点名 —— 读出来的要素用图层的
 `spatialRefWkt` 当 `from`。
 

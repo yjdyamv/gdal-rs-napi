@@ -724,6 +724,22 @@ Geometry.fromWkt('LINESTRING (0 0, 0 10)').segmentize(1)  // ...pointCount 11
 Geometry.fromJson(point).transform(gdal.SpatialRef.fromEpsg(4326), gdal.SpatialRef.fromEpsg(3857))
 ```
 
+The shape-specific accessors answer for their own shape and are `null` for the
+others, so any of them can be read without asking `type` first:
+
+```js
+Geometry.fromWkt('POINT (3 4)').x                     // 3
+Geometry.fromWkt('POINT (3 4)').z                     // null — a 2D point has no z
+Geometry.fromWkt('LINESTRING (0 0, 1 1)').points()    // [[0, 0], [1, 1]]
+Geometry.fromWkt('POLYGON ((…), (…))').exteriorRing   // the outer ring
+Geometry.fromWkt('POLYGON ((0 0, 1 0, 1 1, 0 0))').interiorRings  // [] — no holes
+Geometry.fromWkt('MULTIPOINT ((0 0), (1 1))').children().map((p) => p.x)  // [0, 1]
+```
+
+`children()` hands back `Geometry` objects — copies, so each part is usable on its
+own. There is no `Point` / `Polygon` subclass: our geometry is one class whose
+accessors are per-shape, and `type` says which shape it is.
+
 A geometry carries no CRS of its own, so `transform` names both ends — the
 layer's `spatialRefWkt` is the `from` for a feature you read.
 

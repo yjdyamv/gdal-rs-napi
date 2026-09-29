@@ -16,7 +16,7 @@
 | B2 特性探测 | ✅ 已完成 | `gdal.apiVersion`、`gdal.features()` |
 | WS-5 常量枚举 | ✅ 已完成 | `gdal.const` —— `DataType`/`FieldType`/`Justification`/`GeometryType`/`ColorInterpretation`/`Resampling`/`OverviewResampling`/`SqlDialect`，纯 JS（`index.js`）+ 逐值对照运行时的测试 |
 | C1 GEOS 决策 | ✅ 已定 | 自行构建 + **静态链接**（`geos_static`，进入 `bundled` 默认开启），见 [`docs/GEOS.md`](./docs/GEOS.md) |
-| WS-1 几何对象模型 | 🟡 进行中 | `gdal.Geometry` 类已落地（`fromWkt`/`fromWkb`/`fromJson`、`toWkt`/`toWkb`/`toJson`、`type`/`isEmpty`/`pointCount`/`area`/`length`/`envelope`、`flattenTo2D`/`segmentize`/`swapXY`/`transform`）；写入端已能收 `Geometry` 或 GeoJSON（`createFeature`/`updateFeature`/`setSpatialFilter`/`Feature.setGeometry`/`rasterize`/`transformGeometry`）；GEOS 谓词与集合运算已写好并带 `has_geos()` 守卫（`intersects`/`contains`/…/`buffer`/`union`…，共 19 个）；GEOS 已**默认静态链入**（Windows/MSVC 上实测 `features().geos === true`，谓词与集合运算跑通）。**待**：其余平台验证、§6 发布材料、`Point`/`Polygon`… 类族 |
+| WS-1 几何对象模型 | 🟡 进行中 | `gdal.Geometry` 类已落地（`fromWkt`/`fromWkb`/`fromJson`、`toWkt`/`toWkb`/`toJson`、`type`/`isEmpty`/`pointCount`/`area`/`length`/`envelope`、`flattenTo2D`/`segmentize`/`swapXY`/`transform`）；写入端已能收 `Geometry` 或 GeoJSON（`createFeature`/`updateFeature`/`setSpatialFilter`/`Feature.setGeometry`/`rasterize`/`transformGeometry`）；GEOS 谓词与集合运算已写好并带 `has_geos()` 守卫（`intersects`/`contains`/…/`buffer`/`union`…，共 19 个）；按形状的访问器（`x`/`y`/`z`、`points`、`rings`/`exteriorRing`/`interiorRings`、`children`、`coordinates`）；GEOS 已**默认静态链入**（Windows/MSVC 上实测 `features().geos === true`，谓词与集合运算跑通）。**类族不做**（见下）。**待**：其余平台验证 |
 | WS-2 Driver/Dataset 对象模型 | ✅ 已完成 | `Driver` 对象（+`createCopy`）、`dataset.driver` 对象化、`open({drivers})`、`Dataset.description`/`rasterSize`/`getFileList`、`setProjection` 收 `SpatialRef`。集合类**不做**，见下 |
 | WS-3 Feature/Field 对象模型 | ✅ 已完成 | `layer.field(name)`/`addField`/`deleteField`/`reorderFields`、`FieldInfo` 全量定义、`layer.features()`（异步）、`layer.setSpatialFilter(geom)`、`layer.defn`（`FeatureDefn`）、`layer.getFeature(fid)` → `Feature`（`fields` 直写穿、`geometry`、`defn`、`toObject`） |
 | WS-4 异步人体工学 | ⏳ 与 Phase 2 锁模型同批 | |
@@ -35,7 +35,7 @@
 这才是真正的 API 稳定性收益 —— 把事实上已经在用的契约写成明文。
 GDAL 的数字码属于兼容层（WS-7），那里 `gdal-async` 的形状才是目标。
 
-### 两个已定案的分歧：集合类，与 `Feature.geometry`
+### 三个已定案的分歧：集合类、几何类族，与 `Feature.geometry`
 
 **1. 集合类不做。** 本 API 的 `drivers()` / `bands()` / `layers()` 返回**就是数组** ——
 数组本身已经具备 `for…of`、`forEach`、`map` 与 `Symbol.iterator`；而 `gdal-async` 集合对象多出来的
@@ -45,9 +45,20 @@ GDAL 的数字码属于兼容层（WS-7），那里 `gdal-async` 的形状才是
 因此集合那层形状留给兼容层（WS-7），那里类型本来就是手写的。`Layer.fields` 同理：它是快照数组，
 增删改由 `addField` / `deleteField` / `reorderFields` 承担，`get(name)` 由 `field(name)` 承担。
 
-**2. `Feature.geometry` 仍是 GeoJSON。** 几何对象模型（WS-1）尚未落地，所以 `feature.geometry`
-与 `createFeature` / `setGeometry` 收发的是同一套 GeoJSON，而不是 `Geometry` 实例。WS-1 落地时
-在这里加一个 `Geometry` 重载即可，现有形状不变 —— 与 `setProjection` 收 `SpatialRef` 是同一种做法。
+**2. 几何类族不做，改为按形状的访问器。** `gdal-async` 有 `Point` / `Polygon` / `MultiPolygon`…
+一整套子类。我们这里不建：napi-rs **无法表达继承**（没有 `extends`），所以子类要么在 JS 侧用
+`Object.setPrototypeOf` 假装 —— 那样 `instanceof` 有了，但**访问器类型没地方声明**（生成的
+`binding.d.ts` 拥有 `Geometry.fromWkt()` 等的返回类型）—— 要么每个子类在 Rust 里复制一遍基类的方法。
+两者都不值得。取而代之：**单一 `Geometry` 类 + 按形状作答的访问器**（`x`/`y`/`z`、`points()`、
+`rings()`/`exteriorRing`/`interiorRings`、`children()`），能力与类族相同、类型齐全、可测；
+`type` 说清是哪一种。类族那层形状（以及它带来的 `instanceof`）属于兼容层 WS-7。
+
+**3. `Feature.geometry` 仍发 GeoJSON。** 写入端两种形状都收（`createFeature` / `updateFeature` /
+`setSpatialFilter` / `Feature.setGeometry` / `rasterize` / `transformGeometry`），但读出来的
+`featuresSync()` / `feature(fid)` 记录里，`geometry` 依旧是那份 GeoJSON 普通对象 —— 那是
+`FeatureRecord`「拷贝出来的普通数据」这一设计的一部分，要对象形式就 `Geometry.fromJson(record.geometry)`，
+或直接用 `layer.getFeature(fid)`（它的 `geometry` 同样如此，`fields` 才走图层）。把 getter 直接换成
+`Geometry` 实例会同时打破「普通数据」和「只增不改」两条，所以不做。
 
 （一个实现时才发现、值得记下的细节：GDAL 有**两套**重采样词汇。像素读取与 `warp` /
 `reprojectImage` 用 `Resampling`，最近邻拼作 `nearestneighbour`；`buildOverviews` 用

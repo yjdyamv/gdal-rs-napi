@@ -9,7 +9,7 @@
 //! Every call takes the process-wide lock: the operations reach into GDAL, and
 //! GEOS-backed ones (see the predicate group) share its error state.
 
-use gdal::vector::Geometry;
+use gdal::vector::{Geometry, OGRwkbGeometryType, geometry_type_flatten, geometry_type_has_z};
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use serde_json::Value;
@@ -54,6 +54,87 @@ impl JsGeometry {
     fn handle(&self) -> gdal_sys::OGRGeometryH {
         unsafe { self.inner.c_geometry() }
     }
+
+    /// Which accessor applies to this geometry. Reads the *flattened* type, so a
+    /// `Point Z` is still a `Point` and a `LinearRing` is still a `Line`.
+    fn kind(&self) -> GeometryKind {
+        match geometry_type_flatten(self.inner.geometry_type()) {
+            OGRwkbGeometryType::wkbPoint => GeometryKind::Point,
+            OGRwkbGeometryType::wkbLineString => GeometryKind::Line,
+            OGRwkbGeometryType::wkbPolygon => GeometryKind::Polygon,
+            OGRwkbGeometryType::wkbMultiPoint
+            | OGRwkbGeometryType::wkbMultiLineString
+            | OGRwkbGeometryType::wkbMultiPolygon
+            | OGRwkbGeometryType::wkbGeometryCollection => GeometryKind::Collection,
+            _ => GeometryKind::Other,
+        }
+    }
+
+    /// Whether the coordinates carry a Z, so a 2D point reports no `z` rather than
+    /// a `0` that looks like a height.
+    fn has_z(&self) -> bool {
+        geometry_type_has_z(self.inner.geometry_type())
+    }
+
+    /// One coordinate of a `Point`, by axis. `null` for any other shape, so the
+    /// three accessors are safe to read without a type check.
+    fn point_scalar(
+        &self,
+        axis: unsafe extern "C" fn(gdal_sys::OGRGeometryH, std::ffi::c_int) -> f64,
+    ) -> Result<Option<f64>> {
+        ensure_initialized();
+        let _guard = lock_gdal();
+        if self.kind() != GeometryKind::Point {
+            return Ok(None);
+        }
+        Ok(Some(unsafe { axis(self.handle(), 0) }))
+    }
+}
+
+/// Which shape-specific accessor applies to a geometry.
+///
+/// A geometry is one of these, so `points` on a polygon is `null` rather than a
+/// wrong answer, and a caller can read any accessor without asking the type
+/// first. `type` stays the exact answer when one is needed.
+#[derive(PartialEq, Eq, Clone, Copy)]
+enum GeometryKind {
+    Point,
+    /// `LineString`, and `LinearRing` — GDAL flattens the ring to a line.
+    Line,
+    Polygon,
+    /// `MultiPoint`, `MultiLineString`, `MultiPolygon` or `GeometryCollection`.
+    Collection,
+    Other,
+}
+
+/// A geometry's own points, each as `[x, y]` or `[x, y, z]`.
+fn point_list(handle: gdal_sys::OGRGeometryH, has_z: bool) -> Vec<Vec<f64>> {
+    let count = unsafe { gdal_sys::OGR_G_GetPointCount(handle) };
+    let mut points = Vec::with_capacity(count.max(0) as usize);
+    for index in 0..count {
+        let mut point = vec![unsafe { gdal_sys::OGR_G_GetX(handle, index) }, unsafe {
+            gdal_sys::OGR_G_GetY(handle, index)
+        }];
+        if has_z {
+            point.push(unsafe { gdal_sys::OGR_G_GetZ(handle, index) });
+        }
+        points.push(point);
+    }
+    points
+}
+
+/// A polygon's rings. Ring 0 is the exterior one — GDAL keeps them in order.
+fn ring_list(handle: gdal_sys::OGRGeometryH, has_z: bool) -> Vec<Vec<Vec<f64>>> {
+    let count = unsafe { gdal_sys::OGR_G_GetGeometryCount(handle) };
+    let mut rings = Vec::with_capacity(count.max(0) as usize);
+    for index in 0..count {
+        let ring = unsafe { gdal_sys::OGR_G_GetGeometryRef(handle, index) };
+        if ring.is_null() {
+            continue;
+        }
+        rings.push(point_list(ring, has_z));
+    }
+    rings
 }
 
 /// GDAL implements the predicates and algorithms below through GEOS, and a build
@@ -195,6 +276,129 @@ impl JsGeometry {
     #[napi]
     pub fn to_object(&self) -> Result<Value> {
         self.to_json()
+    }
+
+    /// This geometry's coordinates, as GeoJSON nests them: a `Point` is
+    /// `[x, y]`, a `LineString` a list of those, a `Polygon` a list of rings, and
+    /// a `Multi*` one level deeper. `null` for a `GeometryCollection`, whose parts
+    /// are geometries rather than coordinates — read `children` there.
+    ///
+    /// Typed as `any` because the nesting depth is the geometry's type; the
+    /// accessors below are the typed way to the same numbers.
+    #[napi(getter)]
+    pub fn coordinates(&self) -> Result<Option<Value>> {
+        ensure_initialized();
+        let _guard = lock_gdal();
+        if self.kind() == GeometryKind::Collection {
+            return Ok(None);
+        }
+        Ok(to_geojson(&self.inner)?.get("coordinates").cloned())
+    }
+
+    /// A `Point`'s x, or `null` — for every other shape this is `null` rather than
+    /// a wrong number, so it can be read without checking `type` first.
+    #[napi(getter)]
+    pub fn x(&self) -> Result<Option<f64>> {
+        self.point_scalar(gdal_sys::OGR_G_GetX)
+    }
+
+    /// A `Point`'s y. `null` for anything else.
+    #[napi(getter)]
+    pub fn y(&self) -> Result<Option<f64>> {
+        self.point_scalar(gdal_sys::OGR_G_GetY)
+    }
+
+    /// A `Point`'s z — `null` unless the geometry actually carries a Z, so a 2D
+    /// point reports nothing rather than a `0` that reads like a height.
+    #[napi(getter)]
+    pub fn z(&self) -> Result<Option<f64>> {
+        ensure_initialized();
+        let _guard = lock_gdal();
+        if self.kind() != GeometryKind::Point || !self.has_z() {
+            return Ok(None);
+        }
+        Ok(Some(unsafe { gdal_sys::OGR_G_GetZ(self.handle(), 0) }))
+    }
+
+    /// The point list of a `Point`, `LineString` or `LinearRing` — each point as
+    /// `[x, y]`, or `[x, y, z]` when the geometry carries a Z. A `Point` yields
+    /// one. `null` for a polygon or a collection, which have `rings` and
+    /// `children` instead.
+    #[napi]
+    pub fn points(&self) -> Result<Option<Vec<Vec<f64>>>> {
+        ensure_initialized();
+        let _guard = lock_gdal();
+        if !matches!(self.kind(), GeometryKind::Point | GeometryKind::Line) {
+            return Ok(None);
+        }
+        Ok(Some(point_list(self.handle(), self.has_z())))
+    }
+
+    /// A polygon's rings, exterior first, each ring a point list. `null` for
+    /// anything that is not a polygon.
+    #[napi]
+    pub fn rings(&self) -> Result<Option<Vec<Vec<Vec<f64>>>>> {
+        ensure_initialized();
+        let _guard = lock_gdal();
+        if self.kind() != GeometryKind::Polygon {
+            return Ok(None);
+        }
+        Ok(Some(ring_list(self.handle(), self.has_z())))
+    }
+
+    /// A polygon's exterior ring — the same as `rings[0]`. `null` for anything
+    /// else, including a polygon with no rings at all.
+    #[napi(getter)]
+    pub fn exterior_ring(&self) -> Result<Option<Vec<Vec<f64>>>> {
+        ensure_initialized();
+        let _guard = lock_gdal();
+        if self.kind() != GeometryKind::Polygon {
+            return Ok(None);
+        }
+        Ok(ring_list(self.handle(), self.has_z()).into_iter().next())
+    }
+
+    /// A polygon's holes, in order. `[]` for a polygon that has none — an answer
+    /// rather than an absence — and `null` for anything that is not a polygon.
+    #[napi(getter)]
+    pub fn interior_rings(&self) -> Result<Option<Vec<Vec<Vec<f64>>>>> {
+        ensure_initialized();
+        let _guard = lock_gdal();
+        if self.kind() != GeometryKind::Polygon {
+            return Ok(None);
+        }
+        Ok(Some(
+            ring_list(self.handle(), self.has_z())
+                .into_iter()
+                .skip(1)
+                .collect(),
+        ))
+    }
+
+    /// The parts of a `MultiPoint` / `MultiLineString` / `MultiPolygon` /
+    /// `GeometryCollection`, as `Geometry` objects. `null` for a single geometry.
+    ///
+    /// Each part is **copied out** of GDAL, so it stays valid on its own — and so
+    /// a caller can walk a tree without worrying about which handle owns what.
+    #[napi]
+    pub fn children(&self) -> Result<Option<Vec<JsGeometry>>> {
+        ensure_initialized();
+        let _guard = lock_gdal();
+        if self.kind() != GeometryKind::Collection {
+            return Ok(None);
+        }
+
+        let count = unsafe { gdal_sys::OGR_G_GetGeometryCount(self.handle()) };
+        let mut children = Vec::with_capacity(count.max(0) as usize);
+        for index in 0..count {
+            // `OGR_G_GetGeometryRef` lends the part; the clone is what we own.
+            let part = unsafe { gdal_sys::OGR_G_GetGeometryRef(self.handle(), index) };
+            if part.is_null() {
+                continue;
+            }
+            children.push(unsafe { adopt(gdal_sys::OGR_G_Clone(part)) }?);
+        }
+        Ok(Some(children))
     }
 
     /// The axis-aligned bounding box, or `null` for an empty geometry.

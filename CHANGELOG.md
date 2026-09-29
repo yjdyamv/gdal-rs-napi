@@ -73,6 +73,17 @@ First working cut — everything here is new.
   `segmentize(maxLength)`, `swapXY()`, `transform(from, to)`. `clone()` exists only
   for a second independent handle. `transform` names both CRSes because a bare OGR
   geometry carries none of its own.
+- `Geometry` gains the shape-specific accessors — `x` / `y` / `z` (a `Point`, `z`
+  only when the coordinates carry one), `points()` (a `Point` or `LineString`),
+  `rings()` / `exteriorRing` / `interiorRings` (a `Polygon`) and `children()` (a
+  `Multi*` or `GeometryCollection`, each part copied out so it stands on its own).
+  Each answers for its own shape and is `null` for the others, so any of them can
+  be read without checking `type` first; `coordinates` is the GeoJSON nesting, and
+  `null` for a collection, whose parts are geometries rather than coordinates.
+  There is deliberately **no** `Point` / `Polygon` / … subclass family: napi-rs
+  cannot express inheritance, and the generated `binding.d.ts` owns the factories'
+  return types, so subclass accessors could not be typed — the `gdal-async` class
+  shape belongs to the compatibility layer. See `PHASE1.md`.
 - The GEOS-backed operations are on `Geometry` too: the predicates `intersects`,
   `contains`, `within`, `crosses`, `touches`, `overlaps`, `disjoint` and `equals`;
   `distance`; `isValid` and `isSimple`; and the set algebra `buffer`, `centroid`,

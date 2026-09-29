@@ -177,6 +177,81 @@ test('a Geometry object goes wherever a GeoJSON geometry goes', () => {
   dataset.close()
 })
 
+test('the shape-specific accessors answer for their shape, and are null otherwise', () => {
+  const point = Geometry.fromWkt('POINT (3 4)')
+  assert.equal(point.x, 3)
+  assert.equal(point.y, 4)
+  assert.equal(point.z, null, 'a 2D point reports no z rather than 0')
+  assert.deepEqual(point.coordinates, [3, 4])
+  assert.deepEqual(point.points(), [[3, 4]])
+  // The accessors that belong to other shapes are null, not wrong answers.
+  assert.equal(point.rings(), null)
+  assert.equal(point.exteriorRing, null)
+  assert.equal(point.interiorRings, null)
+  assert.equal(point.children(), null)
+
+  // A Z point carries it, and says so in every form.
+  const zPoint = Geometry.fromWkt('POINT Z (3 4 5)')
+  assert.equal(zPoint.z, 5)
+  assert.deepEqual(zPoint.coordinates, [3, 4, 5])
+  assert.deepEqual(zPoint.points(), [[3, 4, 5]])
+
+  const line = Geometry.fromWkt('LINESTRING (0 0, 1 1, 2 0)')
+  assert.deepEqual(line.points(), [[0, 0], [1, 1], [2, 0]])
+  assert.equal(line.x, null)
+  assert.equal(line.coordinates.length, 3)
+
+  // A `LinearRing` has no WKT spelling of its own — GDAL's WKT reader rejects
+  // `LINEARRING (…)` — so a ring is only ever reached through the polygon that
+  // owns it, which is what `exteriorRing` and `interiorRings` are for.
+})
+
+test('a polygon reports its rings, exterior first', () => {
+  const polygon = Geometry.fromWkt(
+    'POLYGON ((0 0, 4 0, 4 4, 0 4, 0 0), (1 1, 2 1, 2 2, 1 2, 1 1))',
+  )
+
+  assert.equal(polygon.points(), null, 'a polygon has rings, not a point list')
+  assert.equal(polygon.rings().length, 2)
+  assert.deepEqual(polygon.rings()[0], polygon.exteriorRing)
+  assert.deepEqual(polygon.exteriorRing, [[0, 0], [4, 0], [4, 4], [0, 4], [0, 0]])
+  assert.deepEqual(polygon.interiorRings, [[[1, 1], [2, 1], [2, 2], [1, 2], [1, 1]]])
+
+  // No holes is an empty list — an answer, not an absence.
+  const solid = Geometry.fromWkt('POLYGON ((0 0, 1 0, 1 1, 0 0))')
+  assert.deepEqual(solid.interiorRings, [])
+  assert.equal(solid.exteriorRing.length, 4)
+})
+
+test('a collection hands out its parts as geometries', () => {
+  const multi = Geometry.fromWkt('MULTIPOINT ((0 0), (1 1))')
+  const points = multi.children()
+  assert.equal(points.length, 2)
+  assert.ok(points[0] instanceof Geometry, 'parts are Geometry objects')
+  assert.equal(points[0].x, 0)
+  assert.deepEqual(points[1].coordinates, [1, 1])
+  // A collection's coordinates are geometries, so the coordinate accessor steps
+  // aside rather than inventing a nesting the caller has to guess at.
+  assert.equal(multi.coordinates, null)
+  assert.equal(multi.points(), null)
+
+  const collection = Geometry.fromJson({
+    type: 'GeometryCollection',
+    geometries: [
+      { type: 'Point', coordinates: [0, 0] },
+      { type: 'LineString', coordinates: [[0, 0], [2, 2]] },
+    ],
+  })
+  const parts = collection.children()
+  assert.deepEqual(parts.map((part) => part.type), ['Point', 'LineString'])
+  // The parts are independent copies, so they carry their own accessors.
+  assert.deepEqual(parts[1].points(), [[0, 0], [2, 2]])
+  assert.equal(parts[1].area(), 0)
+
+  // A single geometry has no parts.
+  assert.equal(Geometry.fromWkt('POINT (1 1)').children(), null)
+})
+
 test('the GEOS operations answer, or say why they cannot', () => {
   const a = Geometry.fromWkt('POLYGON ((0 0, 2 0, 2 2, 0 2, 0 0))')
   const b = Geometry.fromWkt('POLYGON ((1 1, 3 1, 3 3, 1 3, 1 1))')
