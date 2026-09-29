@@ -6,6 +6,74 @@ First working cut — everything here is new.
 
 ### Binding
 
+- `RasterBand` gains the writers that go with its metadata getters:
+  `setScale`, `setOffset`, `setUnitType`, `setDescription` and
+  `setCategoryNames`. `GDALSetRasterScale` and `GDALSetRasterOffset` take a number
+  and nothing else, so unlike `setNoDataValue(null)` there is no way to unset
+  them — `0` is a value like any other, and the docs say so rather than pretending
+  a null means "clear". The three that take a string do clear on `null`.
+- `band.defaultHistogram(force?)` and `band.setDefaultHistogram(histogram)` close
+  the histogram gap in the other direction: `histogram()` computes one, these
+  read and write the *stored* one, so a later reader gets it without a pass over
+  the pixels. Same caveat as `setStatistics`: a read-only handle does not fail,
+  because GDAL's PAM layer writes a `<file>.aux.xml` sidecar instead.
+- `gdal.apiVersion` — the binding's own version, distinct from the GDAL version
+  `version()` reports, so a feature can be probed without parsing anything.
+- `gdal.features()` — what this binding can do, as a fixed set of booleans
+  (`geos`, `threadSafe`, `multidimensional`, `streams`) that are always present.
+  `info()` answers what GDAL was *compiled* with, where an absent key is the
+  answer; this is the same question asked about the binding, and is the one to
+  branch on in application code.
+- `docs/API-STABILITY.md` writes down the rules the surface was already following
+  — naming (`xxxSync()` / `xxx()`), 0-based indexing with `band.id` as the single
+  exception, `null` rather than `undefined`, `err.code` on the sync surface and
+  its prefix on the async one, additive-only growth, and the deprecation window.
+- `Driver` — a registered GDAL/OGR driver as an object rather than a name. Get one
+  from `gdal.driver(name)` (or `null` when this build has no such driver),
+  `gdal.drivers()`, or `dataset.driver`. `name`, `longName`, `description`;
+  `testCapability('DCAP_...')`; `metadata(domain)`; `fileExtensions()`;
+  `creationOptionList()` / `openOptionList()` (the XML `gdalinfo --format`
+  prints); `delete(path)`; and `open` / `openSync`, `create` / `createSync` with
+  the driver already named so it cannot be passed the wrong one. Only the short
+  name is stored — a `GDALDriverH` is a process-wide singleton, so the object
+  re-looks it up and cannot dangle.
+- **`dataset.driver` is now a `Driver` object, not a string.** `dataset.driver.name`
+  is the short name it used to return, and `String(dataset.driver)` /
+  `` `${dataset.driver}` `` keep reading the same way. The rest of the object —
+  `longName`, `testCapability`, the metadata — is what a string could never carry.
+- `gdal.drivers()` hands back those objects too, sorted by short name. The array
+  is otherwise unchanged, so `gdal.drivers().map((d) => d.name)` still works;
+  `gdal.driver(name)` is the lookup that does not walk it.
+- `open` / `openSync` take a `drivers` option — a whitelist, so a file another
+  driver would have claimed fails instead of quietly loading as something else.
+  `Driver.open` / `Driver.openSync` are the same restriction with the driver
+  already named.
+- `Dataset` gains `description` (for a file, the file name), `rasterSize` (the
+  `{ width, height }` pair that `width` / `height` already report separately), and
+  `getFileList()` — the counterpart of `gdalinfo`'s `Files:`, and the answer to
+  "what has to ship alongside this?". A `MEM` dataset reports no files; a
+  `/vsimem/` one reports its `/vsimem/` name, which is real.
+- A layer's schema can be changed, not only declared up front:
+  `layer.field(name)` looks one up or answers `null`, `layer.addField(definition)`
+  grows the schema, `layer.deleteField(name)` drops a column by name (by name, not
+  index, because dropping shifts the rest), and `layer.reorderFields(names)` is a
+  permutation that has to name every field exactly once. `FieldDefinition` is the
+  same shape `createLayer` takes, so both paths build one field definition through
+  one builder and cannot drift; the driver decides what it can do, and
+  `testCapability('CreateField')` is the question to ask first. GPKG, being SQLite,
+  refuses to drop a column a `UNIQUE` index depends on — and that reason is passed
+  through rather than swallowed.
+- `FieldInfo` reports the whole definition, not just name and type: `nullable`,
+  `unique`, `defaultValue` (as text, GDAL's own representation, `null` when there
+  is none) and `justification` (`Undefined` / `Left` / `Right`). `FieldDefinition`
+  accepts the same four on the way in.
+- `layer.features()` is `featuresSync()` on the thread pool — the same read by the
+  same body, so the two cannot disagree; the difference is that a large layer does
+  not hold the event loop while it materialises. `openCursor` is still the one that
+  streams.
+- `layer.setSpatialFilter(geometry)` restricts a layer to features intersecting an
+  arbitrary GeoJSON geometry, where `setSpatialFilterRect` is the bounding-box
+  form; `null` clears it, as `clearSpatialFilter()` does.
 - Module functions: `version`, `info`, `drivers`, `diagnostics`,
   `configureDataPaths`, `lastError`, `epsgToWkt`, `bytesPerSample`,
   `openThreadSafe` / `openThreadSafeSync`, `geometryTypeOf`, `geometryToWkt`,
@@ -318,10 +386,9 @@ First working cut — everything here is new.
   `CoordTransformOptions` (a specific pipeline, an accuracy target) is not exposed,
   and the transformation is synchronous, so a million points has to be chunked by
   the caller.
-- Statistics can be written back into a dataset (`setStatistics`); histograms can
-  only be read, because `GDALSetDefaultHistogram` is not exposed.
-- Band metadata is read, not written: `scale`, `offset`, `unitType`,
-  `description` and `categoryNames` have getters but no setters yet.
+- Histograms can be read and written (`histogram()`, `defaultHistogram()`,
+  `setDefaultHistogram()`), so the pair now matches `statistics()` /
+  `setStatistics()`.
 - `buildOverviews({ bands })` is passed through, but GTiff — the only writable
   overview driver compiled in — refuses anything short of every band.
 - No terrain algorithms beyond the ones `gdaldem` itself offers.

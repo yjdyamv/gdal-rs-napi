@@ -43,6 +43,14 @@ gdal.diagnostics()
 gdal.info()
 // { releaseName: '3.12.1', releaseDate: '20251212', versionNum: '3120100',
 //   build: { OGR_ENABLED: 'YES', PROJ_BUILD_VERSION: '9.6.2', ... }, driverCount: 148 }
+
+// "What can this binding do" is a different question from "what was GDAL built
+// with": `features()` always answers all of it, so nothing has to be probed by
+// calling a method and catching the TypeError.
+const features = gdal.features()
+// { geos: false, threadSafe: true, multidimensional: false, streams: false }
+
+gdal.apiVersion // '0.1.0' — the binding's version, not `version().gdal`
 ```
 
 `index.js` calls `configureDataPaths()` for you, pointing PROJ and GDAL at the
@@ -104,6 +112,53 @@ Two things to know:
   one you caught — `err.code` and `err.message` are that error's record, and its code
   names the same `CPLErr` class this reports (`GDAL_CPL_FAILURE` is class 3).
 
+## Drivers
+
+A driver is an object, not a name. `gdal.driver(name)` is the lookup that does not
+walk the list, and answers `null` for a driver this build does not have:
+
+```js
+const gtiff = gdal.driver('GTiff')
+
+gtiff.name                    // 'GTiff'
+gtiff.longName                // 'GeoTIFF'
+gtiff.fileExtensions()        // ['tif', 'tiff']
+gtiff.metadata().DMD_MIMETYPE // 'image/tiff'
+
+// "Can this build do it?" answered without trying it. An unknown name is false
+// rather than a throw: the call is a question, and "no" is one of its answers.
+gtiff.testCapability('DCAP_CREATE')     // true
+gtiff.testCapability('DCAP_VECTOR')     // false — a raster-only driver
+
+// The XML `gdalinfo --format GTiff` prints: every creation option, its type and
+// its default. This is how an option name is learned rather than guessed.
+gtiff.creationOptionList()
+```
+
+`gdal.drivers()` returns these objects (sorted by short name), so
+`gdal.drivers().map((d) => d.name)` is unchanged from when it returned records.
+
+`dataset.driver` is one of these too. `dataset.driver.name` is the short name, and
+`String(dataset.driver)` / `` `${dataset.driver}` `` still read as that name:
+
+```js
+dataset.driver.name                     // 'GTiff'
+dataset.driver.testCapability('DCAP_CREATE')
+```
+
+`open()` takes a **`drivers` whitelist**, so a file another driver would have
+claimed fails instead of quietly loading as something else — and the failure names
+the driver that was tried:
+
+```js
+gdal.openSync('features.geojson', { drivers: ['GeoJSON'] })  // ok
+gdal.openSync('features.geojson', { drivers: ['GTiff'] })    // throws
+gdal.driver('GeoJSON').openSync('features.geojson')          // same restriction
+```
+
+`Driver.open` / `Driver.openSync` and `Driver.create` / `Driver.createSync` are the
+same calls with the driver already named, so it cannot be passed the wrong one.
+
 ## Files — memory, and the virtual file system
 
 Every GDAL path already goes through a virtual file system, and `gdal.fs` is the
@@ -135,7 +190,7 @@ comes in:
 
 ```js
 const dataset = gdal.openSync(bytes)   // or await gdal.open(bytes)
-dataset.driver                         // 'GTiff' — sniffed from the content
+dataset.driver.name                    // 'GTiff' — sniffed from the content
 dataset.path                           // '/vsimem/gdal-rs-napi-1234-0.bin'
 ```
 
@@ -159,9 +214,12 @@ does not — which is what `gdal.fs.writeFile('/vsimem/data.tif', bytes)` follow
 
 ```js
 const dataset = gdal.openSync('dem.tif')
-dataset.driver                        // 'GTiff'
+dataset.driver.name                   // 'GTiff' — a Driver object, see Drivers
 dataset.width                         // pixels
 dataset.height
+dataset.rasterSize                    // { width, height }, the same pair grouped
+dataset.description                   // for a file, the file name
+dataset.getFileList()                 // what has to ship with it, [] for MEM
 dataset.bandCount
 dataset.geoTransform                  // [x0, dx, rx, y0, ry, dy] or null
 dataset.projection                    // WKT, or null
@@ -186,6 +244,21 @@ band.readOnly                         // follows how the dataset was opened
 band.minimum                          // GDAL's cache: null until statistics() runs
 band.maximum
 band.categoryNames                    // labels indexed by pixel value, [] when none
+
+// ... and each of them can be written back, so a format that carries band
+// metadata is not read-only through this API.
+band.setScale(2.5)
+band.setOffset(10)
+band.setUnitType('metre')
+band.setDescription('elevation')
+band.setCategoryNames(['water', 'land'])
+
+// `null` clears what a string setter wrote; `[]` clears the categories. Scale and
+// offset have no such form — GDAL's setters take a number, so `0` is a value like
+// any other rather than a way back to `null`.
+band.setUnitType(null)
+band.setDescription(null)
+band.setCategoryNames([])
 
 band.fill(0)                          // write one value over the whole band
 
@@ -449,6 +522,12 @@ Worth knowing:
   the file where the format can; a **read-only** handle does not fail — GDAL's PAM
   layer writes a `<file>.aux.xml` beside the raster, so a call you thought was
   read-only can still leave a file behind.
+- **The histogram has the same pair.** `histogram()` computes one; `defaultHistogram()`
+  reads the stored one and `setDefaultHistogram()` writes it, so
+  `band.setDefaultHistogram(await band.histogram({ min, max, buckets }))` is the
+  whole round trip and a later reader pays nothing for it. `defaultHistogram(true)`
+  asks GDAL to compute one when nothing is stored — which reads the band, hence the
+  default of `false`.
 - **`buildOverviews()` is the slowest call in this binding.** Setting
   `GDAL_NUM_THREADS=ALL_CPUS` has GDAL compute the levels in parallel, which is
   worth doing for anything sizeable.
@@ -527,15 +606,18 @@ layer.name
 layer.geometryType                      // 'LineString', 'MultiPolygon', ...
 layer.featureCount                      // number, or null when the driver cannot
                                         // answer without a full scan
-layer.fields                            // [{ name, fieldType, width, precision }]
+layer.fields                            // each field's whole definition, see below
+layer.field('population')               // one by name, or null
 layer.extent                            // [minX, minY, maxX, maxY] or null
 layer.spatialRefWkt                     // WKT, or null
 
 layer.featuresSync()                    // every feature, materialised
+await layer.features()                  // the same read, off the event loop
 layer.feature(3)                        // one by feature id, or null
 
 layer.setAttributeFilter('population > 1000')   // OGR SQL WHERE; null clears it
 layer.setSpatialFilterRect(minX, minY, maxX, maxY)
+layer.setSpatialFilter({ type: 'Polygon', coordinates: [ring] })  // any geometry
 layer.clearSpatialFilter()
 ```
 
@@ -628,6 +710,34 @@ than the comma-joined text inference writes. `width` and `precision` are handed 
 the driver, which may keep them or not — GeoPackage keeps the width and drops the
 precision, because SQLite has no fixed-point numbers. Properties still get inferred
 fields alongside the declared ones.
+
+A `FieldDefinition` also takes `nullable`, `unique`, `defaultValue` (as text —
+GDAL's own representation, so an integer default is the string `'0'`) and
+`justification` (`'Undefined'`, `'Left'` or `'Right'`). `layer.fields` reports all
+of them back, so a definition round-trips:
+
+```js
+layer.fields
+// [{ name: 'label', fieldType: 'String', width: 64, precision: 0,
+//    nullable: true, unique: false, defaultValue: null, justification: 'Undefined' }]
+```
+
+### Changing a schema
+
+`createLayer` declares the schema; a layer that already exists can also be changed.
+Every call is by **name**, not index, because a change shifts the ones after it:
+
+```js
+layer.addField({ name: 'area', fieldType: 'Real', defaultValue: '0' })
+layer.deleteField('note')
+layer.reorderFields(['area', 'label'])   // has to name every field, each once
+```
+
+`addField` takes the same `FieldDefinition` `createLayer` does, so a field declared
+one way and added the other describe themselves identically. Not every driver can:
+`layer.testCapability('CreateField')` is the question to ask first, and a driver
+that refuses says so rather than half-doing it — GeoPackage, being SQLite, will not
+drop a column a `UNIQUE` index depends on, and passes that reason through.
 
 ### Reading in batches
 

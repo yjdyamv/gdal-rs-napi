@@ -26,6 +26,13 @@ gdal.diagnostics()
 gdal.info()
 // { releaseName: '3.12.1', releaseDate: '20251212', versionNum: '3120100',
 //   build: { OGR_ENABLED: 'YES', PROJ_BUILD_VERSION: '9.6.2', … }, driverCount: 148 }
+
+// “本绑定能做什么”是另一个问题：`features()` 总是把所有开关都答全，
+// 不必靠“调用一个方法再捕获 TypeError”来探测。
+const features = gdal.features()
+// { geos: false, threadSafe: true, multidimensional: false, streams: false }
+
+gdal.apiVersion // '0.1.0' —— 绑定的版本，不是 `version().gdal`
 ```
 
 `index.js` 会自动调用 `configureDataPaths()`，把 PROJ/GDAL 指向包内的
@@ -78,6 +85,51 @@ gdal.lastError()
   `err.code` 与 `err.message`，其中 code 命名的就是这里报告的同一个 `CPLErr` class
   （`GDAL_CPL_FAILURE` 即 class 3）。
 
+## 驱动（Driver）
+
+驱动是**对象**，不是名字。`gdal.driver(name)` 是不必遍历列表的查找，本 build 没有的驱动返回 `null`：
+
+```js
+const gtiff = gdal.driver('GTiff')
+
+gtiff.name                    // 'GTiff'
+gtiff.longName                // 'GeoTIFF'
+gtiff.fileExtensions()        // ['tif', 'tiff']
+gtiff.metadata().DMD_MIMETYPE // 'image/tiff'
+
+// “这个 build 能不能做？”不必试就知道。名字不认得时返回 false 而不是抛：
+// 这是一次提问，而“不能”也是它的答案之一。
+gtiff.testCapability('DCAP_CREATE')     // true
+gtiff.testCapability('DCAP_VECTOR')     // false —— 纯栅格驱动
+
+// `gdalinfo --format GTiff` 打印的那份 XML：每个创建选项、类型与默认值。
+// 这是把选项名**查出来**而不是猜出来的方式。
+gtiff.creationOptionList()
+```
+
+`gdal.drivers()` 返回的也是这些对象（按短名排序），所以
+`gdal.drivers().map((d) => d.name)` 与它返回普通记录时完全一致。
+
+`dataset.driver` 同样是这个对象。`dataset.driver.name` 就是短名，而
+`String(dataset.driver)` / `` `${dataset.driver}` `` 读出来仍然是那个短名：
+
+```js
+dataset.driver.name                     // 'GTiff'
+dataset.driver.testCapability('DCAP_CREATE')
+```
+
+`open()` 接受 **`drivers` 白名单**，于是本该被别的驱动接管的文件会直接失败，而不是悄悄当成
+另一种格式打开 —— 而且失败信息里会点名试过的驱动：
+
+```js
+gdal.openSync('features.geojson', { drivers: ['GeoJSON'] })  // 通过
+gdal.openSync('features.geojson', { drivers: ['GTiff'] })    // 抛错
+gdal.driver('GeoJSON').openSync('features.geojson')          // 同一种限定
+```
+
+`Driver.open` / `Driver.openSync` 与 `Driver.create` / `Driver.createSync` 是同样几个调用，
+只是驱动已经写死，不可能传错。
+
 ## 文件 —— 内存与虚拟文件系统
 
 GDAL 的每个路径本来就走一层虚拟文件系统，`gdal.fs` 就是够到它的那几个 `VSI*` 调用：
@@ -106,7 +158,7 @@ gdal.fs.rmdir('/tmp/scratch')
 
 ```js
 const dataset = gdal.openSync(bytes)   // 或 await gdal.open(bytes)
-dataset.driver                         // 'GTiff' —— 从内容嗅探出来的
+dataset.driver.name                    // 'GTiff' —— 从内容嗅探出来的
 dataset.path                           // '/vsimem/gdal-rs-napi-1234-0.bin'
 ```
 
@@ -129,8 +181,11 @@ dataset.close()                         // 这一步会把那个文件 unlink �
 
 ```js
 const dataset = gdal.openSync('dem.tif')
-dataset.driver          // 'GTiff'
+dataset.driver.name     // 'GTiff' —— Driver 对象，见「驱动」
 dataset.width, dataset.height, dataset.bandCount
+dataset.rasterSize      // { width, height }，同一对值打包
+dataset.description     // 对文件而言就是文件名
+dataset.getFileList()   // 需要一起带走的东西；MEM 是 []
 dataset.geoTransform    // [x0, dx, rx, y0, ry, dy] 或 null
 dataset.projection      // WKT 或 null
 
@@ -151,6 +206,20 @@ band.readOnly           // 跟随数据集的打开方式
 band.minimum            // GDAL 的缓存：statistics() 之前是 null
 band.maximum
 band.categoryNames      // 以像素值为下标的标签，没有则 []
+
+// …… 上述每一项都可以写回，格式支持的话波段元数据就不再是只读的。
+band.setScale(2.5)
+band.setOffset(10)
+band.setUnitType('metre')
+band.setDescription('elevation')
+band.setCategoryNames(['water', 'land'])
+
+// 字符串型 setter 用 `null` 清除，分类名用 `[]` 清空。
+// scale / offset 没有这种形式 —— GDAL 的 setter 只收数字，
+// 所以 `0` 就是一个普通取值，而不是回到 `null` 的办法。
+band.setUnitType(null)
+band.setDescription(null)
+band.setCategoryNames([])
 
 band.fill(0)            // 整条波段写同一个值
 
@@ -357,6 +426,10 @@ dataset.band(0).overviewCount // 1024x1024 的栅格会建 3 层
 - **`setStatistics()` 把统计量写回**，下一个读取者用 `{ force: false }` 直接拿到，不必再全波段扫一遍。
   以 update 方式打开时会写进文件（格式支持的话）；**只读**句柄也不会报错 —— GDAL 的 PAM 层会在栅格
   旁边生成 `<file>.aux.xml`，所以一个你以为只读的调用仍然可能留下文件。
+- **直方图是同一对**。`histogram()` 负责计算；`defaultHistogram()` 读已存的，`setDefaultHistogram()`
+  写入，因此 `band.setDefaultHistogram(await band.histogram({ min, max, buckets }))` 就是完整的往返，
+  之后任何读取者都不再为它付代价。`defaultHistogram(true)` 让 GDAL 在没存过时现算一个 —— 那会读
+  整个波段，所以默认是 `false`。
 - **`buildOverviews()` 是本绑定里最慢的调用**。设 `GDAL_NUM_THREADS=ALL_CPUS` 可让 GDAL
   并行计算各层，稍大的栅格值得加。
 - **层数默认按 `gdaladdo` 的规则**：2 的幂，直到最小一层在较长边上小于 256 像素。要明确就传
@@ -414,14 +487,17 @@ dataset.layerCount
 const layer = dataset.layer(0)          // 也是 0-based
 layer.name, layer.geometryType          // 'LineString' / 'MultiPolygon' / …
 layer.featureCount                      // 数字，或 null（驱动无法在不全表扫描时回答）
-layer.fields                            // [{ name, fieldType, width, precision }]
+layer.fields                            // 每个字段的完整定义，见下
+layer.field('population')               // 按名取一个，或 null
 layer.extent                            // [minX, minY, maxX, maxY] 或 null
 layer.spatialRefWkt
 
 layer.featuresSync()                    // 整层物化成普通对象
+await layer.features()                  // 同一次读取，但不在事件循环上
 layer.feature(3)                        // 按 fid 取一个，或 null
 layer.setAttributeFilter('population > 1000')   // OGR SQL 的 WHERE；传 null 清除
 layer.setSpatialFilterRect(minX, minY, maxX, maxY)
+layer.setSpatialFilter({ type: 'Polygon', coordinates: [ring] })  // 任意几何
 layer.clearSpatialFilter()
 ```
 
@@ -498,6 +574,32 @@ dataset.createLayer({
 才能拿到真正的列表列，而不是推断写出的逗号连接文本。`width` / `precision` 交给驱动，
 它可能保留也可能忽略 —— GeoPackage 保留 width 而丢弃 precision，因为 SQLite 没有定点数。
 未声明的属性依然会照常被推断出字段，与声明的一起共存。
+
+`FieldDefinition` 还接受 `nullable`、`unique`、`defaultValue`（文本 —— GDAL 自己的表示，
+所以整数默认值是字符串 `'0'`）和 `justification`（`'Undefined'` / `'Left'` / `'Right'`）。
+`layer.fields` 会把它们全部报回来，因此一个定义可以完整往返：
+
+```js
+layer.fields
+// [{ name: 'label', fieldType: 'String', width: 64, precision: 0,
+//    nullable: true, unique: false, defaultValue: null, justification: 'Undefined' }]
+```
+
+### 修改已有 schema
+
+`createLayer` 是**声明** schema；已经存在的图层也能改。所有调用都按**名字**而不是索引，
+因为一次改动会让后面的位置整体位移：
+
+```js
+layer.addField({ name: 'area', fieldType: 'Real', defaultValue: '0' })
+layer.deleteField('note')
+layer.reorderFields(['area', 'label'])   // 必须把每个字段都写一遍，且只写一次
+```
+
+`addField` 收的是与 `createLayer` 相同的 `FieldDefinition`，所以一条字段无论声明而来还是
+后加而来，自我描述都完全一致。并非所有驱动都支持：先问
+`layer.testCapability('CreateField')`，不能做的驱动会直接说出来而不是做一半 —— GeoPackage
+（底层是 SQLite）不会删掉 `UNIQUE` 索引依赖的列，并且会把这个原因原样带出来。
 
 ### 按批读取
 
@@ -870,13 +972,17 @@ MapInfo、DXF、DGN、CAD、S57、VDV、VFK、CSV、GTFS、Selafin、KMLSUPEROVE
 
 ## 已知缺口
 
-CRS 只做到点与包围盒的变换：几何对象本身不参与变换，`CoordTransformOptions`（指定转换管线、
-精度目标）没有暴露，且变换是同步的 —— 上百万个点需要调用方自行分块。
+CRS 变换覆盖点、坐标数组、包围盒和整个几何对象（`transformGeometry`），但不暴露
+`CoordTransformOptions`（指定转换管线、精度目标），且变换是同步的 —— 上百万个点需要调用方自行分块。
 
 读图层可以按批读（游标），但那是游标而不是 JS 的 async iterator；且 GDAL 的读取位置在图层上，
-同一图层同时只能有一个读取者。直方图只能读、不能写回数据集（统计量可以，见
-`setStatistics()`）；波段的 `scale`/`offset`/`unitType`/`description`/`categoryNames`
-只有 getter，还没有 setter。
+同一图层同时只能有一个读取者。
+
+波段的元数据与直方图现在可读可写（`setScale` / `setOffset` / `setUnitType` / `setDescription` /
+`setCategoryNames`，以及 `defaultHistogram` / `setDefaultHistogram`），与 `setStatistics()` 对齐。
+唯一的不对称是 `scale` 与 `offset` 没有“清除”：GDAL 的 setter 只收数字，所以 `0` 就是一个普通
+取值。GEOS 未链接，因此 OGR 的几何谓词（`ST_Intersects`、`ST_Buffer`、`-simplify`）不可用 ——
+用 `gdal.features().geos` 可以直接探测。
 
 Intel macOS 与 32 位目标未构建。
 
