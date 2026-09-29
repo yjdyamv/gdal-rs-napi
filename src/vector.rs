@@ -1768,7 +1768,13 @@ impl JsFeature {
     /// Replace the geometry, as GeoJSON — the same shape `createFeature` takes.
     #[napi]
     pub fn set_geometry(&self, geometry: Value) -> Result<()> {
-        write_existing(self.dataset.clone(), self.index, self.fid, Some(&geometry), None)
+        write_existing(
+            self.dataset.clone(),
+            self.index,
+            self.fid,
+            Some(&geometry),
+            None,
+        )
     }
 
     /// The feature's fields, read and written through the layer.

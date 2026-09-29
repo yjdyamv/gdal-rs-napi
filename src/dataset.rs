@@ -1960,9 +1960,8 @@ pub(crate) fn create_copy_sync_with(
     let driver = DriverManager::get_driver_by_name(driver).gdal()?;
     let creation_options = build_creation_options(options)?;
 
-    let dataset = source.with_exclusive(|source| {
-        source.create_copy(&driver, path, &creation_options).gdal()
-    })?;
+    let dataset = source
+        .with_exclusive(|source| source.create_copy(&driver, path, &creation_options).gdal())?;
     Ok(JsDataset::wrap(dataset, path.to_string()))
 }
 
