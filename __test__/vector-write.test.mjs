@@ -220,12 +220,33 @@ test('the async create path mirrors the sync one', async () => {
 test('writing to a read-only dataset fails instead of silently doing nothing', () => {
   const path = tmp('readonly.gpkg')
   const created = gdal.createVectorSync(path, 'GPKG')
-  created.createLayer({ name: 'points', geometryType: 'Point' })
+  const writable = created.createLayer({ name: 'points', geometryType: 'Point' })
+  writable.createFeature({ type: 'Point', coordinates: [1, 1] }, { name: 'alpha', population: 10 })
   created.close()
 
   const reopened = gdal.openSync(path) // read-only by default
+  const layer = reopened.layer(0)
+
   assert.throws(() =>
-    reopened.layer(0).createFeature({ type: 'Point', coordinates: [1, 1] }, { name: 'nope' }),
+    layer.createFeature({ type: 'Point', coordinates: [2, 2] }, { name: 'nope' }),
   )
+
+  // An update is refused too, and says so rather than reporting success. This is
+  // the case the `gdal` crate cannot catch for us: its `set_feature` calls
+  // `OGR_L_SetFeature` and returns `Ok(())` whatever GDAL said, so a read-only
+  // write looked like it worked — GDAL's warning on stderr was the only trace.
+  const [feature] = layer.featuresSync()
+  assert.throws(
+    () => layer.updateFeature(feature.fid, null, { population: 99 }),
+    (error) => {
+      assert.match(error.message, /read-only|unsupported/i)
+      return true
+    },
+  )
+
+  // And nothing was written.
+  assert.equal(layer.feature(feature.fid).properties.population, 10)
+  assert.equal(layer.featuresSync().length, 1)
+
   reopened.close()
 })

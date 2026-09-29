@@ -111,6 +111,28 @@ First working cut — everything here is new.
   itself. (napi's `Either` cannot pair with a `serde_json::Value`, so the JSON arm
   arrives as `Unknown` and is cast back — which is why the parameter is a union
   rather than the `Value` it used to be.)
+- A refused feature write is now an error. GDAL's `OGR_L_CreateFeature` /
+  `OGR_L_SetFeature` return a status, but the `gdal` crate's `Feature::create` and
+  `Layer::set_feature` discard it and return `Ok(())` — so writing to a read-only
+  datasource *reported success* while GDAL's warning went to stderr and nothing was
+  written. `createFeature` and `updateFeature` now make those two calls directly and
+  keep the status, relaying GDAL's own explanation ("unsupported operation on a
+  read-only datasource"), the way `deleteFeature` already did.
+- `gdal-rs-napi/compat` — the `gdal-async`-shaped adapter, so a port is an import
+  change rather than a rewrite. Pure JavaScript over the same native binding: it
+  adds no capability, and the native API keeps its own conventions. It translates
+  the three that are load-bearing — **1-based** indexing for bands, layers and
+  fields; `xxx()` blocking with `xxxAsync()` (or a node-style callback) beside it;
+  and assignment for setters (`band.noDataValue = x`, `dataset.geoTransform =
+  [...]`, `dataset.srs = srs`) — and provides the object shapes a port expects:
+  `Driver` and the driver / layer / band collections, `Feature` with
+  `fields.toObject()` / `toArray()` and an assignable `geometry`,
+  `SpatialReference`, and the `Point` / `LineString` / `Polygon` / `Multi*` /
+  `GeometryCollection` class family with `toWKT()` / `toJSON()` and the `get*`
+  spellings. The family lands *here* because this layer's types are hand-written —
+  exactly what a prototype-swapped subclass needs and what the generated
+  declarations cannot give it. Streams, MDArray, `calcAsync` and pixel functions
+  are not covered; see `PHASE1.md` (WS-7).
 - `layer.defn` groups a layer's schema into one object: `name`, `geometryType`,
   `geometryColumn`, `fidColumn`, `fieldCount` and `fields`. `Feature.defn` returns
   the same object, so the two cannot describe one layer differently. `FieldInfo`

@@ -1328,6 +1328,40 @@ addon at all — one process, two libcs. The container is the honest place for i
 the generated loader resolves to musl there, so the suite exercises the real
 artifact.
 
+## Coming from `gdal-async`
+
+The main entry point is **not** a drop-in replacement — it is 0-based, spells the
+blocking form `xxxSync()`, and sets through `setX()`. A second entry point is:
+
+```js
+const gdal = require('gdal-rs-napi/compat')
+```
+
+It is a JavaScript adapter over the same binding rather than a second
+implementation, so nothing is reimplemented and nothing is lost:
+
+```js
+const dataset = gdal.open('dem.tif')
+const band = dataset.bands.get(1)          // 1-based, as gdal-async counts
+band.pixels.read(0, 0, 4, 4)               // a typed array of the band's own type
+band.noDataValue = -9999                   // assignment, not setNoDataValue()
+dataset.srs = new gdal.SpatialReference(wkt)
+
+for (const feature of layer.features) {    // iterable, like a collection
+  feature.fields.toObject()                // { … }
+  feature.geometry instanceof gdal.Point   // the class family, instanceof and all
+}
+```
+
+`feature.fields.set('population', 11)` writes straight through, and
+`feature.geometry = gdal.fromWKT('POINT (9 9)')` replaces it. The blocking/async
+pair is `xxx()` / `xxxAsync()`, and `xxxAsync` also takes a node-style callback.
+
+What it does **not** cover, so a port does not find out the hard way: Streams,
+multi-dimensional arrays, `calcAsync` and the VRT pixel functions. Everything else
+the native API can do, the adapter can — including the GEOS predicates, since they
+are in the same build. `PHASE1.md` (WS-7) is the full list.
+
 ## Licence
 
 MIT. GDAL and PROJ are MIT/X11; see `LICENSE`, and `THIRD-PARTY.md` for everything

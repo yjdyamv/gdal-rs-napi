@@ -20,6 +20,9 @@ const binaryName = pkg.napi?.binaryName ?? pkg.name
 const ROOT_FILES = [
   'index.js',
   'index.d.ts',
+  // The `gdal-async`-shaped adapter: `require('gdal-rs-napi/compat')`.
+  'compat/index.js',
+  'compat/index.d.ts',
   'binding.js',
   'binding.d.ts',
   'README.md',

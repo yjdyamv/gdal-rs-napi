@@ -1110,6 +1110,38 @@ CRS 变换覆盖点、坐标数组、包围盒和整个几何对象（`transform
 
 Intel macOS 与 32 位目标未构建。
 
+## 从 `gdal-async` 迁移
+
+主入口**不是**直接替代品 —— 它是 0-based、阻塞形式叫 `xxxSync()`、赋值靠 `setX()`。
+另一个入口是：
+
+```js
+const gdal = require('gdal-rs-napi/compat')
+```
+
+它是同一份绑定之上的 JS 适配器，而不是第二套实现 —— 没有重新实现任何东西，也没有少任何东西：
+
+```js
+const dataset = gdal.open('dem.tif')
+const band = dataset.bands.get(1)          // 1-based，与 gdal-async 一致
+band.pixels.read(0, 0, 4, 4)               // 波段自身类型的 TypedArray
+band.noDataValue = -9999                   // 赋值，而不是 setNoDataValue()
+dataset.srs = new gdal.SpatialReference(wkt)
+
+for (const feature of layer.features) {    // 可迭代，和集合一样
+  feature.fields.toObject()                // { … }
+  feature.geometry instanceof gdal.Point   // 类族，`instanceof` 成立
+}
+```
+
+`feature.fields.set('population', 11)` 直接写穿；`feature.geometry =
+gdal.fromWKT('POINT (9 9)')` 直接替换。阻塞/异步成对为 `xxx()` / `xxxAsync()`，
+`xxxAsync` 也接受 node 风格回调。
+
+**不覆盖**的部分（免得迁移时才发现）：Streams、多维数组、`calcAsync` 和 VRT 像素函数。
+原生 API 能做的其余一切，适配层都能做 —— 包括 GEOS 谓词，因为它们在同一个构建里。
+完整清单见 `PHASE1.md`（WS-7）。
+
 ## 许可证
 
 MIT。GDAL 与 PROJ 均为 MIT/X11；详见 [LICENSE](./LICENSE)，以及 [THIRD-PARTY.md](./THIRD-PARTY.md)

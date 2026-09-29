@@ -710,7 +710,14 @@ fn write_feature(
         set_field_value(&mut feature, index, fields[index].1, value)?;
     }
 
-    feature.create(layer).gdal()
+    // The `gdal` crate's `Feature::create` and `Layer::set_feature` drop the OGR
+    // status and return `Ok(())` whatever GDAL said, so a write a read-only
+    // datasource refuses looked like a success — the only trace was GDAL's warning
+    // on stderr. These two are the same calls with the status kept.
+    ogr_result(
+        unsafe { gdal_sys::OGR_L_CreateFeature(layer.c_layer(), feature.c_feature()) },
+        "create the feature",
+    )
 }
 
 /// Overwrite fields on an existing feature.
@@ -745,7 +752,10 @@ fn update_existing(
         }
     }
 
-    layer.set_feature(feature).gdal()
+    ogr_result(
+        unsafe { gdal_sys::OGR_L_SetFeature(layer.c_layer(), feature.c_feature()) },
+        "write the feature",
+    )
 }
 
 /// Remove a feature by id.
