@@ -1,67 +1,82 @@
 # GEOS: the decision (C1)
 
 `C1` in [`PHASE1.md`](../PHASE1.md) asked whether this binding should offer GDAL's
-GEOS-backed geometry operations (`ST_Intersects`, `ST_Buffer`, `-simplify`, …).
-It was left open because GEOS is LGPL-2.1 and this package ships a statically
-linked GDAL. This document is the decision, and the reasoning it rests on.
+GEOS-backed geometry operations (`ST_Intersects`, `ST_Buffer`, `-simplify`, …), and
+how. This document is the decision, and the reasoning it rests on.
 
 ## Decision
 
-**Ship them — in a separate, opt-in build that links GEOS as a *shared library*.**
+**Build GEOS from source and link it statically**, exactly as GDAL and PROJ are
+built. It is part of the `bundled` feature, so the shipped package has it — no
+variant package, no shared libraries beside the `.node`.
 
-The default package does not change: no GEOS, `gdal.features().geos === false`, and
-the geometry predicates are honest about it. A second artifact, built with the
-crate's `geos` feature, carries them.
+```sh
+cargo build                      # default: GEOS included
+cargo build --no-default-features  # no bundled GDAL/PROJ/GEOS at all
+```
 
-## "The `.node` is a shared library" is not the part that matters
+## The mistake worth recording: "the `.node` is a shared library" proves nothing
 
-It is worth stating plainly, because it is the easy mistake: the addon being a
-shared object is **not** what discharges the LGPL. What the licence looks at is how
-GEOS is linked *into* the addon.
+The tempting shortcut is "our addon is a shared object, so linking an LGPL library
+is fine". It is not, and it is worth writing down because it nearly produced the
+wrong decision here. What the licence looks at is how GEOS is linked **into** the
+`.node`:
 
-- `gdal-src/geos_static` compiles GEOS and links it **into** the `.node`. The
-  `.node` is still a shared library, and GEOS's object code is still *inside* it.
+- `gdal-src/geos_static` compiles GEOS and links it **into** the addon. The
+  `.node` is still a shared library, and GEOS's object code is still inside it.
   That is static linking, and LGPL-2.1 §6 then asks the distributor for the means
-  to relink the combined work against a modified GEOS — object files, or a build
-  that yields them.
-- `gdal-src/geos` links GDAL against a **shared** GEOS, leaving `libgeos_c` /
-  `geos_c.dll` a separate library the loader resolves. "Replace the LGPL library"
-  is then a file swap, which is the obligation discharged.
+  to relink the combined work against a modified GEOS.
+- `gdal-src/geos` links a **shared** GEOS, where "replace the library" is a file
+  swap and the obligation is discharged that way.
 
-So the choice is `gdal-src/geos`, and the release has to **ship the GEOS shared
-libraries** next to the `.node` — staged the way `assets/` already is — because the
-package's promise is that an install needs nothing on the host. `geos_static`
-stays available as a fallback; if it is ever what ships, the release carries the
-relinkable objects, and that is a release-engineering task rather than something
-to wave through.
+The second is the cleaner licence story, and it is still the wrong choice here:
 
-Note also that `gdal-src/geos` finds GEOS through the build system (pkg-config or
-a CMake prefix), so the variant build needs a GEOS to point at. Producing that —
-vendoring or fetching one, and staging the shared libraries — is the work of
-Phase 2, not of the API.
+- **It does not work on Windows/MSVC.** `gdal-src/geos` finds GEOS through the
+  build system, and the GEOS a Windows box tends to have is MSYS2/MinGW's — whose
+  import libraries an MSVC link cannot use. (Verified: the GEOS present on the
+  build machine is `libgeos_c.dll.a`, MinGW.)
+- **It breaks the package's whole promise.** The point of this package is one
+  self-contained artifact with nothing on the host. A shared GEOS means staging
+  platform-specific libraries, and teaching each platform's loader where to find
+  them — on Windows that means prepending the package directory to `PATH` before
+  requiring the addon, because `LoadLibraryExW` does not search the addon's own
+  directory for its dependencies; on Linux/macOS, `$ORIGIN` / `@loader_path`
+  rpath. Six platforms of loader plumbing to avoid a release-checklist item.
 
-## What this changes in the code
+## What the licence actually asks of us
 
-- **No predicate is compiled out, and none is `#[cfg]`-gated into the default
-  build by accident.** The `gdal` crate exposes only the non-GEOS geometry calls
-  (`area`, `length`, `envelope`, …), so the predicates go through `gdal_sys`'s
-  `OGR_G_*` directly and each checks `VersionInfo::has_geos()` first. In a build
-  without GEOS the call answers with "this build has no GEOS" rather than throwing
-  a `TypeError` — the surface is the same, only the answer differs, which is
-  exactly what `gdal.features().geos` exists to let a caller branch on.
-- The GEOS build is a **variant**, not the default: it adds two shared libraries
-  and a heavier addon, and most callers never touch a predicate. `features().geos`
-  is the runtime probe; `--features geos` is the build switch.
+LGPL-2.1 §6 is a **distribution** condition, not a change to this crate's licence.
+The source here stays MIT. When a release ships a `.node` with GEOS's object code
+inside it, that release must also carry the means to relink against a modified
+GEOS: the corresponding GEOS source, the build recipe, and the object files (or a
+static archive) needed to relink. None of that is hypothetical — the version is
+pinned in `Cargo.lock`, `geos-src` vendors the source, and `scripts/build.mjs` is
+the recipe — so this is a release-job item and a paragraph in the licence notes,
+not a reason to relicense the project.
+
+(That is the engineering read, not legal advice; a release should get the
+materials reviewed.)
+
+## What it changes in the code
+
+- The predicates and algorithms go through `gdal_sys`'s `OGR_G_*` directly — the
+  `gdal` crate exposes no GEOS calls — and each checks `VersionInfo::has_geos()`
+  first. That guard stays even though the shipped build has GEOS: a lean build
+  may not, and "this build has no GEOS" is an answer a caller can act on where a
+  `false` that looks like an answer is not. `gdal.features().geos` is the probe.
+- Operations that return a geometry cannot be built from the `OGRGeometryH` GDAL
+  hands back (`Geometry::with_c_geometry` is private in the `gdal` crate), so they
+  go through `adopt`, which exports the handle to WKB and re-parses it. The cost
+  is a memcpy; the benefit is that a C-owned handle never has to be handed to Rust
+  ownership.
 
 ## Where it stands
 
 | | |
 |---|---|
-| Non-GEOS geometry object model (`gdal.Geometry`, factories, conversions, measures, transforms) | Phase 1 |
-| Predicates written against `gdal_sys` and guarded by `has_geos()` | Phase 1 |
-| `--features geos` build, with the GEOS shared libraries staged into the package | Phase 2 |
-| A CI leg for that build, asserting `features().geos === true` and exercising a predicate | Phase 2 |
-
-Until the Phase 2 build exists, the predicates are exercised only by their
-guard path (the default build's "no GEOS" answer); the operations themselves are
-untested here, and the table above says so rather than implying otherwise.
+| Non-GEOS geometry object model, predicates, set algebra | done |
+| `geos` feature selecting `gdal-src/geos_static`, in `bundled` | done |
+| The GEOS build itself (`geos-src` compiles GEOS, GDAL links it statically) | verified on Windows/MSVC |
+| LGPL-2.1 §6 release materials (corresponding source + relink notes/objects) | **not yet** — a release item |
+| A CI leg asserting `features().geos === true` and exercising a predicate | **not yet** |
+| The remaining platforms (macOS, Linux gnu/musl) | expected to work the same way; unverified |

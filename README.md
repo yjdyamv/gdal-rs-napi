@@ -39,7 +39,7 @@ gdal.diagnostics()
 // { epsg4326Resolves: true, crsDatabaseFound: true, projDataEnv: '.../assets/proj', ... }
 
 // What is this build exactly? BUILD_INFO lists what was compiled in, and a
-// feature that was not is a missing key — there is no `GEOS_ENABLED` here.
+// feature that was not is a *missing key* rather than a "NO".
 gdal.info()
 // { releaseName: '3.12.1', releaseDate: '20251212', versionNum: '3120100',
 //   build: { OGR_ENABLED: 'YES', PROJ_BUILD_VERSION: '9.6.2', ... }, driverCount: 148 }
@@ -63,9 +63,9 @@ and still names the machine the library was built on; it is not the path in use.
 `crsDatabaseFound` and `projDataEnv` are the fields that mean something.
 
 `diagnostics().geosAvailable` answers whether the OGR geometry predicates
-(`ST_Intersects`, `ST_Buffer`, `-simplify`) are available. They are not: GEOS is
-LGPL, and statically linking it would relicense this whole artifact, so it is left
-out on purpose — see the licence note at the end.
+(`ST_Intersects`, `ST_Buffer`, `-simplify`) are available. They are: GEOS is
+fetched, compiled and statically linked by the build, the way GDAL itself is — see
+[Geometries as objects](#geometries-as-objects) and `docs/GEOS.md`.
 
 ## Constants
 
@@ -739,8 +739,30 @@ feature.setGeometry(Geometry.fromWkt('POINT (7 8)'))
 raster.rasterizeSync([Geometry.fromWkt(box), geojsonBox], { burnValues: [1, 2] })
 ```
 
-The GEOS predicates (`intersects`, `buffer`, `simplify`, …) are not in the default
-build; see `docs/GEOS.md`.
+### GEOS: predicates and set algebra
+
+`Geometry` also carries the operations GDAL implements through GEOS — the
+predicates (`intersects`, `contains`, `within`, `crosses`, `touches`, `overlaps`,
+`disjoint`, `equals`), `distance`, `isValid` / `isSimple`, and the set algebra
+`buffer`, `centroid`, `convexHull`, `simplify`, `union`, `intersection`,
+`difference` and `symDifference`:
+
+```js
+if (gdal.features().geos) {
+  const hits = plot.intersects(roads)
+  const ring = plot.buffer(100, 16)     // 100 units out, 16 segments per quadrant
+  const merged = plot.union(neighbour)  // a new Geometry
+}
+```
+
+GEOS is fetched, compiled and statically linked by the build, the way GDAL and
+PROJ are, so this all works out of the box and the package stays one
+self-contained artifact. `docs/GEOS.md` records that decision (and why a shared
+GEOS would be worse here), plus the LGPL-2.1 §6 material a release owes.
+
+A build *without* GEOS keeps the same surface: each of these answers with "this
+build has no GEOS" rather than a `false` that looks like an answer, and
+`gdal.features().geos` is the probe that keeps you off that path.
 
 ### Writing
 
@@ -1251,12 +1273,12 @@ SQLite, OpenFileGDB, ESRI Shapefile, MapInfo, DXF, DGN, CAD, S57, VDV, VFK, CSV,
 GTFS, Selafin, KMLSUPEROVERLAY, PGDUMP, and the long tail of national and
 scientific raster formats.
 
+**GEOS** is linked in as well — fetched, compiled and statically linked like the
+rest — which is what makes `Geometry.intersects`, `buffer`, `simplify` and the
+set algebra work.
+
 What is deliberately *not* there:
 
-- **GEOS**, and with it the OGR geometry predicates it implements — `ST_Intersects`,
-  `ST_Buffer`, `-simplify` and the rest. GEOS is LGPL, and linking it statically
-  would relicense this whole artifact. It is a separate `gdal-src` feature if you
-  want to change that, but then what you ship is no longer MIT alone.
 - **Formats needing an XML library this build does not link** — KML, GML, GPX,
   GMLAS, LIBKML, XLSX/XLS and DWG among them — plus the ones behind a vendor SDK
   (FileGDB, Oracle, MySQL) and the JPEG2000 / WebP / HEIF / AVIF family.
@@ -1293,3 +1315,10 @@ artifact.
 ## Licence
 
 MIT. GDAL and PROJ are MIT/X11; see `LICENSE`.
+
+GEOS is the exception: it is LGPL-2.1, and it is linked **statically** into the
+shipped `.node`. LGPL-2.1 §6 asks the distributor of a statically linked work for
+the means to relink it against a modified GEOS, so a release carries the matching
+GEOS source and the build recipe beside the tarball. That is a condition on what a
+release *publishes*, not a change to the licence of this code — see
+`docs/GEOS.md`.

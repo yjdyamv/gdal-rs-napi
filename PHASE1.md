@@ -15,8 +15,8 @@
 | WS-6 直方图写回 | ✅ 已完成 | `defaultHistogram(force?)` / `setDefaultHistogram()`，与 `statistics()` / `setStatistics()` 对齐 |
 | B2 特性探测 | ✅ 已完成 | `gdal.apiVersion`、`gdal.features()` |
 | WS-5 常量枚举 | ✅ 已完成 | `gdal.const` —— `DataType`/`FieldType`/`Justification`/`GeometryType`/`ColorInterpretation`/`Resampling`/`OverviewResampling`/`SqlDialect`，纯 JS（`index.js`）+ 逐值对照运行时的测试 |
-| C1 GEOS 决策 | ✅ 已定（方案 B） | 动态链接 GEOS 的可选变体构建，见 [`docs/GEOS.md`](./docs/GEOS.md) |
-| WS-1 几何对象模型 | 🟡 进行中 | `gdal.Geometry` 类已落地（`fromWkt`/`fromWkb`/`fromJson`、`toWkt`/`toWkb`/`toJson`、`type`/`isEmpty`/`pointCount`/`area`/`length`/`envelope`、`flattenTo2D`/`segmentize`/`swapXY`/`transform`）；写入端已能收 `Geometry` 或 GeoJSON（`createFeature`/`updateFeature`/`setSpatialFilter`/`Feature.setGeometry`/`rasterize`/`transformGeometry`）。**待**：GEOS 谓词（与变体构建同批）、`Point`/`Polygon`… 类族 |
+| C1 GEOS 决策 | ✅ 已定 | 自行构建 + **静态链接**（`geos_static`，进入 `bundled` 默认开启），见 [`docs/GEOS.md`](./docs/GEOS.md) |
+| WS-1 几何对象模型 | 🟡 进行中 | `gdal.Geometry` 类已落地（`fromWkt`/`fromWkb`/`fromJson`、`toWkt`/`toWkb`/`toJson`、`type`/`isEmpty`/`pointCount`/`area`/`length`/`envelope`、`flattenTo2D`/`segmentize`/`swapXY`/`transform`）；写入端已能收 `Geometry` 或 GeoJSON（`createFeature`/`updateFeature`/`setSpatialFilter`/`Feature.setGeometry`/`rasterize`/`transformGeometry`）；GEOS 谓词与集合运算已写好并带 `has_geos()` 守卫（`intersects`/`contains`/…/`buffer`/`union`…，共 19 个）；GEOS 已**默认静态链入**（Windows/MSVC 上实测 `features().geos === true`，谓词与集合运算跑通）。**待**：其余平台验证、§6 发布材料、`Point`/`Polygon`… 类族 |
 | WS-2 Driver/Dataset 对象模型 | ✅ 已完成 | `Driver` 对象（+`createCopy`）、`dataset.driver` 对象化、`open({drivers})`、`Dataset.description`/`rasterSize`/`getFileList`、`setProjection` 收 `SpatialRef`。集合类**不做**，见下 |
 | WS-3 Feature/Field 对象模型 | ✅ 已完成 | `layer.field(name)`/`addField`/`deleteField`/`reorderFields`、`FieldInfo` 全量定义、`layer.features()`（异步）、`layer.setSpatialFilter(geom)`、`layer.defn`（`FeatureDefn`）、`layer.getFeature(fid)` → `Feature`（`fields` 直写穿、`geometry`、`defn`、`toObject`） |
 | WS-4 异步人体工学 | ⏳ 与 Phase 2 锁模型同批 | |
@@ -287,29 +287,34 @@ compat 层用测试锁住形状即可。它的价值是——**让 `gdal-async` 
 
 排序依据：**(用户影响 × 可行性) / 依赖**。
 
-### C1. 先决决策：GEOS —— ✅ 已定：方案 B（动态链接变体）
+### C1. 先决决策：GEOS —— ✅ 已定：自行构建 + 静态链接（`geos_static`，默认开启）
 
-**决策：做 GEOS，但作为一个独立的、可选的构建变体，且 GEOS 以*共享库*形式链接。**
-完整推理见 [`docs/GEOS.md`](./docs/GEOS.md)。要点：
+**决策：GEOS 像 GDAL/PROJ 一样由构建过程自行获取并编译，静态链接进 `.node`，并进入
+`bundled`（默认就有）。** 完整推理见 [`docs/GEOS.md`](./docs/GEOS.md)。要点：
 
-- **`.node` 本身是动态库，并不能免除 LGPL 义务** —— 该看的是 GEOS 相对 `.node` 的链接方式。
-  `gdal-src/geos_static` 把 GEOS 编译**进** `.node`，那仍是静态链接，LGPL-2.1 §6 会要求提供
-  可重链接能力（目标文件，或能产出它们的构建）。`gdal-src/geos` 让 GDAL 链接一个**共享**的
-  GEOS，"替换该库"就是换个文件，义务就此履行。
-- 因此选 `gdal-src/geos`，并且发布时**把 GEOS 的共享库随包发出**（与 `assets/` 同样 staging），
-  否则"零宿主依赖"就不成立。`geos_static` 仅作退路，且真要走它就必须随发布附上可重链接产物。
-- 默认包不变（无 GEOS、`features().geos === false`）；GEOS 构建是**变体**（`--features geos`）。
+- **先纠正一个直觉：`.node` 自己是动态库，并不能免除 LGPL 义务。** 该看的是 GEOS 相对
+  `.node` 的链接方式 —— 把 GEOS 的机器码编进去就是静态链接，LGPL-2.1 §6 会要求提供"让用户把
+  它与修改过的 GEOS 重新链接"的手段。动态链接（`gdal-src/geos`）确实能免除这项义务，但代价：
+  ① **在 Windows/MSVC 上根本走不通** —— 这台机器上有的 GEOS 是 MinGW 的，其导入库 MSVC
+  链接器用不了；② 需要把平台相关的共享库随包发出，并为每个平台的加载器找出它们的路径
+  （Windows 的 `LoadLibraryExW` **不搜 addon 自身目录**，只能改 `PATH`；Linux/macOS 靠
+  `$ORIGIN` / `@loader_path`）。六平台的加载器管道，只为省掉发布清单里的一项。
+- 所以走 `gdal-src/geos_static`：`geos-src` 取回源码、CMake 编译，静态链进那份静态 GDAL，
+  最终全在**一个** `.node` 里。分发模型完全不变（单个 `.node` + `assets/`），"零宿主依赖"成立。
+- **许可义务落在"发布物"上，不落在源码上**：本仓库仍是 MIT；发布时附 GEOS 对应源码 + 重建说明
+  （必要时附目标文件）即履行 §6。这是发布清单的一项，不是许可证变更。
 - 代码层面：`gdal` crate 不暴露 GEOS 调用，谓词经 `gdal_sys` 的 `OGR_G_*` 直连，且**每个都先查
-  `has_geos()`** —— 没有 GEOS 时给出"本构建没有 GEOS"的答复，而不是 `TypeError`；接口形状不变，
-  变的只是答案，这正是 `features().geos` 存在的意义。
+  `has_geos()`** —— 瘦身构建（无 GEOS）时给出"本构建没有 GEOS"的答复，而不是 `TypeError`；
+  接口形状不变，变的只是答案，这正是 `features().geos` 存在的意义。
 
 <details>
-<summary>当初的三选一（留档）</summary>
+<summary>当初的三选一，以及动态/静态的取舍（留档）</summary>
 
 | 方案 | 内容 | 评价 |
 |---|---|---|
 | **A. 不做** | 几何 API 只提供非 GEOS 子集；`features().geos === false` 时文档指向"用 PostGIS/GEOS 外部处理" | 成本最低，但几何能力远低于 `gdal-async` |
-| **B. 单独 GEOS 变体（**已选**）** | 默认包不带 GEOS；变体构建动态链接 GEOS 并随包发共享库 | 保住默认包的许可证干净，同时给出功能对等路径 |
+| **B. 自建 GEOS（**已选**）** | 由 `geos-src` 获取并编译 GEOS，静态链进 `.node`，默认开启 | 与 GDAL/PROJ 同一条路；分发仍是单个自包含产物。代价是 §6 发布材料 |
+| ~~B′. 动态链接变体~~ | 默认包不带 GEOS；另发一个动态链接 GEOS 的变体 | 许可义务更轻，但 Windows/MSVC 不可行，且要为六平台写加载器管道 |
 | **C. Rust `geo` crate 自实现** | 不依赖 GEOS | 语义与 GEOS 不一致，工作量大，不推荐 |
 
 </details>
@@ -371,7 +376,7 @@ compat 层用测试锁住形状即可。它的价值是——**让 `gdal-async` 
 ### C3. 顺序与依赖
 
 ```
-C1 (GEOS 决策 ✅=B) ┐
+C1 (GEOS ✅=自建+静态) ┐
                  ├─> WS-1 几何对象模型 ──┐
 WS-5 常量 ───────┘                       ├─> WS-7 兼容层
 WS-2 Driver/Dataset 对象模型 ────────────┤

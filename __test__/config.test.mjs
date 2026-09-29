@@ -30,11 +30,13 @@ test('info() reports the build that version() summarises', () => {
   // The one-liner and the detailed view have to agree.
   assert.ok(gdal.version().gdal.includes(info.releaseName), info.releaseName)
 
-  // BUILD_INFO lists what was compiled in; GEOS was not, so its key is absent
-  // rather than "NO".
+  // BUILD_INFO lists what was compiled in. GEOS is, now that it is vendored and
+  // built like GDAL itself — so the key is present and says "YES", which is the
+  // same answer `features()` and `diagnostics()` give.
   assert.equal(info.build.OGR_ENABLED, 'YES')
   assert.match(info.build.PROJ_BUILD_VERSION, /^\d+\.\d+/)
-  assert.notEqual(info.build.GEOS_ENABLED, 'YES')
+  assert.equal(info.build.GEOS_ENABLED, 'YES')
+  assert.equal(gdal.features().geos, true)
 
   assert.equal(info.driverCount, gdal.drivers().length)
 })

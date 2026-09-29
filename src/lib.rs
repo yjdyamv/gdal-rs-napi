@@ -88,8 +88,9 @@ pub struct GdalInfo {
     /// GDAL's `BUILD_INFO`: `OGR_ENABLED`, `PROJ_BUILD_VERSION`, `COMPILER`,
     /// `CURL_ENABLED` and the rest. It is what the library was *compiled* with, and
     /// a feature that was compiled out is simply absent rather than reported as
-    /// off — this build has no `GEOS_ENABLED` key at all. `diagnostics` is the
-    /// place with the yes/no answers, `geosAvailable` among them.
+    /// off — `GEOS_ENABLED` is here because the bundled build links GEOS, and a
+    /// build without it would have no such key. `diagnostics` and `features` are
+    /// where the yes/no answers live; this is the raw list.
     pub build: HashMap<String, String>,
     /// Registered drivers, the same number `drivers().length` reports. Here so
     /// one call answers "what am I running".
@@ -197,10 +198,11 @@ pub struct Diagnostics {
     /// library was built on even when `PROJ_DATA` takes precedence, so treat it
     /// as trivia rather than as the path in use.
     pub proj_default_search_path: String,
-    /// Whether GDAL was built with GEOS. This build is not — GEOS is LGPL, and
-    /// statically linking it would relicense the whole artifact — so the OGR
-    /// predicates it implements (`ST_Intersects`, `ST_Buffer`, `-simplify`) are
-    /// absent.
+    /// Whether GDAL was built with GEOS. The bundled build is — GEOS is vendored
+    /// and compiled by the build, the way GDAL itself is — so the OGR predicates
+    /// it implements (`ST_Intersects`, `ST_Buffer`, `-simplify`) are available. A
+    /// lean build without it answers `false` here, which is the same answer
+    /// `features().geos` gives. See `docs/GEOS.md` for the licensing note.
     pub geos_available: bool,
 }
 
@@ -247,10 +249,10 @@ pub const apiVersion: &str = env!("CARGO_PKG_VERSION");
 /// unavailable — see `CHANGELOG.md`.
 #[napi(object)]
 pub struct FeatureSupport {
-    /// Whether OGR's geometry predicates (`ST_Intersects`, `ST_Buffer`, `-simplify`)
-    /// are compiled in. GDAL implements them through GEOS, which is LGPL, and a
-    /// statically linked LGPL library would relicense this artifact — so this
-    /// build is `false` and those operations are absent.
+    /// Whether OGR's geometry predicates (`ST_Intersects`, `ST_Buffer`,
+    /// `-simplify`) are compiled in. GDAL implements them through GEOS, which is
+    /// LGPL-2.1; the bundled build vendors and statically links it, so this is
+    /// `true` there and `false` in a build without it — see `docs/GEOS.md`.
     pub geos: bool,
     /// Whether `openThreadSafe` is compiled in. It needs GDAL ≥ 3.10, and
     /// `build.rs` switches it on from the version `gdal-sys` reports.

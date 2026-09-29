@@ -273,6 +273,8 @@ checksum = "529210c62af5a747e8b268d4a527c8dd54f45a07db0682acfcc9313e869c54d3"
 dependencies = [
  "cmake",
  "curl-sys",
+ "geos-src",
+ "geos-sys",
  "hdf5-metno-sys",
  "libsqlite3-sys",
  "libz-sys",
@@ -303,6 +305,28 @@ dependencies = [
  "num-traits",
  "serde",
  "thiserror",
+]
+
+[[package]]
+name = "geos-src"
+version = "0.2.5"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4eee1f85b9bb01f9b6051facc23971da8e7baebee757c1642973d95eb3510092"
+dependencies = [
+ "cmake",
+]
+
+[[package]]
+name = "geos-sys"
+version = "2.0.10"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1bd0fc1bcdc69e16138f10ea038a3ef9f83931eb0d75a903543ca683e8b75d56"
+dependencies = [
+ "geos-src",
+ "libc",
+ "link-cplusplus",
+ "pkg-config",
+ "semver",
 ]
 
 [[package]]

@@ -72,8 +72,18 @@ First working cut — everything here is new.
   geometry** rather than mutating this one: `flattenTo2D()`,
   `segmentize(maxLength)`, `swapXY()`, `transform(from, to)`. `clone()` exists only
   for a second independent handle. `transform` names both CRSes because a bare OGR
-  geometry carries none of its own. The GEOS predicates (`intersects`, `buffer`,
-  …) land with the `geos` build — see `docs/GEOS.md`.
+  geometry carries none of its own.
+- The GEOS-backed operations are on `Geometry` too: the predicates `intersects`,
+  `contains`, `within`, `crosses`, `touches`, `overlaps`, `disjoint` and `equals`;
+  `distance`; `isValid` and `isSimple`; and the set algebra `buffer`, `centroid`,
+  `convexHull`, `simplify`, `union`, `intersection`, `difference` and
+  `symDifference`, the last four returning a new `Geometry`. GDAL implements them
+  through GEOS, so a build without it keeps the **same surface** and answers each
+  with "this build has no GEOS" rather than a `false` that looks like an answer —
+  `gdal.features().geos` is the probe. GEOS is now built from source and linked
+  statically, the way GDAL and PROJ are, so the shipped package has it and stays a
+  single self-contained artifact; see `docs/GEOS.md` for why static rather than a
+  shared library, and for the LGPL-2.1 §6 material a release owes.
 - Every writer that takes a geometry now takes a `Geometry` **or** the GeoJSON
   plain object: `createFeature`, `updateFeature`, `setSpatialFilter`,
   `Feature.setGeometry`, `rasterize` (a mixed list is fine) and
@@ -153,16 +163,16 @@ First working cut — everything here is new.
 - `gdal.info()` reports what the static build actually is: `releaseName`,
   `releaseDate`, `versionNum`, GDAL's `BUILD_INFO` map and the registered driver
   count. It answers capability questions the way GDAL does — a feature that was
-  compiled out is a *missing key*, not a "NO", so this build has no `GEOS_ENABLED`
-  at all. `diagnostics()` is the place with the yes/no answers.
+  compiled out is a *missing key*, not a "NO". `diagnostics()` and `features()`
+  are the places with the yes/no answers.
 - `gdal.lastError()` returns GDAL's most recent error (`class`, `number`, `message`)
   or `null`. It is for the errors that never became an exception — a warning GDAL
   logged and carried on past. A failure that *is* thrown has already been read and
   reset by the `gdal` crate by the time JS sees it, so this is `null` for those;
   the thrown error's `code` and message are their record.
-- `diagnostics()` gains `geosAvailable` — `false` here, because GEOS is LGPL and
-  statically linking it would relicense the artifact, so the OGR predicates it
-  implements (`ST_Intersects`, `ST_Buffer`, `-simplify`) are absent.
+- `diagnostics()` gains `geosAvailable` — whether GDAL was built with GEOS, and so
+  whether the OGR predicates it implements (`ST_Intersects`, `ST_Buffer`,
+  `-simplify`) are available. The same answer as `features().geos`.
 - `RasterBand` gains GDAL's band metadata: `id` (GDAL's 1-based band number, where
   `index` is this API's 0-based one), `description`, `readOnly`, `scale`, `offset`,
   `unitType`, `minimum`, `maximum` and `categoryNames`, plus `fill(value)` to write

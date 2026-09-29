@@ -71,9 +71,11 @@ test('diagnostics() finds the packaged CRS database', () => {
   const diagnostics = gdal.diagnostics()
   assert.equal(diagnostics.epsg4326Resolves, true, diagnostics.error ?? '')
   assert.equal(diagnostics.crsDatabaseFound, true)
-  // GEOS is LGPL and deliberately not linked, so the OGR predicates it backs are
-  // absent. diagnostics is where that is answerable without a probe.
-  assert.equal(diagnostics.geosAvailable, false, 'GEOS is deliberately not linked')
+  // GEOS is vendored and linked the way GDAL itself is, so the OGR predicates it
+  // backs are part of the bundled build. `diagnostics()` and `features()` are the
+  // two places that answer it, and they agree with GDAL's own BUILD_INFO.
+  assert.equal(diagnostics.geosAvailable, true, 'the bundled build links GEOS')
+  assert.equal(gdal.features().geos, diagnostics.geosAvailable)
 })
 
 test('bytesPerSample covers the sample types', () => {

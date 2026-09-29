@@ -177,6 +177,50 @@ test('a Geometry object goes wherever a GeoJSON geometry goes', () => {
   dataset.close()
 })
 
+test('the GEOS operations answer, or say why they cannot', () => {
+  const a = Geometry.fromWkt('POLYGON ((0 0, 2 0, 2 2, 0 2, 0 0))')
+  const b = Geometry.fromWkt('POLYGON ((1 1, 3 1, 3 3, 1 3, 1 1))')
+
+  if (!gdal.features().geos) {
+    // The default build. A clear refusal is the contract: `false` would look like
+    // an answer, and a TypeError would look like a bug. `features().geos` is how
+    // a caller branches before getting here at all.
+    for (const call of [
+      () => a.intersects(b),
+      () => a.disjoint(b),
+      () => a.distance(b),
+      () => a.isValid(),
+      () => a.buffer(1),
+      () => a.centroid(),
+      () => a.convexHull(),
+      () => a.simplify(0.1),
+      () => a.union(b),
+    ]) {
+      assert.throws(call, /no GEOS/)
+    }
+    return
+  }
+
+  // A GEOS build. The same calls, now with answers.
+  assert.equal(a.intersects(b), true)
+  assert.equal(a.disjoint(b), false)
+  assert.equal(a.equals(a.clone()), true)
+  assert.equal(a.contains(Geometry.fromWkt('POINT (1 1)')), true)
+  assert.equal(a.isValid(), true)
+  assert.equal(a.isSimple(), true)
+
+  // The set algebra returns real geometries, which is the round trip through a
+  // C-owned handle that `adopt` exists for.
+  assert.ok(Math.abs(a.intersection(b).area() - 1) < 1e-9)
+  assert.ok(Math.abs(a.union(b).area() - 7) < 1e-9)
+  assert.ok(Math.abs(a.difference(b).area() - 3) < 1e-9)
+  assert.equal(a.centroid().type, 'Point')
+  assert.equal(a.convexHull().type, 'Polygon')
+  assert.ok(a.buffer(1).area() > 4, 'a buffer covers more than the original')
+  assert.equal(a.simplify(0.1).type, 'Polygon')
+  assert.ok(a.distance(b) >= 0)
+})
+
 test('a malformed input is refused at the call, not accepted as an empty geometry', () => {
   assert.throws(() => Geometry.fromWkt('NOT A GEOMETRY'), /Geometry|WKT|parse/i)
   assert.throws(() => Geometry.fromJson({ type: 'Nonsense' }), /Unsupported geometry type/)

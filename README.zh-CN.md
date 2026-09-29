@@ -22,7 +22,7 @@ gdal.diagnostics()
 // { epsg4326Resolves: true, crsDatabaseFound: true, projDataEnv: '.../assets/proj', … }
 
 // 这个构建到底是什么？BUILD_INFO 只列出编译进来的东西，
-// 没编译进来的能力就是“键不存在”——这里根本没有 GEOS_ENABLED。
+// 没编译进来的能力是「键不存在」，而不是 "NO"。
 gdal.info()
 // { releaseName: '3.12.1', releaseDate: '20251212', versionNum: '3120100',
 //   build: { OGR_ENABLED: 'YES', PROJ_BUILD_VERSION: '9.6.2', … }, driverCount: 148 }
@@ -40,8 +40,8 @@ gdal.apiVersion // '0.1.0' —— 绑定的版本，不是 `version().gdal`
 不会被覆盖。
 
 `diagnostics().geosAvailable` 回答 OGR 的几何谓词（`ST_Intersects`、`ST_Buffer`、
-`-simplify`）能不能用。答案是不能：GEOS 是 LGPL，静态链接会让整个产物变更许可证，所以是
-**故意**不链的——见文末许可证一节。
+`-simplify`）能不能用。答案是可以：GEOS 由构建过程自行获取、编译并静态链接，和 GDAL 本身
+一样 —— 见「要素对象」一节与 `docs/GEOS.md`。
 
 ## 常量
 
@@ -610,7 +610,27 @@ feature.setGeometry(Geometry.fromWkt('POINT (7 8)'))
 raster.rasterizeSync([Geometry.fromWkt(box), geojsonBox], { burnValues: [1, 2] })
 ```
 
-GEOS 谓词（`intersects`、`buffer`、`simplify`…）不在默认构建里，见 `docs/GEOS.md`。
+### GEOS：谓词与集合运算
+
+`Geometry` 也带上了 GDAL 通过 GEOS 实现的那些操作 —— 谓词（`intersects`、`contains`、
+`within`、`crosses`、`touches`、`overlaps`、`disjoint`、`equals`）、`distance`、
+`isValid` / `isSimple`，以及集合运算 `buffer`、`centroid`、`convexHull`、`simplify`、
+`union`、`intersection`、`difference`、`symDifference`：
+
+```js
+if (gdal.features().geos) {
+  const hits = plot.intersects(roads)
+  const ring = plot.buffer(100, 16)     // 外扩 100 个单位，每象限 16 段
+  const merged = plot.union(neighbour)  // 返回新的 Geometry
+}
+```
+
+GEOS 由构建过程获取、编译并**静态链接**，和 GDAL、PROJ 一样，所以这些开箱即用，包依然是单个
+自包含产物。`docs/GEOS.md` 记录了这个决定（以及为什么共享库在这里更糟），还有发布时欠下的
+LGPL-2.1 §6 材料。
+
+没有 GEOS 的构建接口形状一致：每个调用都会回 “this build has no GEOS”，而不是一个看起来像
+答案的 `false`；`gdal.features().geos` 就是让你绕开那条路的探针。
 
 写入：
 
@@ -1029,7 +1049,7 @@ Ninja 是按翻译单元并行的。
 | GDAL | 3.12.1，静态，`GDAL_USE_INTERNAL_LIBS=ON`，`GDAL_USE_EXTERNAL_LIBS=OFF` |
 | PROJ | 9.6.x，`bundled_proj`，静态 |
 | 驱动 | `gdal-src/all_drivers` —— 共 148 个，见下文 |
-| GEOS | **不链接** —— LGPL，静态链接会让整个产物变成 LGPL |
+| GEOS | 由 `geos-src` 获取并编译，**静态链接**（LGPL-2.1，见文末许可证一节） |
 
 因为 `gdal-src` 不点名就关闭所有驱动，Cargo 的 `bundled` feature 列表**就是**发布的驱动集合 ——
 现在它写的是 `gdal-src/all_drivers`，也就是那个 crate 能构建的全部。
@@ -1042,11 +1062,11 @@ GeoJSON / GeoJSONSeq / TopoJSON / ESRIJSON、GPKG、SQLite、OpenFileGDB、ESRI 
 MapInfo、DXF、DGN、CAD、S57、VDV、VFK、CSV、GTFS、Selafin、KMLSUPEROVERLAY、PGDUMP，
 以及一长串各国测绘与科学数据格式。
 
+**GEOS** 也链进去了 —— 和其余一样由构建过程获取、编译、静态链接 —— `Geometry.intersects`、
+`buffer`、`simplify` 与集合运算正是靠它。
+
 **故意不含**的：
 
-- **GEOS**，以及它实现的那批 OGR 几何运算 —— `ST_Intersects`、`ST_Buffer`、`-simplify` 等。
-  GEOS 是 LGPL，静态链接它会让整份产物的许可证改变。它在 `gdal-src` 里是独立 feature，
-  想改可以改，但那时你发布的就不再只是 MIT 了。
 - **需要本构建未链接的 XML 库的格式** —— KML、GML、GPX、GMLAS、LIBKML、XLSX/XLS、DWG 等 ——
   以及依赖厂商 SDK 的 FileGDB / Oracle / MySQL，和 JPEG2000 / WebP / HEIF / AVIF 系列。
 - **`PDS`**，这是本包唯一完全无法提供的驱动：`gdal-src` 发布的 crate 里没有
@@ -1072,11 +1092,14 @@ CRS 变换覆盖点、坐标数组、包围盒和整个几何对象（`transform
 波段的元数据与直方图现在可读可写（`setScale` / `setOffset` / `setUnitType` / `setDescription` /
 `setCategoryNames`，以及 `defaultHistogram` / `setDefaultHistogram`），与 `setStatistics()` 对齐。
 唯一的不对称是 `scale` 与 `offset` 没有“清除”：GDAL 的 setter 只收数字，所以 `0` 就是一个普通
-取值。GEOS 未链接，因此 OGR 的几何谓词（`ST_Intersects`、`ST_Buffer`、`-simplify`）不可用 ——
-用 `gdal.features().geos` 可以直接探测。
+取值。
 
 Intel macOS 与 32 位目标未构建。
 
 ## 许可证
 
 MIT。GDAL 与 PROJ 均为 MIT/X11；详见 [LICENSE](./LICENSE)。
+
+GEOS 是例外：它是 LGPL-2.1，且被**静态链接**进发布出去的 `.node`。LGPL-2.1 §6 要求静态链接
+作品的发布者提供「把它与修改过的 GEOS 重新链接」的手段，因此发布时会随 tarball 附上对应版本
+的 GEOS 源码与构建配方。这约束的是**发布物**，不是本仓库代码的许可证 —— 见 `docs/GEOS.md`。

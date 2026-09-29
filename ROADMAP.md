@@ -13,7 +13,7 @@
 | 维度 | 现状 |
 |---|---|
 | 运行时依赖 | 无。GDAL/PROJ 静态链接，数据文件随包（`assets/{gdal,proj}`） |
-| 驱动 | 148 个（`gdal-src/all_drivers`），除 PDS 与 GEOS 外基本齐全 |
+| 驱动 | 148 个（`gdal-src/all_drivers`），除 PDS 外基本齐全；GEOS 也静态链入（见 §5 风险表） |
 | 栅格 | 读写、窗口/像素访问、overview、统计、checksum/fillNoData/sieve、rasterize/polygonize/contourGenerate、buildVrt |
 | 矢量 | 图层/字段/要素 CRUD、属性与空间过滤、游标、SQL、事务、fid/geom 列、capability |
 | 程序 | `translate` / `warp` / `vectorTranslate` / `demProcess`，带 `onProgress` 与取消 |
@@ -30,7 +30,7 @@
 4. **代码集中。** `dataset.rs` 2108 行、`band.rs` 1573、`vector.rs` 1382，审阅与扩展成本在上升。
 5. **musl 两个 leg 仍是 `experimental`**，`all_drivers` 的 vendored HDF5/netCDF/curl/libpq 是脆弱点。
 6. **异步错误无 `err.code`**（`napi::Task` 限制），只能用消息前缀判断。
-7. **GEOS 缺席是刻意的许可证决策** —— 已定案：改做**动态链接 GEOS 的可选变体构建**（默认包仍不带），见 [`docs/GEOS.md`](./docs/GEOS.md)。
+7. **GEOS 缺席是刻意的许可证决策** —— 已定案改为**自行构建 + 静态链接**（与 GDAL/PROJ 同一条路，默认就有），分发仍是单个自包含产物；见 [`docs/GEOS.md`](./docs/GEOS.md)。
 
 ---
 
@@ -148,12 +148,12 @@ MDArray、Node Streams、`calcAsync` 明确不做，记为设计取舍。
 
 | 风险 | 影响 | 应对 |
 |---|---|---|
-| GEOS 缺席 | OGR 空间谓词不可用 | **已定案**：默认包继续排除；提供**动态链接 GEOS** 的可选变体构建并随包发共享库（`docs/GEOS.md`） |
+| GEOS | OGR 空间谓词此前不可用；现改为链入，但它是 LGPL-2.1 | **已定案**：`geos-src` 自行构建 + **静态链接**，与 GDAL/PROJ 同路，分发仍是单个自包含产物；发布需附 §6 材料（`docs/GEOS.md`） |
 | musl + all_drivers | 构建脆弱、易碎 leg | 容器原生构建已见效；考虑拆出精简 musl 变体 |
 | 上游 `gdal` 0.19 / `gdal-sys` 0.12 漂移 | API 破坏、GDAL 升级受限 | 锁定版本 + 定期跟进；抽象层隔离 |
 | 全局锁 | 并发上限、错误状态耦合 | Phase 2 的 PoC；实在不行明确写进文档 |
 | 包体与构建时长 | 用户体验、CI 成本 | 按需驱动、LTO 调优、缓存 |
-| 许可证 | static linking 的传染性 | GEOS 走**动态链接**变体以履行 LGPL（`docs/GEOS.md`），而非静态链接 + 可重链接产物；新增依赖需过 license 门禁 |
+| 许可证 | 静态链接 LGPL（GEOS）的分发义务 | GEOS 静态链接进 `.node`；义务落在**发布物**（附对应源码 + 重建/重链接材料，§6），源码许可证不变；新增依赖需过 license 门禁。见 `docs/GEOS.md` |
 
 ---
 

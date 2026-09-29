@@ -58,7 +58,30 @@ bundled = [
   # published crate does not ship frmts/pds/data, so enabling it fails the
   # configure step on two missing files. That is why all_drivers leaves it out,
   # and it is the one driver this package cannot offer.
+  #
+  # GEOS is, for the same reason as the rest of this list: it is fetched and
+  # compiled by `geos-src` during the build, so an installed package needs
+  # nothing on the host for it either.
+  "geos",
 ]
+# The GEOS build — GDAL's geometry predicates and algorithms (`intersects`,
+# `buffer`, `simplify`, …), which GDAL implements through GEOS.
+#
+# It is built the way GDAL and PROJ are: `geos-src` fetches GEOS and compiles it,
+# `gdal-src/geos_static` links it into the static GDAL, and the whole thing ends
+# up inside the one `.node`. That keeps the package a single self-contained
+# artifact, which is the point of the package — a *shared* GEOS (`gdal-src/geos`)
+# would mean shipping platform-specific libraries and teaching each platform's
+# loader where to find them, and on Windows/MSVC it does not work at all: the
+# only GEOS a Windows box tends to have is MinGW's, whose import libraries an
+# MSVC link cannot use.
+#
+# GEOS is LGPL-2.1 rather than MIT, and static linking is what makes that a
+# licensing question instead of a non-question: LGPL-2.1 §6 asks a distributor of
+# a statically linked work for the means to relink it against a modified GEOS.
+# `docs/GEOS.md` records the decision and what the release owes. This affects the
+# *release*, not the source — this crate's own licence does not change.
+geos = ["dep:gdal-src", "gdal-src/geos_static"]
 
 [profile.release]
 lto = true
