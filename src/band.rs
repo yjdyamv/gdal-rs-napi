@@ -6,7 +6,7 @@
 //! [`DatasetRef::with_exclusive`] (or `with_mut` when it writes).
 
 use std::collections::HashMap;
-use std::ffi::{c_char, c_int};
+use std::ffi::{CString, c_char, c_int};
 
 use gdal::Dataset as GdalDataset;
 use gdal::Metadata;
@@ -21,8 +21,8 @@ use crate::raster_io::{ReadOptions, read_window, resample_alg, resolve_window, w
 use crate::raster_tools::{
     ContourGenerateOptions, ContourGenerateRequest, FillNoDataOptions, FillNoDataRequest,
     PolygonizeOptions, PolygonizeRequest, SieveFilterOptions, SieveFilterRequest, checksum_options,
-    contour_generate, contour_generate_request, fill_no_data, fill_nodata_request, polygonize,
-    polygonize_request, sieve_filter, sieve_filter_request,
+    contour_generate, contour_generate_request, cpl_result, fill_no_data, fill_nodata_request,
+    polygonize, polygonize_request, sieve_filter, sieve_filter_request,
 };
 use crate::runtime::ensure_initialized;
 use crate::vector::JsLayer;
@@ -72,6 +72,63 @@ fn category_names(list: *mut *mut c_char) -> Vec<String> {
         index += 1;
     }
     names
+}
+
+/// Build a CPL string list from a JS array. GDAL copies what it is given, so the
+/// caller destroys this after the call; an empty array becomes a null list, which
+/// is how GDAL spells "none".
+fn string_list(items: &[String]) -> Result<*mut *mut c_char> {
+    if items.is_empty() {
+        return Ok(std::ptr::null_mut());
+    }
+    let mut list: *mut *mut c_char = std::ptr::null_mut();
+    for item in items {
+        let text = CString::new(item.as_str())
+            .map_err(|_| bad_argument("a category name cannot contain a NUL byte"))?;
+        list = unsafe { gdal_sys::CSLAddString(list, text.as_ptr()) };
+    }
+    Ok(list)
+}
+
+/// A JS string as a C string, or `None` for "unset" — which GDAL spells as a
+/// null pointer in the setters that accept one.
+fn optional_c_string(text: Option<String>, what: &str) -> Result<Option<CString>> {
+    match text {
+        Some(text) => CString::new(text)
+            .map(Some)
+            .map_err(|_| bad_argument(format!("{what} cannot contain a NUL byte"))),
+        None => Ok(None),
+    }
+}
+
+/// GDAL's bucket counts are 64-bit; JS gets 32-bit numbers, and a bucket that
+/// does not fit is reported rather than truncated.
+fn counts_as_u32(counts: &[u64]) -> Result<Vec<u32>> {
+    counts
+        .iter()
+        .map(|count| {
+            u32::try_from(*count).map_err(|_| {
+                bad_argument(format!(
+                    "a histogram bucket counted {count} samples, which does not fit in a \
+                     32-bit integer"
+                ))
+            })
+        })
+        .collect()
+}
+
+/// A histogram range has to be finite and increasing before GDAL is handed it.
+///
+/// Written as a positive test because NaN fails every comparison: `min < max`
+/// alone would let a NaN through, and so would any negated form of it.
+fn check_range(min: f64, max: f64) -> Result<()> {
+    let increasing = min.is_finite() && max.is_finite() && min < max;
+    if !increasing {
+        return Err(bad_argument(format!(
+            "a histogram range must be finite and increasing, but min={min} and max={max}"
+        )));
+    }
+    Ok(())
 }
 
 /// Statistics for a band, as GDAL computes them.
@@ -155,16 +212,7 @@ pub fn histogram_request(options: HistogramOptions) -> Result<HistogramRequest> 
     if options.buckets == 0 {
         return Err(bad_argument("a histogram needs at least one bucket"));
     }
-    // Written as a positive test because NaN fails every comparison: `min < max`
-    // alone would let a NaN through, and so would any negated form of it.
-    let increasing =
-        options.min.is_finite() && options.max.is_finite() && options.min < options.max;
-    if !increasing {
-        return Err(bad_argument(format!(
-            "a histogram range must be finite and increasing, but min={} and max={}",
-            options.min, options.max
-        )));
-    }
+    check_range(options.min, options.max)?;
     Ok(HistogramRequest {
         min: options.min,
         max: options.max,
@@ -231,26 +279,10 @@ impl JsRasterBand {
                     .histogram(min, max, buckets, include_out_of_range, approx)
                     .gdal()?;
 
-                // GDAL's own bucket counts are C `int`, so a u32 is lossless —
-                // and a failure here would mean a bucket holding more than four
-                // billion samples, which is worth reporting rather than truncating.
-                let counts = histogram
-                    .counts()
-                    .iter()
-                    .map(|count| {
-                        u32::try_from(*count).map_err(|_| {
-                            bad_argument(format!(
-                                "a histogram bucket counted {count} samples, which does not fit in \
-                                 a 32-bit integer"
-                            ))
-                        })
-                    })
-                    .collect::<Result<Vec<u32>>>()?;
-
                 Ok(BandHistogram {
                     min: histogram.min(),
                     max: histogram.max(),
-                    counts,
+                    counts: counts_as_u32(histogram.counts())?,
                 })
             })
         })
@@ -407,6 +439,30 @@ impl JsRasterBand {
         })
     }
 
+    /// Write the band's description — the free-text label the format carries.
+    /// Pass `null` to clear it.
+    ///
+    /// This is GDAL's `GDALSetDescription`, the same call `gdal_translate -mo
+    /// DESCRIPTION=...` goes through, so the value reads back from the
+    /// `description` getter and from any other GDAL tool. It is not the same
+    /// thing as `setMetadataItem('DESCRIPTION', ...)`: GDAL keeps the two in
+    /// different places, and `metadata()` does not show this one.
+    #[napi]
+    pub fn set_description(&self, value: Option<String>) -> Result<()> {
+        let text = optional_c_string(value, "a description")?;
+        self.dataset.with_mut(|dataset| {
+            with_band(dataset, self.index, |band| {
+                unsafe {
+                    gdal_sys::GDALSetDescription(
+                        band.c_rasterband() as gdal_sys::GDALMajorObjectH,
+                        text.as_ref().map_or(std::ptr::null(), |text| text.as_ptr()),
+                    );
+                }
+                Ok(())
+            })
+        })
+    }
+
     /// Whether this band cannot be written.
     ///
     /// A band has no access mode of its own, so this follows how its dataset was
@@ -436,11 +492,58 @@ impl JsRasterBand {
             .with_exclusive(|dataset| with_band(dataset, self.index, |band| Ok(band.offset())))
     }
 
+    /// Write the band's scale: the multiplier in `raw * scale + offset`.
+    ///
+    /// This is GDAL's `GDALSetRasterScale`. A driver that keeps no band metadata
+    /// at all — the call fails with `SetScale() not supported on this raster
+    /// band` — is reported rather than silently accepted, so a format that cannot
+    /// store it says so here instead of at the next read.
+    ///
+    /// There is no "clear": GDAL's setter takes a number, and `0` is a scale
+    /// like any other rather than a way back to `null`. `setNoDataValue(null)`
+    /// and `setUnitType(null)` are the two setters that can unset anything.
+    #[napi]
+    pub fn set_scale(&self, scale: f64) -> Result<()> {
+        self.dataset
+            .with_mut(|dataset| with_band(dataset, self.index, |band| band.set_scale(scale).gdal()))
+    }
+
+    /// Write the band's offset — the other half of `raw * scale + offset`. The
+    /// same rules as `setScale` apply, and there is likewise no way to unset it.
+    #[napi]
+    pub fn set_offset(&self, offset: f64) -> Result<()> {
+        self.dataset.with_mut(|dataset| {
+            with_band(dataset, self.index, |band| band.set_offset(offset).gdal())
+        })
+    }
+
     /// The band's unit, e.g. `metre` or `DN`, or `null` when it has none.
     #[napi(getter)]
     pub fn unit_type(&self) -> Result<Option<String>> {
         self.dataset.with_exclusive(|dataset| {
             with_band(dataset, self.index, |band| Ok(non_empty(band.unit())))
+        })
+    }
+
+    /// Write the band's unit — `metre`, `DN`, anything the format will carry.
+    ///
+    /// Pass `null` to clear it, which unlike `setScale` really does go back to
+    /// `unitType === null`: GDAL's `GDALSetRasterUnitType` reads a null pointer as
+    /// "remove", and the getter then reports an empty string that this binding
+    /// maps to `null`.
+    #[napi]
+    pub fn set_unit_type(&self, value: Option<String>) -> Result<()> {
+        let unit = optional_c_string(value, "a unit type")?;
+        self.dataset.with_mut(|dataset| {
+            with_band(dataset, self.index, |band| {
+                cpl_result(unsafe {
+                    gdal_sys::GDALSetRasterUnitType(
+                        band.c_rasterband(),
+                        unit.as_ref()
+                            .map_or(std::ptr::null(), |value| value.as_ptr()),
+                    )
+                })
+            })
         })
     }
 
@@ -488,6 +591,27 @@ impl JsRasterBand {
                 }))
             })
         })
+    }
+
+    /// Write the category names — the label per pixel value that a paletted
+    /// raster or a classified one carries. Pass `[]` to clear them.
+    ///
+    /// The list is positional: `setCategoryNames(['water', 'land'])` labels value
+    /// 0 `water` and value 1 `land`, which is the order `categoryNames` reads
+    /// back. Names are copied into GDAL's own store, so the array is not retained.
+    #[napi]
+    pub fn set_category_names(&self, names: Vec<String>) -> Result<()> {
+        let list = string_list(&names)?;
+        let result = self.dataset.with_mut(|dataset| {
+            with_band(dataset, self.index, |band| {
+                cpl_result(unsafe {
+                    gdal_sys::GDALSetRasterCategoryNames(band.c_rasterband(), list)
+                })
+            })
+        });
+        // The list is ours, not GDAL's: the call duplicated what it keeps.
+        unsafe { gdal_sys::CSLDestroy(list) };
+        result
     }
 
     #[napi]
@@ -569,6 +693,63 @@ impl JsRasterBand {
             index: self.index,
             request,
         }))
+    }
+
+    /// The default histogram GDAL has stored for this band, or `null` when there
+    /// is none.
+    ///
+    /// This is the *stored* histogram, not one computed now: `histogram()`
+    /// computes, `defaultHistogram()` reads what an earlier `setDefaultHistogram`
+    /// — or the format itself — left behind. `force: true` lets GDAL compute one
+    /// if nothing is stored, which reads the whole band, hence the default of
+    /// `false`.
+    #[napi]
+    pub fn default_histogram(&self, force: Option<bool>) -> Result<Option<BandHistogram>> {
+        ensure_initialized();
+        let force = force.unwrap_or(false);
+        self.dataset.with_exclusive(|dataset| {
+            with_band(dataset, self.index, |band| {
+                let Some(histogram) = band.default_histogram(force).gdal()? else {
+                    return Ok(None);
+                };
+                Ok(Some(BandHistogram {
+                    min: histogram.min(),
+                    max: histogram.max(),
+                    counts: counts_as_u32(histogram.counts())?,
+                }))
+            })
+        })
+    }
+
+    /// Write a histogram into the dataset, so a later reader does not have to
+    /// compute one — the counterpart of `setStatistics`.
+    ///
+    /// `counts` is one count per bucket, in range order, and `min`/`max` are the
+    /// range those buckets span — exactly the shape `histogram()` and
+    /// `defaultHistogram()` return. The same caveat as `setStatistics` applies: a
+    /// read-only handle does not fail, because GDAL's PAM layer writes to a
+    /// `<file>.aux.xml` sidecar instead.
+    #[napi]
+    pub fn set_default_histogram(&self, histogram: BandHistogram) -> Result<()> {
+        ensure_initialized();
+        if histogram.counts.is_empty() {
+            return Err(bad_argument("a histogram needs at least one bucket"));
+        }
+        check_range(histogram.min, histogram.max)?;
+
+        // GDAL reads this as a mutable slice but does not write to it.
+        let mut counts = histogram
+            .counts
+            .iter()
+            .map(|count| u64::from(*count))
+            .collect::<Vec<u64>>();
+
+        self.dataset.with_mut(|dataset| {
+            with_band(dataset, self.index, |band| {
+                band.set_default_histogram(histogram.min, histogram.max, &mut counts)
+                    .gdal()
+            })
+        })
     }
 
     /// Write statistics into the dataset, so a later reader does not have to
