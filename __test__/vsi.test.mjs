@@ -66,7 +66,7 @@ test('open() takes bytes as well as a path', async () => {
   gdal.fs.unlink(source)
 
   const opened = gdal.openSync(bytes)
-  assert.equal(opened.driver, 'GTiff')
+  assert.equal(opened.driver.name, 'GTiff')
   assert.equal(opened.bandCount, 1)
   assert.equal(opened.band(0).readPixelsSync()[0], 5)
   // The bytes live in a `/vsimem/` file, and that file is the dataset's path.

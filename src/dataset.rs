@@ -25,6 +25,7 @@ use napi_derive::napi;
 use serde_json::Value;
 
 use crate::band::JsRasterBand;
+use crate::driver::JsDriver;
 use crate::dtype::DataType;
 use crate::error::{GdalErrorCode, IntoGdalResult, Result, bad_argument, into_status_error, split};
 use crate::programs;
@@ -256,6 +257,12 @@ impl DatasetRef {
 pub struct OpenOptions {
     /// Open for writing. Default false.
     pub update: Option<bool>,
+    /// Short names of the drivers to try, in order — GDAL's
+    /// `papszAllowedDrivers`. Omit it (or pass an empty array) and every driver is
+    /// considered, which is the ordinary `open()`. Naming one is how a
+    /// driver-scoped open is spelled, and it is the difference between "nothing
+    /// could read this" and "*this driver* could not".
+    pub drivers: Option<Vec<String>>,
 }
 
 #[napi(object)]
@@ -318,9 +325,14 @@ pub(crate) fn with_two<T>(
 /// failure the file is unlinked again, so a `Buffer` that turns out not to be a
 /// dataset does not sit in memory for the life of the process; on success the caller
 /// owns the file and unlinks it when the dataset closes.
-fn open_bytes_gdal(path: &str, bytes: &[u8], update: bool) -> Result<GdalDataset> {
+fn open_bytes_gdal(
+    path: &str,
+    bytes: &[u8],
+    update: bool,
+    drivers: Option<&[String]>,
+) -> Result<GdalDataset> {
     write_mem_file(path, bytes)?;
-    match open_gdal(path, update) {
+    match open_gdal(path, update, drivers) {
         Ok(dataset) => Ok(dataset),
         Err(error) => {
             let _guard = lock_gdal();
@@ -347,7 +359,7 @@ fn mem_file_name() -> String {
     format!("/vsimem/gdal-rs-napi-{}-{count}.bin", std::process::id())
 }
 
-fn open_gdal(path: &str, update: bool) -> Result<GdalDataset> {
+fn open_gdal(path: &str, update: bool, drivers: Option<&[String]>) -> Result<GdalDataset> {
     ensure_initialized();
     let _guard = lock_gdal();
 
@@ -355,10 +367,17 @@ fn open_gdal(path: &str, update: bool) -> Result<GdalDataset> {
     if update {
         flags |= GdalOpenFlags::GDAL_OF_UPDATE;
     }
+    // `DatasetOptions` borrows the names, so they have to outlive the call. An
+    // empty list means the same thing as no list to GDAL, but `None` is the honest
+    // way to say it.
+    let allowed: Option<Vec<&str>> = drivers
+        .filter(|names| !names.is_empty())
+        .map(|names| names.iter().map(String::as_str).collect());
     GdalDataset::open_ex(
         path,
         DatasetOptions {
             open_flags: flags,
+            allowed_drivers: allowed.as_deref(),
             ..DatasetOptions::default()
         },
     )
@@ -520,6 +539,38 @@ pub fn build_overviews_request(
     })
 }
 
+/// Raster dimensions, grouped the way `gdalinfo` reports them.
+#[napi(object)]
+pub struct RasterSize {
+    pub width: u32,
+    pub height: u32,
+}
+
+/// `GDALGetFileList`, whose answer is a CPL string list owned by the caller.
+///
+/// The `gdal` crate has no wrapper, so the list is walked by hand and destroyed
+/// after. A null pointer — GDAL's "no answer" — and an empty list both become an
+/// empty array, because either way the caller has nothing to copy.
+fn file_list(dataset: &GdalDataset) -> Result<Vec<String>> {
+    let list = unsafe { gdal_sys::GDALGetFileList(dataset.c_dataset()) };
+    if list.is_null() {
+        return Ok(Vec::new());
+    }
+
+    let mut files = Vec::new();
+    let mut index = 0;
+    loop {
+        let entry = unsafe { *list.add(index) };
+        if entry.is_null() {
+            break;
+        }
+        files.push(crate::runtime::c_string(entry));
+        index += 1;
+    }
+    unsafe { gdal_sys::CSLDestroy(list) };
+    Ok(files)
+}
+
 #[napi(js_name = "Dataset")]
 pub struct JsDataset {
     dataset: DatasetRef,
@@ -575,10 +626,56 @@ impl JsDataset {
         self.dataset.is_concurrent()
     }
 
+    /// The driver that opened this dataset, as an object. `driver.name` is the
+    /// short name — `GTiff`, `GPKG`, `VRT` — and the rest of the object is that
+    /// driver's own metadata: `longName`, `description`, `metadata('DMD_...')`,
+    /// `testCapability('DCAP_...')`.
+    ///
+    /// `String(dataset.driver)` and `dataset.driver.name` both give the short name,
+    /// which is what this getter returned before it handed back an object.
     #[napi(getter)]
-    pub fn driver(&self) -> Result<String> {
+    pub fn driver(&self) -> Result<JsDriver> {
+        let name = self
+            .dataset
+            .with_exclusive(|dataset| Ok(dataset.driver().short_name()))?;
+        Ok(JsDriver::new(name))
+    }
+
+    /// The dataset's description — for a file, that is the file name, so it is
+    /// usually `path`. It differs where GDAL names the dataset itself: a
+    /// `/vsimem/` dataset reports the name it was created under, and a subdataset
+    /// reports the subdataset string.
+    #[napi(getter)]
+    pub fn description(&self) -> Result<String> {
         self.dataset
-            .with_exclusive(|dataset| Ok(dataset.driver().short_name()))
+            .with_exclusive(|dataset| dataset.description().gdal())
+    }
+
+    /// Raster dimensions as one object, the shape `gdalinfo` prints. `width` and
+    /// `height` remain as the flat accessors; this is the same pair grouped.
+    #[napi(getter)]
+    pub fn raster_size(&self) -> Result<RasterSize> {
+        self.dataset.with_exclusive(|dataset| {
+            let (width, height) = dataset.raster_size();
+            Ok(RasterSize {
+                width: width as u32,
+                height: height as u32,
+            })
+        })
+    }
+
+    /// Every file GDAL believes is part of this dataset — the counterpart of
+    /// `gdalinfo`'s `Files:` section, and the answer to "what do I have to ship
+    /// alongside this?"
+    ///
+    /// A file-backed dataset reports its file, a `/vsimem/` one reports the
+    /// `/vsimem/` name (which is real, and `gdal.fs.readFile` can read it), and only
+    /// a dataset with nothing behind it at all — a `MEM` one — comes back empty. An
+    /// empty list is not an error, so a caller copying files should read it as
+    /// "nothing to copy".
+    #[napi]
+    pub fn get_file_list(&self) -> Result<Vec<String>> {
+        self.dataset.with_exclusive(file_list)
     }
 
     /// Raster width in pixels.
@@ -1301,9 +1398,10 @@ fn op<T>(result: Result<T>) -> OpResult<T> {
 /// What `OpenTask` should produce. One task type covers opening, raster creation,
 /// vector creation and thread-safe opening, so the async surface stays uniform and
 /// `napi::Task` is implemented only once.
-enum OpenKind {
+pub(crate) enum OpenKind {
     Open {
         update: bool,
+        drivers: Option<Vec<String>>,
     },
     /// Bytes that have no file yet. They are written to `OpenTask::path` — the
     /// `/vsimem/` name `open(buffer)` generated — before anything is opened, so from
@@ -1311,6 +1409,7 @@ enum OpenKind {
     OpenBytes {
         bytes: Vec<u8>,
         update: bool,
+        drivers: Option<Vec<String>>,
     },
     CreateRaster(CreateOptions),
     CreateVector {
@@ -1321,8 +1420,8 @@ enum OpenKind {
 }
 
 pub struct OpenTask {
-    path: String,
-    kind: OpenKind,
+    pub(crate) path: String,
+    pub(crate) kind: OpenKind,
 }
 
 impl Task for OpenTask {
@@ -1331,10 +1430,15 @@ impl Task for OpenTask {
 
     fn compute(&mut self) -> napi::Result<Self::Output> {
         Ok(op(match &self.kind {
-            OpenKind::Open { update } => open_gdal(&self.path, *update).map(DatasetRef::serialised),
-            OpenKind::OpenBytes { bytes, update } => {
-                open_bytes_gdal(&self.path, bytes, *update).map(DatasetRef::serialised)
+            OpenKind::Open { update, drivers } => {
+                open_gdal(&self.path, *update, drivers.as_deref()).map(DatasetRef::serialised)
             }
+            OpenKind::OpenBytes {
+                bytes,
+                update,
+                drivers,
+            } => open_bytes_gdal(&self.path, bytes, *update, drivers.as_deref())
+                .map(DatasetRef::serialised),
             OpenKind::CreateRaster(options) => {
                 create_gdal(&self.path, options).map(DatasetRef::serialised)
             }
@@ -1374,17 +1478,19 @@ impl Task for OpenTask {
 /// `gdal.fs.writeFile('/vsimem/data.tif', bytes)` and open that path.
 #[napi(ts_return_type = "Promise<Dataset>")]
 pub fn open(source: Either<String, Buffer>, options: Option<OpenOptions>) -> AsyncTask<OpenTask> {
-    let update = options.and_then(|options| options.update).unwrap_or(false);
+    let OpenOptions { update, drivers } = options.unwrap_or_default();
+    let update = update.unwrap_or(false);
     match source {
         Either::A(path) => AsyncTask::new(OpenTask {
             path,
-            kind: OpenKind::Open { update },
+            kind: OpenKind::Open { update, drivers },
         }),
         Either::B(bytes) => AsyncTask::new(OpenTask {
             path: mem_file_name(),
             kind: OpenKind::OpenBytes {
                 bytes: bytes.to_vec(),
                 update,
+                drivers,
             },
         }),
     }
@@ -1396,18 +1502,41 @@ pub fn open_sync(
     source: Either<String, Buffer>,
     options: Option<OpenOptions>,
 ) -> Result<JsDataset> {
-    let update = options.and_then(|options| options.update).unwrap_or(false);
+    let OpenOptions { update, drivers } = options.unwrap_or_default();
+    let update = update.unwrap_or(false);
     match source {
-        Either::A(path) => Ok(JsDataset::wrap(open_gdal(&path, update)?, path)),
+        Either::A(path) => open_dataset_sync(&path, update, drivers.as_deref()),
         Either::B(bytes) => {
             let path = mem_file_name();
-            let dataset = open_bytes_gdal(&path, &bytes, update)?;
+            let dataset = open_bytes_gdal(&path, &bytes, update, drivers.as_deref())?;
             Ok(JsDataset::wrap_buffer(
                 DatasetRef::serialised(dataset),
                 path,
             ))
         }
     }
+}
+
+/// Open a path and wrap it, optionally restricted to named drivers. The `Driver`
+/// object's `openSync` goes through here, and so does `open_sync`.
+pub(crate) fn open_dataset_sync(
+    path: &str,
+    update: bool,
+    drivers: Option<&[String]>,
+) -> Result<JsDataset> {
+    Ok(JsDataset::wrap(
+        open_gdal(path, update, drivers)?,
+        path.to_string(),
+    ))
+}
+
+/// Create a raster and wrap it. The `Driver` object's `createSync` and the module
+/// `createSync` share this, so the two cannot drift.
+pub(crate) fn create_dataset_sync(path: &str, options: &CreateOptions) -> Result<JsDataset> {
+    Ok(JsDataset::wrap(
+        create_gdal(path, options)?,
+        path.to_string(),
+    ))
 }
 
 /// Open a read-only raster that several worker threads can read at the same time.

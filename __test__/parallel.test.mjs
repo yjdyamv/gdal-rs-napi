@@ -32,7 +32,7 @@ test('openThreadSafe reads the same pixels as open, and reports itself', async (
 
   const concurrent = gdal.openThreadSafeSync(path)
   assert.equal(concurrent.threadSafe, true)
-  assert.equal(concurrent.driver, 'GTiff')
+  assert.equal(concurrent.driver.name, 'GTiff')
   assert.equal(concurrent.width, 32)
   assert.equal(concurrent.height, 32)
   assert.deepEqual(Array.from(concurrent.band(0).readPixelsSync()), Array.from(expected))

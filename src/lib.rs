@@ -22,6 +22,7 @@
 mod band;
 mod config;
 mod dataset;
+mod driver;
 mod dtype;
 mod error;
 mod fs;
@@ -73,34 +74,6 @@ pub fn version() -> Versions {
         gdal: runtime::gdal_version(),
         proj: runtime::proj_version(),
     }
-}
-
-#[napi(object)]
-pub struct DriverInfo {
-    pub name: String,
-    pub long_name: String,
-}
-
-/// Every registered GDAL/OGR driver, sorted by short name. Call this first when
-/// something fails to open: it is the quickest way to tell "the format is not
-/// compiled in" apart from "the file is bad".
-#[napi]
-pub fn drivers() -> Vec<DriverInfo> {
-    runtime::ensure_initialized();
-    let _guard = runtime::lock_gdal();
-
-    let mut out = Vec::new();
-    for index in 0..gdal::DriverManager::count() {
-        let Ok(driver) = gdal::DriverManager::get_driver(index) else {
-            continue;
-        };
-        out.push(DriverInfo {
-            name: driver.short_name(),
-            long_name: driver.long_name(),
-        });
-    }
-    out.sort_by(|a, b| a.name.cmp(&b.name));
-    out
 }
 
 #[napi(object)]

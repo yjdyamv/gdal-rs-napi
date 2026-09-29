@@ -60,7 +60,7 @@ test('a driver the full build adds works end to end, not just in the list', () =
   created.close()
 
   const reopened = gdal.openSync(path)
-  assert.equal(reopened.driver, 'netCDF')
+  assert.equal(reopened.driver.name, 'netCDF')
   assert.equal(reopened.width, 8)
   assert.equal(reopened.height, 4)
   assert.deepEqual(Array.from(reopened.band(0).readPixelsSync()), Array.from(values))
@@ -92,7 +92,7 @@ test('creates a GTiff, writes it, and reads back identical bytes', () => {
   created.close()
 
   const reopened = gdal.openSync(path)
-  assert.equal(reopened.driver, 'GTiff')
+  assert.equal(reopened.driver.name, 'GTiff')
   assert.equal(reopened.width, 4)
   assert.equal(reopened.height, 4)
   assert.equal(reopened.bandCount, 1)
@@ -103,7 +103,7 @@ test('creates a GTiff, writes it, and reads back identical bytes', () => {
 
 test('MEM datasets need no file at all', () => {
   const dataset = gdal.createSync('', { driver: 'MEM', width: 3, height: 2, bandCount: 2 })
-  assert.equal(dataset.driver, 'MEM')
+  assert.equal(dataset.driver.name, 'MEM')
   assert.equal(dataset.bandCount, 2)
   dataset.band(1).writePixelsSync(bytesOf(ramp(3, 2)))
   assert.deepEqual(Array.from(dataset.band(1).readPixelsSync()), Array.from(ramp(3, 2)))
@@ -274,7 +274,7 @@ test('band scale, offset, unit, description and categories come from the format'
 
   const dataset = gdal.openSync(path)
   const band = dataset.band(0)
-  assert.equal(dataset.driver, 'VRT')
+  assert.equal(dataset.driver.name, 'VRT')
   assert.equal(band.description, 'my band')
   assert.equal(band.unitType, 'metre')
   assert.equal(band.scale, 2.5)
@@ -772,7 +772,7 @@ test('buildVrt wraps rasters without copying them', async () => {
   // `-separate` gives each source its own band, which is the predictable shape.
   const path = tmp('merged.vrt')
   const built = gdal.buildVrtSync(path, [first, second], ['-separate'])
-  assert.equal(built.driver, 'VRT')
+  assert.equal(built.driver.name, 'VRT')
   assert.equal(built.bandCount, 2)
   assert.equal(built.band(0).readPixelsSync()[0], 1)
   assert.equal(built.band(1).readPixelsSync()[0], 2)
@@ -780,13 +780,13 @@ test('buildVrt wraps rasters without copying them', async () => {
 
   // A VRT describes the sources rather than holding a copy of them.
   const reopened = gdal.openSync(path)
-  assert.equal(reopened.driver, 'VRT')
+  assert.equal(reopened.driver.name, 'VRT')
   assert.equal(reopened.bandCount, 2)
   reopened.close()
 
   // An empty destination is an in-memory VRT, and the async form agrees.
   const memory = await gdal.buildVrt('', [first])
-  assert.equal(memory.driver, 'VRT')
+  assert.equal(memory.driver.name, 'VRT')
   memory.close()
 
   assert.throws(() => gdal.buildVrtSync(path, []), /at least one source/)

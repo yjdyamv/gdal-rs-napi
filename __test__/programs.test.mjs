@@ -36,7 +36,7 @@ test('translate() writes a real COG from the command-line arguments', () => {
   georeferenced(source, 8, 8)
 
   const out = gdal.translateSync(dest, source, ['-of', 'COG', '-co', 'COMPRESS=DEFLATE'])
-  assert.equal(out.driver, 'GTiff')
+  assert.equal(out.driver.name, 'GTiff')
   assert.equal(out.width, 8)
   assert.equal(out.height, 8)
   assert.equal(out.metadata('IMAGE_STRUCTURE').COMPRESSION, 'DEFLATE')
@@ -68,7 +68,7 @@ test('translate() runs off the event loop too', async () => {
   georeferenced(source, 4, 4)
 
   const out = await gdal.translate(tmp('async-out.tif'), source, ['-of', 'GTiff'])
-  assert.equal(out.driver, 'GTiff')
+  assert.equal(out.driver.name, 'GTiff')
   assert.equal(out.width, 4)
   out.close()
 })
@@ -78,7 +78,7 @@ test('an empty destination plus -of MEM gives an in-memory dataset', () => {
   georeferenced(source, 4, 4)
 
   const out = gdal.translateSync('', source, ['-of', 'MEM'])
-  assert.equal(out.driver, 'MEM')
+  assert.equal(out.driver.name, 'MEM')
   assert.equal(out.path, '')
   assert.equal(out.width, 4)
   assert.deepEqual(Array.from(out.band(0).readPixelsSync()), Array.from(ramp(4, 4)))
@@ -157,7 +157,7 @@ test('demProcess() runs gdaldem, and gives back real relief', async () => {
 
   const dest = tmp('dem-hillshade.tif')
   const hillshade = gdal.demProcessSync(dest, source, 'hillshade', ['-az', '315', '-alt', '45'])
-  assert.equal(hillshade.driver, 'GTiff')
+  assert.equal(hillshade.driver.name, 'GTiff')
   assert.equal(hillshade.width, 32)
   hillshade.close()
 
@@ -169,7 +169,7 @@ test('demProcess() runs gdaldem, and gives back real relief', async () => {
   // The same thing as a method on an open dataset, and off the event loop.
   const opened = gdal.openSync(source)
   const slope = await opened.demProcess(tmp('dem-slope.tif'), 'slope')
-  assert.equal(slope.driver, 'GTiff')
+  assert.equal(slope.driver.name, 'GTiff')
   slope.close()
   opened.close()
 })
@@ -247,7 +247,7 @@ test('vectorTranslate() runs ogr2ogr, schema and all', () => {
   writeFileSync(source, JSON.stringify(PLACES))
 
   const translated = gdal.vectorTranslateSync(dest, [source], ['-f', 'GPKG', '-nln', 'places'])
-  assert.equal(translated.driver, 'GPKG')
+  assert.equal(translated.driver.name, 'GPKG')
   assert.equal(translated.layerCount, 1)
 
   const layer = translated.layer(0)
