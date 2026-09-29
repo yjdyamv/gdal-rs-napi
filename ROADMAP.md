@@ -30,7 +30,7 @@
 4. **代码集中。** `dataset.rs` 2108 行、`band.rs` 1573、`vector.rs` 1382，审阅与扩展成本在上升。
 5. **musl 两个 leg 仍是 `experimental`**，`all_drivers` 的 vendored HDF5/netCDF/curl/libpq 是脆弱点。
 6. **异步错误无 `err.code`**（`napi::Task` 限制），只能用消息前缀判断。
-7. **GEOS 缺席是刻意的许可证决策**，但代价（`ST_Intersects`/`ST_Buffer`/`-simplify`）没有替代路径。
+7. **GEOS 缺席是刻意的许可证决策** —— 已定案：改做**动态链接 GEOS 的可选变体构建**（默认包仍不带），见 [`docs/GEOS.md`](./docs/GEOS.md)。
 
 ---
 
@@ -148,12 +148,12 @@ MDArray、Node Streams、`calcAsync` 明确不做，记为设计取舍。
 
 | 风险 | 影响 | 应对 |
 |---|---|---|
-| GEOS 缺席 | OGR 空间谓词不可用 | 保持默认排除；评估提供"动态链接 GEOS"的独立可选包 |
+| GEOS 缺席 | OGR 空间谓词不可用 | **已定案**：默认包继续排除；提供**动态链接 GEOS** 的可选变体构建并随包发共享库（`docs/GEOS.md`） |
 | musl + all_drivers | 构建脆弱、易碎 leg | 容器原生构建已见效；考虑拆出精简 musl 变体 |
 | 上游 `gdal` 0.19 / `gdal-sys` 0.12 漂移 | API 破坏、GDAL 升级受限 | 锁定版本 + 定期跟进；抽象层隔离 |
 | 全局锁 | 并发上限、错误状态耦合 | Phase 2 的 PoC；实在不行明确写进文档 |
 | 包体与构建时长 | 用户体验、CI 成本 | 按需驱动、LTO 调优、缓存 |
-| 许可证 | static linking 的传染性 | GEOS 已处理；新增依赖需过 license 门禁 |
+| 许可证 | static linking 的传染性 | GEOS 走**动态链接**变体以履行 LGPL（`docs/GEOS.md`），而非静态链接 + 可重链接产物；新增依赖需过 license 门禁 |
 
 ---
 

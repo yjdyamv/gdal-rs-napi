@@ -15,7 +15,8 @@
 | WS-6 直方图写回 | ✅ 已完成 | `defaultHistogram(force?)` / `setDefaultHistogram()`，与 `statistics()` / `setStatistics()` 对齐 |
 | B2 特性探测 | ✅ 已完成 | `gdal.apiVersion`、`gdal.features()` |
 | WS-5 常量枚举 | ✅ 已完成 | `gdal.const` —— `DataType`/`FieldType`/`Justification`/`GeometryType`/`ColorInterpretation`/`Resampling`/`OverviewResampling`/`SqlDialect`，纯 JS（`index.js`）+ 逐值对照运行时的测试 |
-| WS-1 几何对象模型 | ⏳ 待 C1 | 杠杆最大，需先定 GEOS 决策 |
+| C1 GEOS 决策 | ✅ 已定（方案 B） | 动态链接 GEOS 的可选变体构建，见 [`docs/GEOS.md`](./docs/GEOS.md) |
+| WS-1 几何对象模型 | 🟡 进行中 | `gdal.Geometry` 类（工厂/转换/度量/变换）；谓词按 `has_geos()` 答复 |
 | WS-2 Driver/Dataset 对象模型 | ✅ 已完成 | `Driver` 对象（+`createCopy`）、`dataset.driver` 对象化、`open({drivers})`、`Dataset.description`/`rasterSize`/`getFileList`、`setProjection` 收 `SpatialRef`。集合类**不做**，见下 |
 | WS-3 Feature/Field 对象模型 | ✅ 已完成 | `layer.field(name)`/`addField`/`deleteField`/`reorderFields`、`FieldInfo` 全量定义、`layer.features()`（异步）、`layer.setSpatialFilter(geom)`、`layer.defn`（`FeatureDefn`）、`layer.getFeature(fid)` → `Feature`（`fields` 直写穿、`geometry`、`defn`、`toObject`） |
 | WS-4 异步人体工学 | ⏳ 与 Phase 2 锁模型同批 | |
@@ -286,18 +287,32 @@ compat 层用测试锁住形状即可。它的价值是——**让 `gdal-async` 
 
 排序依据：**(用户影响 × 可行性) / 依赖**。
 
-### C1. 先决决策：GEOS（阻塞 A5 的一半）
+### C1. 先决决策：GEOS —— ✅ 已定：方案 B（动态链接变体）
 
-三选一，Phase 1 内必须定：
+**决策：做 GEOS，但作为一个独立的、可选的构建变体，且 GEOS 以*共享库*形式链接。**
+完整推理见 [`docs/GEOS.md`](./docs/GEOS.md)。要点：
+
+- **`.node` 本身是动态库，并不能免除 LGPL 义务** —— 该看的是 GEOS 相对 `.node` 的链接方式。
+  `gdal-src/geos_static` 把 GEOS 编译**进** `.node`，那仍是静态链接，LGPL-2.1 §6 会要求提供
+  可重链接能力（目标文件，或能产出它们的构建）。`gdal-src/geos` 让 GDAL 链接一个**共享**的
+  GEOS，"替换该库"就是换个文件，义务就此履行。
+- 因此选 `gdal-src/geos`，并且发布时**把 GEOS 的共享库随包发出**（与 `assets/` 同样 staging），
+  否则"零宿主依赖"就不成立。`geos_static` 仅作退路，且真要走它就必须随发布附上可重链接产物。
+- 默认包不变（无 GEOS、`features().geos === false`）；GEOS 构建是**变体**（`--features geos`）。
+- 代码层面：`gdal` crate 不暴露 GEOS 调用，谓词经 `gdal_sys` 的 `OGR_G_*` 直连，且**每个都先查
+  `has_geos()`** —— 没有 GEOS 时给出"本构建没有 GEOS"的答复，而不是 `TypeError`；接口形状不变，
+  变的只是答案，这正是 `features().geos` 存在的意义。
+
+<details>
+<summary>当初的三选一（留档）</summary>
 
 | 方案 | 内容 | 评价 |
 |---|---|---|
-| **A. 不做** | 几何 API 只提供非 GEOS 子集，谓词方法不存在；`diagnostics().geosAvailable === false` 时文档指向"用 PostGIS/GEOS 外部处理" | 成本最低，但"几何"能力远低于 `gdal-async` |
-| **B. 单独 GEOS 变体包** | 默认包不带 GEOS；另发 `gdal-rs-napi-geos`（动态链接系统 GEOS，或静态 + 可重链接对象以合规 LGPL） | **推荐**。保住默认包的许可证纯净，同时给出功能对等路径 |
+| **A. 不做** | 几何 API 只提供非 GEOS 子集；`features().geos === false` 时文档指向"用 PostGIS/GEOS 外部处理" | 成本最低，但几何能力远低于 `gdal-async` |
+| **B. 单独 GEOS 变体（**已选**）** | 默认包不带 GEOS；变体构建动态链接 GEOS 并随包发共享库 | 保住默认包的许可证干净，同时给出功能对等路径 |
 | **C. Rust `geo` crate 自实现** | 不依赖 GEOS | 语义与 GEOS 不一致，工作量大，不推荐 |
 
-**建议：Phase 1 选 A 落地对象模型（方法按 `geosAvailable` 条件注册），同时把 B 排进 Phase 2。**
-这样对象模型不被 GEOS 阻塞，功能对等有明确路径。
+</details>
 
 ### C2. 工作流
 
@@ -356,7 +371,7 @@ compat 层用测试锁住形状即可。它的价值是——**让 `gdal-async` 
 ### C3. 顺序与依赖
 
 ```
-C1 (GEOS 决策) ──┐
+C1 (GEOS 决策 ✅=B) ┐
                  ├─> WS-1 几何对象模型 ──┐
 WS-5 常量 ───────┘                       ├─> WS-7 兼容层
 WS-2 Driver/Dataset 对象模型 ────────────┤
