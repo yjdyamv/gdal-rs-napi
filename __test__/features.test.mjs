@@ -1,0 +1,21 @@
+// The binding's own capability probe: `apiVersion` and `features()`, the pair a
+// caller branches on instead of calling a method and catching the `TypeError`.
+
+import assert from 'node:assert/strict'
+import { test } from 'node:test'
+
+import { gdal } from './helpers.mjs'
+
+test('apiVersion names the binding, and features() probes what it can do', () => {
+  // The binding's own version, distinct from `version().gdal`.
+  assert.match(gdal.apiVersion, /^\d+\.\d+\.\d+/)
+  assert.notEqual(gdal.apiVersion, gdal.version().gdal)
+
+  const features = gdal.features()
+  assert.equal(features.geos, gdal.diagnostics().geosAvailable)
+  assert.equal(typeof features.threadSafe, 'boolean')
+
+  // The two that are deliberately absent, and are reported rather than missing.
+  assert.equal(features.multidimensional, false)
+  assert.equal(features.streams, false)
+})

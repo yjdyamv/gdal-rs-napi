@@ -252,3 +252,49 @@ pub fn diagnostics() -> Diagnostics {
         geos_available: gdal::version::VersionInfo::has_geos(),
     }
 }
+
+/// The **binding's own** API version — `package.json`'s version, which is not
+/// the GDAL version `version()` reports.
+///
+/// It exists so a feature can be probed without parsing anything: read this once
+/// at startup and branch, rather than calling a method and catching the
+/// `TypeError` when it is not there yet.
+#[allow(non_upper_case_globals)]
+#[napi]
+pub const apiVersion: &str = env!("CARGO_PKG_VERSION");
+
+/// Which optional capabilities this build actually has.
+///
+/// `info()` answers "what was GDAL compiled with" by listing GDAL's `BUILD_INFO`,
+/// where a missing key is the answer. This is the same question asked about *this
+/// binding*: a stable set of booleans, always present, so `if (gdal.features().geos)`
+/// reads the same way whatever the build turned out to be. The two flags that are
+/// `false` here are the capabilities deliberately left out rather than
+/// unavailable — see `CHANGELOG.md`.
+#[napi(object)]
+pub struct FeatureSupport {
+    /// Whether OGR's geometry predicates (`ST_Intersects`, `ST_Buffer`, `-simplify`)
+    /// are compiled in. GDAL implements them through GEOS, which is LGPL, and a
+    /// statically linked LGPL library would relicense this artifact — so this
+    /// build is `false` and those operations are absent.
+    pub geos: bool,
+    /// Whether `openThreadSafe` is compiled in. It needs GDAL ≥ 3.10, and
+    /// `build.rs` switches it on from the version `gdal-sys` reports.
+    pub thread_safe: bool,
+    /// The multidimensional data model (`MDArray`, `Group`, `Attribute`,
+    /// `Dimension`). Not implemented, so always `false`.
+    pub multidimensional: bool,
+    /// Node.js `Stream`s over raster data. Not implemented, so always `false`.
+    pub streams: bool,
+}
+
+/// What this binding can do — the feature-probe counterpart of `info()`.
+#[napi]
+pub fn features() -> FeatureSupport {
+    FeatureSupport {
+        geos: gdal::version::VersionInfo::has_geos(),
+        thread_safe: cfg!(gd_thread_safe),
+        multidimensional: false,
+        streams: false,
+    }
+}
