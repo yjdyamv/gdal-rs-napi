@@ -149,7 +149,12 @@ gdal.driver('GeoJSON').openSync('features.geojson')          // 同一种限定
 ```
 
 `Driver.open` / `Driver.openSync` 与 `Driver.create` / `Driver.createSync` 是同样几个调用，
-只是驱动已经写死，不可能传错。
+只是驱动已经写死，不可能传错。`Driver.createCopy` / `createCopySync` 对 `CreateCopy` 同理 ——
+这是通向 COG 这类「只实现 CreateCopy、不实现 Create」的驱动的路：
+
+```js
+gdal.driver('COG').createCopySync('out.tif', source, { COMPRESS: 'DEFLATE' })
+```
 
 ## 文件 —— 内存与虚拟文件系统
 
@@ -394,6 +399,9 @@ dest.setProjection(gdal.epsgToWkt(3857))
 
 await raster.reprojectImage(dest, { dstWkt: gdal.epsgToWkt(3857) })
 ```
+
+`setProjection` 也能直接收 `SpatialRef`，手里已有的 CRS 不必再绕回 WKT 一次：
+`dest.setProjection(gdal.SpatialRef.fromEpsg(3857))`。
 
 `suggestedWarpOutput` 就是 `gdalwarp` 在动任何像素之前算的那笔账 —— 尺寸、geotransform
 和 `extent`，所以它也是「输出会有多大」的答案。`reprojectImage` 是 `GDALReprojectImage`：

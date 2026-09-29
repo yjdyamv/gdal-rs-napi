@@ -182,6 +182,12 @@ gdal.driver('GeoJSON').openSync('features.geojson')          // same restriction
 
 `Driver.open` / `Driver.openSync` and `Driver.create` / `Driver.createSync` are the
 same calls with the driver already named, so it cannot be passed the wrong one.
+`Driver.createCopy` / `createCopySync` is the same for `CreateCopy` — the road to
+drivers like COG that implement it and not `Create`:
+
+```js
+gdal.driver('COG').createCopySync('out.tif', source, { COMPRESS: 'DEFLATE' })
+```
 
 ## Files — memory, and the virtual file system
 
@@ -481,6 +487,9 @@ dest.setProjection(gdal.epsgToWkt(3857))
 
 await raster.reprojectImage(dest, { dstWkt: gdal.epsgToWkt(3857) })
 ```
+
+`setProjection` also takes a `SpatialRef` directly, so a CRS you already hold does
+not have to go back through its WKT: `dest.setProjection(gdal.SpatialRef.fromEpsg(3857))`.
 
 `suggestedWarpOutput` is the arithmetic `gdalwarp` does before any pixel moves — size,
 geotransform and `extent` — so it is also the answer to "how big would my output be".

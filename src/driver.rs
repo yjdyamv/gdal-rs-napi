@@ -19,7 +19,8 @@ use napi_derive::napi;
 use serde_json::Value;
 
 use crate::dataset::{
-    CreateOptions, JsDataset, OpenKind, OpenOptions, OpenTask, create_dataset_sync,
+    CopyTask, CreateOptions, JsDataset, OpenKind, OpenOptions, OpenTask, create_copy_sync_with,
+    create_dataset_sync,
 };
 use crate::dtype::DataType;
 use crate::error::{IntoGdalResult, Result, bad_argument};
@@ -222,6 +223,39 @@ impl JsDriver {
             path,
             kind: OpenKind::CreateRaster(options.into_create_options(self.name.clone())),
         })
+    }
+
+    /// Copy `source` through this driver — GDAL's `CreateCopy`, the only road to
+    /// drivers like COG that implement it and not `Create`.
+    ///
+    /// `source` is any open dataset and `options` are this driver's creation
+    /// options (`{ COMPRESS: 'DEFLATE', BLOCKSIZE: 512 }`). It is the same call as
+    /// `source.createCopySync(path, name, options)`, with the driver already named.
+    #[napi]
+    pub fn create_copy_sync(
+        &self,
+        path: String,
+        source: &JsDataset,
+        options: Option<Value>,
+    ) -> Result<JsDataset> {
+        create_copy_sync_with(&self.name, &path, source.dataset(), options.as_ref())
+    }
+
+    /// The same, on the libuv thread pool — writing a whole COG is not something
+    /// the event loop should wait for.
+    #[napi(ts_return_type = "Promise<Dataset>")]
+    pub fn create_copy(
+        &self,
+        path: String,
+        source: &JsDataset,
+        options: Option<Value>,
+    ) -> Result<AsyncTask<CopyTask>> {
+        Ok(AsyncTask::new(CopyTask::new(
+            source.dataset().clone(),
+            path,
+            self.name.clone(),
+            options.as_ref(),
+        )?))
     }
 
     /// The short name. Defined so that `` `${dataset.driver}` `` and

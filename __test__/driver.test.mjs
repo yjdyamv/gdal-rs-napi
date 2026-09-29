@@ -102,6 +102,37 @@ test('driver.openSync reads with that driver only', () => {
   assert.throws(() => gdal.openSync(path, { drivers: [GTiff] }))
 })
 
+test('driver.createCopy copies a dataset through that driver', async () => {
+  const sourcePath = tmp('driver-copy-src.tif')
+  const source = gdal.createSync(sourcePath, {
+    driver: GTiff,
+    width: 4,
+    height: 4,
+    bandCount: 1,
+    dataType: 'Uint8',
+  })
+  source.band(0).fill(7)
+  source.close()
+
+  // The driver object carries the name, so the call cannot pass the wrong one —
+  // and this is the road to drivers (COG, JPEG) that implement CreateCopy only.
+  const opened = gdal.openSync(sourcePath)
+  const copied = gdal.driver(GTiff).createCopySync(tmp('driver-copy-out.tif'), opened, {
+    COMPRESS: 'DEFLATE',
+  })
+  assert.equal(copied.driver.name, GTiff)
+  assert.equal(copied.band(0).readPixelsSync()[0], 7)
+  copied.close()
+  opened.close()
+
+  // The async form runs the same body, so it agrees.
+  const reopened = gdal.openSync(sourcePath)
+  const asyncCopy = await gdal.driver(GTiff).createCopy(tmp('driver-copy-async.tif'), reopened)
+  assert.equal(asyncCopy.band(0).readPixelsSync()[0], 7)
+  asyncCopy.close()
+  reopened.close()
+})
+
 test('driver.createSync and driver.create name the driver for you', async () => {
   const path = tmp('driver-created.tif')
   const dataset = gdal.driver(GTiff).createSync(path, {

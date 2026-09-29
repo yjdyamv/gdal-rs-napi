@@ -219,3 +219,25 @@ test('datasets and layers hand out their CRS as an object', () => {
   )
   layers.close()
 })
+
+test('setProjection takes a SpatialRef as well as a WKT string', () => {
+  const path = tmp('set-projection.tif')
+  const dataset = gdal.createSync(path, {
+    driver: 'GTiff',
+    width: 2,
+    height: 2,
+    bandCount: 1,
+  })
+
+  // The string form, unchanged.
+  dataset.setProjection(gdal.epsgToWkt(4326))
+  assert.equal(dataset.spatialRef.equals(wgs84()), true)
+
+  // ... and a SpatialRef, which is the object `dataset.spatialRef` hands back —
+  // passed as-is instead of through its `wkt`.
+  dataset.setProjection(webMercator())
+  assert.equal(dataset.spatialRef.authCode, 3857)
+  assert.equal(dataset.spatialRef.equals(webMercator()), true)
+
+  dataset.close()
+})

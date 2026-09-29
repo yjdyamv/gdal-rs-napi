@@ -729,11 +729,26 @@ impl JsDataset {
             .with_mut(|dataset| dataset.set_geo_transform(&array).gdal())
     }
 
-    /// Set the CRS from a WKT string — see `epsgToWkt` for the usual way to get
-    /// one. Anything an existing dataset or layer reports as `projection` /
-    /// `spatialRefWkt` will do too.
+    /// Set the CRS from a WKT string, or from a `SpatialRef`.
+    ///
+    /// A string is anything an existing dataset or layer reports as `projection` /
+    /// `spatialRefWkt` (and `epsgToWkt` is the usual way to make one). A
+    /// `SpatialRef` is the object `dataset.spatialRef` and `SpatialRef.fromEpsg`
+    /// hand back — passed as-is rather than through its `wkt`, so a caller who has
+    /// one never has to spell the round trip out.
+    ///
+    /// ```js
+    /// dataset.setProjection(gdal.epsgToWkt(4326))
+    /// dataset.setProjection(gdal.SpatialRef.fromEpsg(3857))
+    /// ```
     #[napi]
-    pub fn set_projection(&self, wkt: String) -> Result<()> {
+    pub fn set_projection(&self, projection: Either<String, &JsSpatialRef>) -> Result<()> {
+        // Resolve a `SpatialRef` before taking the lock: `wkt()` takes it itself,
+        // and the lock is not reentrant.
+        let wkt = match projection {
+            Either::A(wkt) => wkt,
+            Either::B(spatial_ref) => spatial_ref.wkt()?,
+        };
         self.dataset
             .with_mut(|dataset| dataset.set_projection(&wkt).gdal())
     }
@@ -1108,14 +1123,7 @@ impl JsDataset {
         driver: String,
         options: Option<Value>,
     ) -> Result<JsDataset> {
-        ensure_initialized();
-        let driver = DriverManager::get_driver_by_name(&driver).gdal()?;
-        let creation_options = build_creation_options(options.as_ref())?;
-
-        let dataset = self.dataset.with_exclusive(|source| {
-            source.create_copy(&driver, &path, &creation_options).gdal()
-        })?;
-        Ok(JsDataset::wrap(dataset, path))
+        create_copy_sync_with(&driver, &path, &self.dataset, options.as_ref())
     }
 
     #[napi(ts_return_type = "Promise<Dataset>")]
@@ -1125,14 +1133,12 @@ impl JsDataset {
         driver: String,
         options: Option<Value>,
     ) -> Result<AsyncTask<CopyTask>> {
-        Ok(AsyncTask::new(CopyTask {
-            dataset: self.dataset.clone(),
+        Ok(AsyncTask::new(CopyTask::new(
+            self.dataset.clone(),
             path,
             driver,
-            // `CslStringList` wraps a raw GDAL pointer, so the task carries plain
-            // pairs and rebuilds the list on the worker thread.
-            options: crate::json::option_pairs(options.as_ref())?,
-        }))
+            options.as_ref(),
+        )?))
     }
 
     #[napi]
@@ -1942,6 +1948,24 @@ impl Task for FlushTask {
     }
 }
 
+/// `createCopy` driven by a named driver, for `Dataset.createCopySync` and
+/// `Driver.createCopySync` alike — one body, so the two cannot drift.
+pub(crate) fn create_copy_sync_with(
+    driver: &str,
+    path: &str,
+    source: &DatasetRef,
+    options: Option<&Value>,
+) -> Result<JsDataset> {
+    ensure_initialized();
+    let driver = DriverManager::get_driver_by_name(driver).gdal()?;
+    let creation_options = build_creation_options(options)?;
+
+    let dataset = source.with_exclusive(|source| {
+        source.create_copy(&driver, path, &creation_options).gdal()
+    })?;
+    Ok(JsDataset::wrap(dataset, path.to_string()))
+}
+
 /// `createCopy` on the thread pool: writing a whole COG is exactly the kind of
 /// operation that should not hold up the event loop.
 pub struct CopyTask {
@@ -1949,6 +1973,25 @@ pub struct CopyTask {
     path: String,
     driver: String,
     options: Vec<(String, String)>,
+}
+
+impl CopyTask {
+    /// The task `Dataset.createCopy` and `Driver.createCopy` share.
+    pub(crate) fn new(
+        dataset: DatasetRef,
+        path: String,
+        driver: String,
+        options: Option<&Value>,
+    ) -> Result<Self> {
+        Ok(Self {
+            dataset,
+            path,
+            driver,
+            // `CslStringList` wraps a raw GDAL pointer, so the task carries plain
+            // pairs and rebuilds the list on the worker thread.
+            options: crate::json::option_pairs(options)?,
+        })
+    }
 }
 
 impl Task for CopyTask {

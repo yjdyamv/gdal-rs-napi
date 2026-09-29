@@ -48,6 +48,14 @@ First working cut — everything here is new.
   `gdal` crate read it. Setting the flag is the whole fix; the message travels
   through the existing error path, and `lastError()` still answers `null` for it
   (a thrown failure has been read and reset, as documented).
+- `Driver.createCopy` / `createCopySync` copies another dataset through this
+  driver — GDAL's `CreateCopy`, the road to drivers (COG, JPEG) that implement it
+  and not `Create`. It is `source.createCopySync(path, name, options)` with the
+  driver already named, so it cannot be passed the wrong one, and the async form
+  runs on the thread pool.
+- `dataset.setProjection` takes a `SpatialRef` as well as a WKT string, so the
+  object `dataset.spatialRef` hands back can go straight back in. An overload
+  rather than a new `setSrs()`, as the stability rules call for.
 - `docs/API-STABILITY.md` writes down the rules the surface was already following
   — naming (`xxxSync()` / `xxx()`), 0-based indexing with `band.id` as the single
   exception, `null` rather than `undefined`, `err.code` on the sync surface and
