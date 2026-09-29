@@ -118,6 +118,25 @@ First working cut — everything here is new.
   written. `createFeature` and `updateFeature` now make those two calls directly and
   keep the status, relaying GDAL's own explanation ("unsupported operation on a
   read-only datasource"), the way `deleteFeature` already did.
+- `new CoordinateTransform(from, to, options)` can be told how GDAL should choose
+  the operation: a specific `pipeline` (a PROJ string, a WKT2 coordinate operation,
+  or an `urn:ogc:def:coordinateOperation:EPSG::XXXX` URN) with an optional
+  `reverse`, an `accuracy` floor in metres, `ballpark: false` to refuse a fallback
+  transformation rather than quietly approximating, and an `areaOfInterest` to
+  choose by. It is a pass-through of GDAL's `OGRCoordinateTransformationOptions`,
+  and the trap a pipeline carries is now pinned by a test: GDAL hands a named
+  operation the coordinates in the source CRS's **authority** order — latitude,
+  longitude for `EPSG:4326` — *not* the longitude,latitude order every other call
+  here speaks, so a pipeline written in this API's terms needs its own `axisswap`.
+- What a list field actually does is the **driver's** business, and is now
+  documented per driver rather than assumed: GeoJSON and SQLite store a real list
+  and hand the array back; GPKG accepts the declaration, warns that the type "is
+  not handled natively. Falling back to String.", and stores a scalar column — so a
+  list value written there lands as GDAL's internal `(2:a,b)` text, neither the
+  value nor usable as one; FlatGeobuf accepts the *field* and then refuses the
+  feature write. That is why inference keeps writing comma-joined `String` text for
+  an array: it is the portable form, and it is the value rather than a form of it.
+  All four behaviours are pinned by a test.
 - An async failure now carries `err.code` as well. napi pins a `Task`'s error type,
   so the stable token has always had to travel as a `[GDAL_…]` prefix on the
   message — and `err.code` was the useless `'GenericFailure'`. The JavaScript shell
@@ -521,10 +540,9 @@ First working cut — everything here is new.
 
 ### Known gaps
 
-- CRS handling stops at points and bounding boxes: geometries are not transformed,
-  `CoordTransformOptions` (a specific pipeline, an accuracy target) is not exposed,
-  and the transformation is synchronous, so a million points has to be chunked by
-  the caller.
+- Transformations are synchronous and 2D: `Geometry.transform` and
+  `transformGeometry` move a whole geometry in memory, so a million points has to
+  be chunked by the caller rather than streamed.
 - Histograms can be read and written (`histogram()`, `defaultHistogram()`,
   `setDefaultHistogram()`), so the pair now matches `statistics()` /
   `setStatistics()`.
@@ -533,6 +551,7 @@ First working cut — everything here is new.
 - No terrain algorithms beyond the ones `gdaldem` itself offers.
 - GDAL keeps the reading position on the layer, so a layer takes one reader at a
   time — a second cursor, or a `featuresSync()`, rewinds the first.
-- Array-valued properties are written as comma-joined text rather than list fields,
-  unless the field is declared as a list one — see `FieldDefinition`.
+- A list field is only a list on drivers that have one, and the four here disagree
+  — see the note under `### Binding`. Inference writes comma-joined text, which
+  every driver keeps.
 - Intel macOS and 32-bit targets are not built.

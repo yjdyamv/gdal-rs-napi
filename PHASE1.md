@@ -167,7 +167,7 @@ GDAL 的数字码属于兼容层（WS-7），那里 `gdal-async` 的形状才是
 | `Layer.srs`（getter/setter） | 🟡 只读 `spatialRef`/`spatialRefWkt` | |
 | `Layer.geomType` / `fidColumn` / `geomColumn` / `testCapability` | ✅ | |
 | `Layer.extent`（可赋值） | 🟡 只读 | |
-| 字段值类型：list 字段、Date/Time/Binary | 🟡 读有，写受限 | 见 ROADMAP 已知缺口 |
+| 字段值类型：list 字段、Date/Time/Binary | 🟡 读有；写看驱动 | 已实测四种驱动（GeoJSON/SQLite 真存列表、GPKG 降级为标量、FlatGeobuf 拒绝写），推断坚持逗号连接文本；有测试钉住 |
 
 ### A5. Geometry（最大的洞）
 

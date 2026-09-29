@@ -250,3 +250,50 @@ test('writing to a read-only dataset fails instead of silently doing nothing', (
 
   reopened.close()
 })
+
+test('a declared list field is a list only on drivers that have one', () => {
+  /** A layer with one declared `StringList`, written once and read back. */
+  const roundTrip = (driver, extension) => {
+    const path = tmp(`list-field-${extension}.${extension}`)
+    const dataset = gdal.createVectorSync(path, driver)
+    const layer = dataset.createLayer({
+      name: 'things',
+      geometryType: 'Point',
+      fields: [{ name: 'tags', fieldType: 'StringList' }],
+    })
+    layer.createFeature({ type: 'Point', coordinates: [0, 0] }, { tags: ['a', 'b'] })
+    dataset.close()
+
+    const reopened = gdal.openSync(path)
+    const stored = reopened.layer(0).featuresSync()[0].properties.tags
+    reopened.close()
+    return stored
+  }
+
+  // GeoJSON and SQLite have a real list column, and it round-trips as an array.
+  assert.deepEqual(roundTrip('GeoJSON', 'geojson'), ['a', 'b'])
+  assert.deepEqual(roundTrip('SQLite', 'sqlite'), ['a', 'b'])
+
+  // GPKG does not. It accepts the declaration, warns that the type "is not
+  // handled natively. Falling back to String.", and stores a scalar column — so a
+  // list value lands as GDAL's internal `(2:a,b)` text, which is neither the
+  // value nor usable as one. This is why `createFeature`'s inference writes
+  // comma-joined `String` text for an array rather than declaring a list column:
+  // the joined text is at least the value.
+  assert.equal(roundTrip('GPKG', 'gpkg'), '(2:a,b)')
+
+  // A driver that cannot take one fails at the write, loudly, rather than
+  // storing something surprising.
+  const path = tmp('list-field-flatgeobuf.fgb')
+  const dataset = gdal.createVectorSync(path, 'FlatGeobuf')
+  const layer = dataset.createLayer({
+    name: 'things',
+    geometryType: 'Point',
+    fields: [{ name: 'tags', fieldType: 'StringList' }],
+  })
+  assert.throws(
+    () => layer.createFeature({ type: 'Point', coordinates: [0, 0] }, { tags: ['a', 'b'] }),
+    /Missing implementation for OGRFieldType/,
+  )
+  dataset.close()
+})

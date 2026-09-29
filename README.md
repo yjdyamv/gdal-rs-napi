@@ -635,6 +635,42 @@ Worth knowing:
 - **Transformations are 2D and synchronous** — chunk a million points yourself
   rather than blocking the loop on one call.
 
+### Choosing the transformation
+
+`new CoordinateTransform(from, to)` lets GDAL pick the best operation it can find,
+which is usually the right answer. When it is not — you want a specific pipeline, a
+floor on accuracy, or a refusal to guess — pass options:
+
+```js
+// Use this operation instead of the computed one. A PROJ string, a WKT2
+// coordinate operation, or an `urn:ogc:def:coordinateOperation:EPSG::XXXX` URN.
+new gdal.CoordinateTransform(from, to, { pipeline: '+proj=pipeline …' })
+
+// Only operations at least this good (in metres); 0 means "conversions only".
+new gdal.CoordinateTransform(from, to, { accuracy: 1 })
+
+// Refuse a "ballpark" fallback, so "there is no proper transformation" becomes a
+// failure instead of a silently approximate answer.
+new gdal.CoordinateTransform(from, to, { ballpark: false })
+
+// Where you are, when several operations exist for one pair of CRSes.
+new gdal.CoordinateTransform(from, to, { areaOfInterest: [12, 50, 14, 52] })
+```
+
+**A `pipeline` sees swapped coordinates.** GDAL hands a named operation the
+coordinates in the source CRS's **authority** order — latitude, longitude for
+`EPSG:4326` — *not* the longitude,latitude order every other call here speaks. So a
+hand-written pipeline that assumes this API's order has to say so:
+
+```js
+new gdal.CoordinateTransform(wgs84, utm33, {
+  pipeline: '+proj=pipeline +step +proj=axisswap +order=2,1 +step …',
+})
+```
+
+It is the same trap as above, moved one level down: the pipeline is written in
+PROJ's own terms, and PROJ's terms are the CRS's, not this binding's.
+
 ## Vector
 
 ```js
@@ -812,12 +848,18 @@ boolean `Integer` — with two deliberate choices:
 
 - **A `null` or a nested object creates no field.** Inventing a column for a
   value we cannot represent is worse than leaving it out.
-- **An array becomes a `String` holding comma-joined text**, not a list field. A
-  driver with no list columns (GPKG, for one) *accepts* a list field request,
-  creates a scalar column, and then still reports the list type from its
-  definition — so a list setter afterwards stores GDAL's internal `(2:a,b)` form
-  instead of the value. Fields that are *already* list-typed (read from GeoJSON,
-  say) are still written as real lists.
+- **An array becomes a `String` holding comma-joined text**, not a list field — and
+  that is the portable answer rather than a shortcut. Whether a list column exists
+  is the driver's business, and these drivers disagree: **GeoJSON** and **SQLite**
+  store a real list and hand the array back; **GPKG** accepts the declaration,
+  warns that the type "is not handled natively. Falling back to String.", and
+  creates a scalar column — so a list value written there lands as GDAL's internal
+  `(2:a,b)` text, which is neither the value nor usable as one; **FlatGeobuf**
+  accepts the *field* and then refuses the feature write. Joined text is the one
+  form that survives all of them. Fields that are *already* list-typed (read from
+  GeoJSON, say) are still written as real lists, and declaring `StringList`
+  explicitly is how you ask for one — `__test__/vector-write.test.mjs` pins all
+  four behaviours.
 
 Values are written with the setter for the **field's** declared type rather than
 the JS value's, so a `Date` field takes a date string, a `String` field takes

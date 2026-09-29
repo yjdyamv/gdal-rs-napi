@@ -519,6 +519,39 @@ GDAL 3 把 `EPSG:4326` 读作 **纬度,经度**，而调用本身完全看不出
   `createLayer` 现在也能收 `wkt` 了 —— 不是来自 EPSG 代码的 CRS 不再无处可用。
 - **坐标转换是 2D 且同步的** —— 上百万个点请自行分块，别用一次调用把事件循环堵住。
 
+### 指定用哪个转换
+
+`new CoordinateTransform(from, to)` 让 GDAL 自己挑它能找到的最佳运算，通常这就是你要的。
+不是的时候 —— 想指定管线、想给精度设下限、想拒绝"猜一个" —— 传 options：
+
+```js
+// 用指定的运算，而不是算出来的那个。可以是 PROJ 字符串、WKT2 的 coordinate
+// operation，或 `urn:ogc:def:coordinateOperation:EPSG::XXXX` 形式的 URN。
+new gdal.CoordinateTransform(from, to, { pipeline: '+proj=pipeline …' })
+
+// 只接受至少这么好的运算（单位：米）；0 表示"只允许纯转换"。
+new gdal.CoordinateTransform(from, to, { accuracy: 1 })
+
+// 拒绝 ballpark 兜底：于是"没有像样的转换"变成一次失败，而不是一个没人告诉你的近似值。
+new gdal.CoordinateTransform(from, to, { ballpark: false })
+
+// 你在哪儿 —— 同一对 CRS 存在多个可选运算时用来挑一个。
+new gdal.CoordinateTransform(from, to, { areaOfInterest: [12, 50, 14, 52] })
+```
+
+**`pipeline` 拿到的坐标是交换过的。** GDAL 交给具名运算的坐标，用的是**源 CRS 自己的
+authority 顺序** —— 对 `EPSG:4326` 就是「纬度,经度」—— 而**不是**本 API 其它地方一律使用的
+「经度,纬度」。所以按本 API 顺序手写的管线必须自己说明这一点：
+
+```js
+new gdal.CoordinateTransform(wgs84, utm33, {
+  pipeline: '+proj=pipeline +step +proj=axisswap +order=2,1 +step …',
+})
+```
+
+这和上面那个是同一个坑，只是下沉了一层：管线是用 PROJ 的语法写的，而 PROJ 认的是 CRS 的顺序，
+不是本绑定的顺序。
+
 ## 矢量
 
 ```js
@@ -675,10 +708,14 @@ dataset.close()
 字符串 → `String`，整数 → `Integer64`，小数 → `Real`，布尔 → `Integer`。两个刻意的取舍：
 
 - **`null` 和嵌套对象不建字段** —— 为无法表示的值凭空造一列，比忽略它更糟。
-- **数组写成逗号连接的 `String`，不建列表字段**。因为不支持列表列的驱动（GPKG）
-  会**接受**列表字段请求、把列建成标量，然后仍在 layer 定义里报告列表类型，
-  于是列表 setter 会把 GDAL 内部的 `(2:a,b)` 形式写进去。已经存在列表类型的字段
-  （比如从 GeoJSON 读回来的）依然按真正的列表写入。
+- **数组写成逗号连接的 `String`，不建列表字段** —— 这是**可移植**的答案，不是偷懒。
+  有没有列表列是驱动的事，而这几个驱动并不一致：**GeoJSON** 与 **SQLite** 真的存列表、
+  也真的把数组读回来；**GPKG** 接受声明，但会警告该类型 "is not handled natively.
+  Falling back to String."，然后建出标量列 —— 于是列表值在那里落成 GDAL 内部的
+  `(2:a,b)` 文本，既不是那个值、也不能当值用；**FlatGeobuf** 收下*字段*、然后拒绝写入要素。
+  逗号连接是唯一在四种情况下都成立的形式。已经是列表类型的字段（比如从 GeoJSON 读回来的）
+  依然按真列表写入；明确声明 `StringList` 就是主动要一个列表列的方式 —— 四种行为都有测试
+  钉住，见 `__test__/vector-write.test.mjs`。
 
 值用**字段声明类型**对应的 setter 写入，而不是 JS 值的类型，所以 `Date` 字段收日期字符串、
 `String` 字段收连接后的文本、数组写进整数列会明确报错而不是静默出错。
@@ -707,7 +744,8 @@ dataset.createLayer({
 ```
 
 声明的类型**总是**压过推断：`count: 5` 本来会被推成 `Integer64`；声明成 `StringList`
-才能拿到真正的列表列，而不是推断写出的逗号连接文本。`width` / `precision` 交给驱动，
+是**请求**一个真正的列表列 —— 能不能给是驱动的事（GeoJSON 与 SQLite 可以，GPKG 会降级成标量
+列，见上面的列表字段说明）。`width` / `precision` 交给驱动，
 它可能保留也可能忽略 —— GeoPackage 保留 width 而丢弃 precision，因为 SQLite 没有定点数。
 未声明的属性依然会照常被推断出字段，与声明的一起共存。
 
@@ -1137,8 +1175,9 @@ MapInfo、DXF、DGN、CAD、S57、VDV、VFK、CSV、GTFS、Selafin、KMLSUPEROVE
 
 ## 已知缺口
 
-CRS 变换覆盖点、坐标数组、包围盒和整个几何对象（`transformGeometry`），但不暴露
-`CoordTransformOptions`（指定转换管线、精度目标），且变换是同步的 —— 上百万个点需要调用方自行分块。
+CRS 变换覆盖点、坐标数组、包围盒和整个几何对象（`transformGeometry`），也能指定用哪个转换
+（`pipeline` / `accuracy` / `ballpark` / `areaOfInterest`，见「指定用哪个转换」），但变换是**同步且
+2D** 的 —— 上百万个点需要调用方自行分块，而不是流式处理。
 
 GDAL 的读取位置在图层上，所以同一图层同时只能有一个读取者 —— 第二个游标（或一次
 `featuresSync()`）会把第一个倒回开头。

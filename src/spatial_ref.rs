@@ -3,7 +3,9 @@
 //! Everything here reaches PROJ through GDAL, so the callers take the global lock
 //! and initialise first — resolving a CRS needs the packaged `proj.db`.
 
-use gdal::spatial_ref::{AxisMappingStrategy, CoordTransform, SpatialRef};
+use gdal::spatial_ref::{
+    AxisMappingStrategy, CoordTransform, CoordTransformOptions as GdalTransformOptions, SpatialRef,
+};
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use serde_json::Value;
@@ -294,15 +296,113 @@ pub struct JsCoordinateTransform {
     inner: CoordTransform,
 }
 
+/// How GDAL should choose the coordinate operation a `CoordinateTransform` uses.
+///
+/// Without one, GDAL picks the best operation it can find — which is what most
+/// callers want. These are for when "best" is not the question: a specific
+/// pipeline, an accuracy floor, or an area to choose by.
+///
+/// It is a pass-through of `OGRCoordinateTransformationOptions`; the `gdal` crate
+/// wraps that type, so nothing here reaches into the C API directly.
+#[napi(object)]
+#[derive(Debug, Clone, Default)]
+pub struct CoordinateTransformOptions {
+    /// A specific coordinate operation, instead of the one GDAL would compute: a
+    /// PROJ string (`+proj=pipeline …`), a WKT2 `CoordinateOperation`, or a
+    /// `urn:ogc:def:coordinateOperation:EPSG::XXXX` URN.
+    ///
+    /// The pipeline has to account for the axis order of both ends, which is why
+    /// this is an override rather than a hint.
+    pub pipeline: Option<String>,
+    /// Evaluate `pipeline` in the reverse direction. Only means something with a
+    /// `pipeline`.
+    pub reverse: Option<bool>,
+    /// The accuracy to require, in metres. Only operations at least this good are
+    /// considered. `0` asks for one made only of conversions (a projection, a unit
+    /// change); a ballpark transformation has no known accuracy and is filtered
+    /// out by any non-negative value.
+    pub accuracy: Option<f64>,
+    /// Whether PROJ may fall back to a "ballpark" transformation when no precise
+    /// one is missing. Default: allowed.
+    ///
+    /// `false` is the strict setting, and it turns "there is no proper
+    /// transformation" from a silently approximate answer into a failure.
+    pub ballpark: Option<bool>,
+    /// `[west, south, east, north]` in degrees, to help GDAL choose — useful where
+    /// several operations exist for one pair of CRSes. The west value may be
+    /// greater than the east across the antimeridian.
+    pub area_of_interest: Option<Vec<f64>>,
+}
+
+/// Build GDAL's options object from the JS shape, checking what can be checked
+/// before GDAL sees it.
+fn build_transform_options(options: &CoordinateTransformOptions) -> Result<GdalTransformOptions> {
+    let mut built = GdalTransformOptions::new().gdal()?;
+
+    if let Some(pipeline) = &options.pipeline {
+        built
+            .set_coordinate_operation(pipeline, options.reverse.unwrap_or(false))
+            .gdal()?;
+    } else if options.reverse.is_some() {
+        return Err(bad_argument(
+            "`reverse` only means something alongside a `pipeline` — there is nothing to reverse",
+        ));
+    }
+
+    if let Some(accuracy) = options.accuracy {
+        // Positive test, because NaN fails every comparison.
+        let usable = accuracy.is_finite() && accuracy >= 0.0;
+        if !usable {
+            return Err(bad_argument(format!(
+                "an accuracy target has to be a finite number and not negative, got {accuracy}"
+            )));
+        }
+        built.desired_accuracy(accuracy).gdal()?;
+    }
+
+    if let Some(ballpark) = options.ballpark {
+        built.set_ballpark_allowed(ballpark).gdal()?;
+    }
+
+    if let Some(area) = &options.area_of_interest {
+        let [west, south, east, north] = <[f64; 4]>::try_from(area.as_slice()).map_err(|_| {
+            bad_argument(format!(
+                "areaOfInterest takes four numbers — west, south, east, north — got {}",
+                area.len()
+            ))
+        })?;
+        built
+            .set_area_of_interest(west, south, east, north)
+            .gdal()?;
+    }
+
+    Ok(built)
+}
+
 #[napi]
 impl JsCoordinateTransform {
+    /// From a source CRS to a target one, optionally telling GDAL how to choose
+    /// the operation.
     #[napi(constructor)]
-    pub fn new(from: &JsSpatialRef, to: &JsSpatialRef) -> Result<Self> {
+    pub fn new(
+        from: &JsSpatialRef,
+        to: &JsSpatialRef,
+        options: Option<CoordinateTransformOptions>,
+    ) -> Result<Self> {
         ensure_initialized();
         let _guard = lock_gdal();
-        Ok(Self {
-            inner: CoordTransform::new(&from.inner, &to.inner).gdal()?,
-        })
+
+        let inner = match &options {
+            None => CoordTransform::new(&from.inner, &to.inner),
+            Some(options) => CoordTransform::new_with_options(
+                &from.inner,
+                &to.inner,
+                &build_transform_options(options)?,
+            ),
+        }
+        .gdal()?;
+
+        Ok(Self { inner })
     }
 
     /// Transform one coordinate: `[x, y]` in, `[x, y]` out.

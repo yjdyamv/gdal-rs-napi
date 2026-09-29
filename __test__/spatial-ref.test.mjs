@@ -241,3 +241,71 @@ test('setProjection takes a SpatialRef as well as a WKT string', () => {
 
   dataset.close()
 })
+
+test('a CoordinateTransform can be told how to choose its operation', () => {
+  // Massachusetts and the Netherlands have no precise transformation between
+  // them, so GDAL falls back to a ballpark one — and says nothing.
+  const massachusetts = gdal.SpatialRef.fromEpsg(6491)
+  const netherlands = gdal.SpatialRef.fromEpsg(28992)
+  assert.doesNotThrow(() => new gdal.CoordinateTransform(massachusetts, netherlands))
+
+  // Forbidding the fallback turns that into a failure rather than an
+  // approximation nobody was told about.
+  assert.throws(
+    () => new gdal.CoordinateTransform(massachusetts, netherlands, { ballpark: false }),
+    /OCTNewCoordinateTransformation|transform/i,
+  )
+
+  // A pipeline is used *instead of* the computed operation — and it has to do its
+  // own axis handling. GDAL hands a named operation the coordinates in the source
+  // CRS's **authority** order (latitude, longitude for EPSG:4326), not in the
+  // longitude,latitude order the rest of this binding speaks; hence the explicit
+  // `axisswap`, after which the hand-written pipeline agrees with the computed one
+  // to the last digit.
+  const computed = new gdal.CoordinateTransform(wgs84(), gdal.SpatialRef.fromEpsg(32633))
+  const utmByHand = new gdal.CoordinateTransform(wgs84(), gdal.SpatialRef.fromEpsg(32633), {
+    pipeline:
+      '+proj=pipeline +step +proj=axisswap +order=2,1 +step +proj=unitconvert +xy_in=deg +xy_out=rad +step +proj=utm +zone=33 +ellps=WGS84',
+  })
+  assert.deepEqual(utmByHand.transformPoint(13.4, 52.5), computed.transformPoint(13.4, 52.5))
+  assert.ok(computed.transformPoint(13.4, 52.5)[0] > 380_000, 'and that is metres, not degrees')
+
+  // Without the swap the pipeline still runs — it just runs on the other order,
+  // which is the trap this option carries.
+  const unswapped = new gdal.CoordinateTransform(wgs84(), gdal.SpatialRef.fromEpsg(32633), {
+    pipeline: '+proj=noop',
+  })
+  assert.deepEqual(unswapped.transformPoint(13.4, 52.5), [52.5, 13.4], 'coordinates arrive swapped')
+
+  // A URN naming an operation works the same way. (This one is defined in the
+  // other direction, so a usable transform wants `reverse` — which is why the
+  // assertion is that GDAL took the option, not that the numbers came out.)
+  const nad27 = gdal.SpatialRef.fromEpsg(4267)
+  assert.doesNotThrow(
+    () =>
+      new gdal.CoordinateTransform(nad27, wgs84(), {
+        pipeline: 'urn:ogc:def:coordinateOperation:EPSG::8599',
+      }),
+  )
+
+  // An accuracy floor and an area to choose by are both accepted.
+  const utm = new gdal.CoordinateTransform(wgs84(), gdal.SpatialRef.fromEpsg(32633), {
+    accuracy: 0,
+    areaOfInterest: [12, 50, 14, 52],
+  })
+  assert.equal(utm.transformPoint(13.4, 52.5).length, 2)
+
+  // What can be checked here is checked here rather than handed to GDAL.
+  assert.throws(
+    () => new gdal.CoordinateTransform(nad27, wgs84(), { reverse: true }),
+    /reverse.*pipeline/,
+  )
+  assert.throws(
+    () => new gdal.CoordinateTransform(nad27, wgs84(), { accuracy: -1 }),
+    /accuracy target/,
+  )
+  assert.throws(
+    () => new gdal.CoordinateTransform(nad27, wgs84(), { areaOfInterest: [1, 2] }),
+    /four numbers/,
+  )
+})

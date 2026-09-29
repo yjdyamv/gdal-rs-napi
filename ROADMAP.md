@@ -80,7 +80,7 @@
 - [x] 让异步方法也能带 `err.code`：`napi::Task` 无法承载，所以由外壳从消息前缀提取成字段（`async-methods.js` 列出要包的方法，并有测试对照 `binding.d.ts` 防止漏包）。
 
 **CRS / 几何**
-- [ ] 暴露 `CoordTransformOptions`（指定 pipeline、精度目标）。
+- [x] 暴露 `CoordTransformOptions`：`new CoordinateTransform(from, to, { pipeline, reverse, accuracy, ballpark, areaOfInterest })`。附带一个实测发现：具名管线拿到的坐标是**源 CRS 的 authority 顺序**，所以按本 API 顺序写的管线要自己 `axisswap`。
 - [ ] 几何变换支持流式/批量（百万点不必调用方手动分块）；评估 `OGR_G_Transform` 的原地路径减少拷贝。
 
 **栅格**
@@ -90,7 +90,7 @@
 
 **矢量**
 - [x] `FeatureCursor` 实现 `Symbol.asyncIterator`：`for await (const feature of layer.openCursor())`，由外壳加上，读的是同一个 `read()`。
-- [ ] 列表字段写入（不再逗号拼接），与 `FieldDefinition` 对齐。
+- [x] 列表字段写入 —— **核实后决定不改**。实测：GeoJSON 与 SQLite 真能存列表并读回数组；GPKG 接受声明却降级成标量列（列表值落成 GDAL 内部的 `(2:a,b)`）；FlatGeobuf 收下字段、拒绝写要素。所以推断继续写逗号连接的 `String` —— 那是唯一四种都成立的形态，而且它就是那个值。四种行为有测试钉住。
 - [ ] 评估"每图层单读者"限制的缓解（副本/独立 dataset 句柄）。
 
 **通用**
