@@ -77,7 +77,7 @@
 
 **错误与诊断**
 - [x] `open/openSync` 保留 GDAL 原始错误（补 `GDAL_OF_VERBOSE_ERROR`，见 Phase 0）。
-- [ ] 错误对象补充 `err.gdalClass` / `err.gdalNumber` —— **记为取舍**。napi 的 `Error` 只能携带 `code`/`cause`，而且它只给**异步**路径（`Task` 的拒绝）留了外壳可插手的位置；要让*每个同步错误*也多两个字段，就得在外壳里包住整个导出面（含构造器与访问器），而那正是不做这种包装、把 `async-methods.js` 写成名单的理由。信息并没有丢：`err.message` 的前缀就是 `[CPLErr=3 #1]`（class 与 number），`lastError()` 也照样返回 `{class, number, message}`。写入 `docs/API-STABILITY.md`。
+- [x] 错误对象补充 `err.gdalClass` / `err.gdalNumber` —— **记为取舍**（不是"没做"，是"决定不做"）。napi 的 `Error` 只能携带 `code`/`cause`，而且它只给**异步**路径（`Task` 的拒绝）留了外壳可插手的位置；要让*每个同步错误*也多两个字段，就得在外壳里包住整个导出面（含构造器与访问器），而那正是不做这种包装、把 `async-methods.js` 写成名单的理由。信息并没有丢：`err.message` 的前缀就是 `[CPLErr=3 #1]`（class 与 number），`lastError()` 也照样返回 `{class, number, message}`。写入 `docs/API-STABILITY.md`。
 - [x] 让异步方法也能带 `err.code`：`napi::Task` 无法承载，所以由外壳从消息前缀提取成字段（`async-methods.js` 列出要包的方法，并有测试对照 `binding.d.ts` 防止漏包）。
 
 **CRS / 几何**
