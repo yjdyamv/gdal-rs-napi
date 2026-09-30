@@ -82,6 +82,14 @@ the driver stores.
    because `napi::Task` pins the status type and the message is therefore where the
    token has to travel; the shell lifts it back into `err.code`, so branch on
    either.
+   **GDAL's own class and number are not fields.** `err.message` carries them as a
+   prefix — `[CPLErr=3 #1] …` — and `lastError()` reports the same pair as
+   `{ class, number, message }`. They are deliberately not `err.gdalClass` /
+   `err.gdalNumber`: napi's `Error` carries only `code` (from the status) and
+   `cause`, and only the async path passes through the shell at all, so fields on
+   every *synchronous* error would mean wrapping the whole exported surface —
+   constructors and accessors included — which is exactly what `async-methods.js`
+   exists to avoid.
 5. **A NUL byte in a string is refused**, not truncated. It cannot survive the
    trip into C, so it is reported as a bad argument.
 

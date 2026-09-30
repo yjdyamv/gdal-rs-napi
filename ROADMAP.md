@@ -76,7 +76,8 @@
 > [`PHASE1.md`](./PHASE1.md)。** 以下只是摘要。
 
 **错误与诊断**
-- [ ] `open/openSync` 保留 GDAL 原始错误；错误对象补充 `err.gdalClass` / `err.gdalNumber`。
+- [x] `open/openSync` 保留 GDAL 原始错误（补 `GDAL_OF_VERBOSE_ERROR`，见 Phase 0）。
+- [ ] 错误对象补充 `err.gdalClass` / `err.gdalNumber` —— **记为取舍**。napi 的 `Error` 只能携带 `code`/`cause`，而且它只给**异步**路径（`Task` 的拒绝）留了外壳可插手的位置；要让*每个同步错误*也多两个字段，就得在外壳里包住整个导出面（含构造器与访问器），而那正是不做这种包装、把 `async-methods.js` 写成名单的理由。信息并没有丢：`err.message` 的前缀就是 `[CPLErr=3 #1]`（class 与 number），`lastError()` 也照样返回 `{class, number, message}`。写入 `docs/API-STABILITY.md`。
 - [x] 让异步方法也能带 `err.code`：`napi::Task` 无法承载，所以由外壳从消息前缀提取成字段（`async-methods.js` 列出要包的方法，并有测试对照 `binding.d.ts` 防止漏包）。
 
 **CRS / 几何**
@@ -84,9 +85,9 @@
 - [x] 几何变换支持流式/批量：`CoordinateTransform.transformPoints` 把点数组搬到线程池上（同步版更名 `transformPointsSync`），百万点不必调用方手动分块；`OGR_G_Transform` 的原地路径**已评估、不采纳** —— `Geometry` 是值类型，省下的只是一次克隆（理由见 PHASE1 WS-4）。
 
 **栅格**
-- [ ] 波段元数据写回：`setScale` / `setOffset` / `setUnitType` / `setDescription` / `setCategoryNames`。
-- [ ] `setDefaultHistogram`（与已有 `setStatistics` 对齐）。
-- [ ] `buildOverviews({ bands })` 的 per-band 限制：要么绕过 GTiff 约束，要么显式报"只支持全波段"。
+- [x] 波段元数据写回：`setScale` / `setOffset` / `setUnitType` / `setDescription` / `setCategoryNames`（见 PHASE1「WS-6 波段元数据写回」；唯一的不对称是 `scale`/`offset` 没有"清除"，因为 GDAL 的 setter 只收数字）。
+- [x] `setDefaultHistogram`（与已有 `setStatistics` 对齐）—— 同样见 PHASE1「WS-6 直方图写回」。
+- [x] `buildOverviews({ bands })` 的 per-band 限制：**不绕过，由 GDAL 显式报错** —— 本构建里唯一可写的 overview 驱动是 GTiff，它只接受全波段，消息就是 "Generation of overviews in TIFF currently only supported when operating on all bands"；`bands` 照常透传（给将来接受子集的驱动），并有测试钉住 GTiff 的拒绝。
 
 **矢量**
 - [x] `FeatureCursor` 实现 `Symbol.asyncIterator`：`for await (const feature of layer.openCursor())`，由外壳加上，读的是同一个 `read()`。

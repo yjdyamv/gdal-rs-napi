@@ -566,6 +566,12 @@ First working cut — everything here is new.
   cannot name a type for. An in-place `OGR_G_Transform` was weighed and not taken —
   `Geometry` is a value type and one clone is what every operation on it already
   costs; PHASE1 records the evaluation.
+- GDAL's own error class and number reach a caller through `err.message`'s
+  `[CPLErr=3 #1]` prefix and through `lastError()`, not as fields on the thrown
+  error. They are deliberately not `err.gdalClass` / `err.gdalNumber`: napi's
+  `Error` carries only `code` and `cause`, and only the async path goes through the
+  shell at all, so fields on every synchronous error would mean wrapping the whole
+  exported surface. `docs/API-STABILITY.md` states the rule.
 - Histograms can be read and written (`histogram()`, `defaultHistogram()`,
   `setDefaultHistogram()`), so the pair now matches `statistics()` /
   `setStatistics()`.
