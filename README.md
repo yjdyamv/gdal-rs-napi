@@ -631,7 +631,8 @@ webMercator.linearUnit  // { name: 'metre', factor: 1 }
 // expensive part.
 const toMercator = new gdal.CoordinateTransform(wgs84, webMercator)
 toMercator.transformPoint(13.4, 52.5) // Berlin, in metres
-toMercator.transformPoints(new Float64Array([13.4, 52.5, 2.35, 48.85]))
+toMercator.transformPointsSync(new Float64Array([13.4, 52.5, 2.35, 48.85]))
+await toMercator.transformPoints(hugeArray) // the same, on the thread pool
 toMercator.transformGeometry(polygon) // GeoJSON in, GeoJSON out
 toMercator.transformBounds([13.0, 52.0, 13.8, 53.0])
 ```
@@ -659,8 +660,15 @@ Worth knowing:
   you opened, and are `null` when it has none. `createLayer` now takes `wkt` as
   well as `epsg`, so a CRS that did not come from a code is no longer unusable
   there.
-- **Transformations are 2D and synchronous** — chunk a million points yourself
-  rather than blocking the loop on one call.
+- **A point array has a threaded twin.** `transformPoints` is the same call as
+  `transformPointsSync`, on the libuv pool, so a million coordinates is one call
+  rather than a chunking loop you write to keep the event loop free. It rebuilds the
+  transform where it runs — the two CRSes as WKT *and* their axis order travel with
+  it — so it answers exactly what the sync form answers, `withAxisMapping('authority')`
+  included.
+- **Transformations are 2D**, and `transformGeometry` is synchronous: a geometry is
+  one object rather than bulk data, and it hands back GDAL's own GeoJSON, which a
+  threaded return cannot name a type for. The bulk case is the array.
 
 ### Choosing the transformation
 

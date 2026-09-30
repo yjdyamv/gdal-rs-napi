@@ -520,7 +520,8 @@ webMercator.linearUnit  // { name: 'metre', factor: 1 }
 // 转换建一次反复用：算转换管线才是贵的那部分
 const toMercator = new gdal.CoordinateTransform(wgs84, webMercator)
 toMercator.transformPoint(13.4, 52.5) // 柏林，单位米
-toMercator.transformPoints(new Float64Array([13.4, 52.5, 2.35, 48.85]))
+toMercator.transformPointsSync(new Float64Array([13.4, 52.5, 2.35, 48.85]))
+await toMercator.transformPoints(hugeArray) // 同一件事，跑在线程池上
 toMercator.transformGeometry(polygon) // 进 GeoJSON，出 GeoJSON
 toMercator.transformBounds([13.0, 52.0, 13.8, 53.0])
 ```
@@ -542,7 +543,12 @@ GDAL 3 把 `EPSG:4326` 读作 **纬度,经度**，而调用本身完全看不出
   能解析但匹配不到的返回 `null`。
 - **`dataset.spatialRef` / `layer.spatialRef`** 直接给出已打开对象的 CRS，没有则为 `null`。
   `createLayer` 现在也能收 `wkt` 了 —— 不是来自 EPSG 代码的 CRS 不再无处可用。
-- **坐标转换是 2D 且同步的** —— 上百万个点请自行分块，别用一次调用把事件循环堵住。
+- **点数组有异步孪生。** `transformPoints` 与 `transformPointsSync` 是同一件事，前者跑在 libuv
+  线程池上 —— 上百万个坐标是一次调用，而不是为了不堵住事件循环、由调用方手写的分块循环。它在运行的
+  地方重建转换（两个 CRS 的 WKT **以及各自的轴序**都随行），所以答案与同步形式逐位一致，
+  `withAxisMapping('authority')` 之下也一致。
+- **变换是 2D 的**，`transformGeometry` 也仍是同步的：几何是**一个对象**而非批量数据，而且它返回的
+  是 GDAL 的 GeoJSON —— 线程池的返回值没法给这个类型命名。批量的场合是那个数组。
 
 ### 指定用哪个转换
 
@@ -1201,8 +1207,10 @@ MapInfo、DXF、DGN、CAD、S57、VDV、VFK、CSV、GTFS、Selafin、KMLSUPEROVE
 ## 已知缺口
 
 CRS 变换覆盖点、坐标数组、包围盒和整个几何对象（`transformGeometry`），也能指定用哪个转换
-（`pipeline` / `accuracy` / `ballpark` / `areaOfInterest`，见「指定用哪个转换」），但变换是**同步且
-2D** 的 —— 上百万个点需要调用方自行分块，而不是流式处理。
+（`pipeline` / `accuracy` / `ballpark` / `areaOfInterest`，见「指定用哪个转换」）。坐标数组有异步形式
+（`transformPoints`，跑在线程池上），所以上百万个点不必由调用方手动分块；几何变换仍是**同步**的
+（几何是一个对象，且返回值是 GDAL 的 GeoJSON）。整体仍是 **2D** —— 垂直或地心变换需要一个
+本 API 不携带的 z。
 
 GDAL 的读取位置在图层上，所以同一图层同时只能有一个读取者 —— 第二个游标（或一次
 `featuresSync()`）会把第一个倒回开头。

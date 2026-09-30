@@ -36,6 +36,7 @@ test('the generated types name what the async methods resolve to', () => {
     /writePixels\([^)]*\): Promise<void>/,
     /read\(\): Promise<Array<FeatureRecord>>/,
     /identifyEpsg\([^)]*\): Promise<string \| null>/,
+    /transformPoints\([^)]*\): Promise<Float64Array>/,
     /buildOverviews\([^)]*\): Promise<void>/,
     /createCopy\([^)]*\): Promise<Dataset>/,
   ]) {

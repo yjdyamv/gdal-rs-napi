@@ -294,6 +294,59 @@ impl JsSpatialRef {
 #[napi(js_name = "CoordinateTransform")]
 pub struct JsCoordinateTransform {
     inner: CoordTransform,
+    /// The same transformation, in the form that can travel to a worker.
+    def: TransformDef,
+}
+
+/// A transformation in a form that can cross to the thread pool.
+///
+/// `CoordTransform` is not `Send` — it owns a PROJ object — so a threaded call
+/// cannot carry one. This carries what the two ends are *made of* instead: their
+/// WKT, and the axis order in force. The WKT alone would not do, because a round
+/// trip through it does not remember the mapping — and re-applying the wrong one is
+/// exactly the silent failure this area is prone to, a plausible coordinate for the
+/// wrong part of the world. The worker rebuilds the transform from this and nothing
+/// else, which is why `build` has to put the axis order back.
+#[derive(Clone)]
+struct TransformDef {
+    from_wkt: String,
+    from_axis: AxisMappingStrategy,
+    to_wkt: String,
+    to_axis: AxisMappingStrategy,
+    options: Option<CoordinateTransformOptions>,
+}
+
+impl TransformDef {
+    /// Capture the two ends as they stand. The caller holds the GDAL lock.
+    fn capture(
+        from: &SpatialRef,
+        to: &SpatialRef,
+        options: Option<CoordinateTransformOptions>,
+    ) -> Result<Self> {
+        Ok(Self {
+            from_wkt: from.to_wkt().gdal()?,
+            from_axis: from.axis_mapping_strategy(),
+            to_wkt: to.to_wkt().gdal()?,
+            to_axis: to.axis_mapping_strategy(),
+            options,
+        })
+    }
+
+    /// Rebuild the transform where this runs. The caller holds the GDAL lock.
+    fn build(&self) -> Result<CoordTransform> {
+        let mut from = SpatialRef::from_wkt(&self.from_wkt).gdal()?;
+        from.set_axis_mapping_strategy(self.from_axis);
+        let mut to = SpatialRef::from_wkt(&self.to_wkt).gdal()?;
+        to.set_axis_mapping_strategy(self.to_axis);
+
+        match &self.options {
+            None => CoordTransform::new(&from, &to),
+            Some(options) => {
+                CoordTransform::new_with_options(&from, &to, &build_transform_options(options)?)
+            }
+        }
+        .gdal()
+    }
 }
 
 /// How GDAL should choose the coordinate operation a `CoordinateTransform` uses.
@@ -402,7 +455,12 @@ impl JsCoordinateTransform {
         }
         .gdal()?;
 
-        Ok(Self { inner })
+        // Captured now rather than on the first threaded call: it is two WKT
+        // serialisations next to a `CoordTransform::new` that consults PROJ, and it
+        // keeps the threaded path free of interior mutability.
+        let def = TransformDef::capture(&from.inner, &to.inner, options)?;
+
+        Ok(Self { inner, def })
     }
 
     /// Transform one coordinate: `[x, y]` in, `[x, y]` out.
@@ -422,35 +480,41 @@ impl JsCoordinateTransform {
     /// Transform a flat `[x0, y0, x1, y1, …]` array, returning a new one.
     ///
     /// Two dimensions only: a vertical or geocentric transformation needs a z,
-    /// which this does not carry.
-    #[napi]
-    pub fn transform_points(&self, points: Float64Array) -> Result<Float64Array> {
+    /// which this does not carry. The whole array is moved in one call, on this
+    /// thread; `transformPoints` is the same work on the pool.
+    #[napi(js_name = "transformPointsSync")]
+    pub fn transform_points_sync(&self, points: Float64Array) -> Result<Float64Array> {
         ensure_initialized();
+        let _guard = lock_gdal();
+        Ok(Float64Array::new(transform_points_with(
+            &self.inner,
+            points.as_ref(),
+        )?))
+    }
 
+    /// The same, on the thread pool.
+    ///
+    /// A million points is one call rather than a chunking loop the caller has to
+    /// write, which is what the sync form would otherwise cost to stay responsive:
+    /// the transform is rebuilt where the work runs, from the two CRSes and the axis
+    /// order they were built with, because a `CoordTransform` cannot cross threads.
+    /// Both forms run the same body, so their answers cannot drift apart.
+    #[napi(ts_return_type = "Promise<Float64Array>")]
+    pub fn transform_points(&self, points: Float64Array) -> Result<AsyncTask<TransformPointsTask>> {
         let flat = points.as_ref();
-        if flat.len() % 2 != 0 {
+        // Checked at the call rather than on the pool: a caller mistake should throw
+        // here, not reject a promise.
+        if !flat.len().is_multiple_of(2) {
             return Err(bad_argument(format!(
                 "coordinates come in pairs, but the array holds {} values",
                 flat.len()
             )));
         }
-        if flat.is_empty() {
-            return Ok(Float64Array::new(Vec::new()));
-        }
 
-        let _guard = lock_gdal();
-        let mut xs: Vec<f64> = flat.iter().step_by(2).copied().collect();
-        let mut ys: Vec<f64> = flat.iter().skip(1).step_by(2).copied().collect();
-        self.inner
-            .transform_coords(&mut xs, &mut ys, &mut [])
-            .gdal()?;
-
-        let mut out = Vec::with_capacity(flat.len());
-        for (x, y) in xs.into_iter().zip(ys) {
-            out.push(x);
-            out.push(y);
-        }
-        Ok(Float64Array::new(out))
+        Ok(AsyncTask::new(TransformPointsTask {
+            def: self.def.clone(),
+            points: flat.to_vec(),
+        }))
     }
 
     /// Transform a bounding box, densifying the edges.
@@ -485,6 +549,11 @@ impl JsCoordinateTransform {
     /// — polygons, collections, nested rings — and so is the fact that a straight
     /// line stops being straight under most projections. Transform a feature's
     /// `geometry` and write it back if that is what you need.
+    ///
+    /// Synchronous, unlike `transformPoints`: a geometry is one object rather than
+    /// bulk data, and this one hands back GDAL's own GeoJSON, which a threaded
+    /// return cannot name a type for (`serde_json::Value` has no napi type name). The
+    /// bulk case — the coordinates themselves — is the array.
     #[napi]
     pub fn transform_geometry(&self, geometry: Either<&JsGeometry, Unknown<'_>>) -> Result<Value> {
         ensure_initialized();
@@ -506,6 +575,61 @@ type OpResult<T> = std::result::Result<T, (GdalErrorCode, String)>;
 
 fn op<T>(result: Result<T>) -> OpResult<T> {
     result.map_err(split)
+}
+
+/// The body behind both point transforms — validated flat array in, flat array out.
+///
+/// Shared by the sync and threaded forms on purpose: they are the same operation
+/// and should not be able to answer differently.
+fn transform_points_with(transform: &CoordTransform, flat: &[f64]) -> Result<Vec<f64>> {
+    if !flat.len().is_multiple_of(2) {
+        return Err(bad_argument(format!(
+            "coordinates come in pairs, but the array holds {} values",
+            flat.len()
+        )));
+    }
+    if flat.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let mut xs: Vec<f64> = flat.iter().step_by(2).copied().collect();
+    let mut ys: Vec<f64> = flat.iter().skip(1).step_by(2).copied().collect();
+    transform
+        .transform_coords(&mut xs, &mut ys, &mut [])
+        .gdal()?;
+
+    let mut out = Vec::with_capacity(flat.len());
+    for (x, y) in xs.into_iter().zip(ys) {
+        out.push(x);
+        out.push(y);
+    }
+    Ok(out)
+}
+
+/// A coordinate array, transformed on the thread pool.
+pub struct TransformPointsTask {
+    def: TransformDef,
+    points: Vec<f64>,
+}
+
+impl Task for TransformPointsTask {
+    type Output = OpResult<Vec<f64>>;
+    type JsValue = Float64Array;
+
+    fn compute(&mut self) -> napi::Result<Self::Output> {
+        Ok(op((|| {
+            ensure_initialized();
+            let _guard = lock_gdal();
+            let transform = self.def.build()?;
+            transform_points_with(&transform, &self.points)
+        })()))
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
+        output
+            .map(Float64Array::new)
+            .map_err(|(code, reason)| into_status_error(code, reason))
+    }
 }
 
 /// What CRS is this? Looks the description up in the CRS database, which is why it
@@ -581,5 +705,81 @@ mod tests {
         );
         assert!(err.reason.contains(TRADITIONAL), "{}", err.reason);
         assert!(err.reason.contains(AUTHORITY), "{}", err.reason);
+    }
+
+    /// The threaded path rebuilds the transform from WKT, so the axis order has to
+    /// travel beside it. This is the whole risk of that path: a rebuilt transform
+    /// that quietly lost the mapping would answer for the wrong place, plausibly.
+    fn transformed(transform: &CoordTransform, x: f64, y: f64) -> (f64, f64) {
+        let mut xs = [x];
+        let mut ys = [y];
+        transform
+            .transform_coords(&mut xs, &mut ys, &mut [])
+            .unwrap();
+        (xs[0], ys[0])
+    }
+
+    fn a_pair(
+        from_axis: AxisMappingStrategy,
+        to_axis: AxisMappingStrategy,
+    ) -> (CoordTransform, CoordTransform) {
+        ensure_initialized();
+        let mut from = SpatialRef::from_epsg(4326).unwrap();
+        from.set_axis_mapping_strategy(from_axis);
+        let mut to = SpatialRef::from_epsg(3857).unwrap();
+        to.set_axis_mapping_strategy(to_axis);
+
+        let live = CoordTransform::new(&from, &to).unwrap();
+        let rebuilt = TransformDef::capture(&from, &to, None)
+            .unwrap()
+            .build()
+            .unwrap();
+        (live, rebuilt)
+    }
+
+    #[test]
+    fn a_rebuilt_transform_answers_what_the_live_one_does() {
+        let _guard = lock_gdal();
+        let (live, rebuilt) = a_pair(
+            AxisMappingStrategy::TraditionalGisOrder,
+            AxisMappingStrategy::TraditionalGisOrder,
+        );
+        assert_eq!(
+            transformed(&live, 13.4, 52.5),
+            transformed(&rebuilt, 13.4, 52.5)
+        );
+    }
+
+    #[test]
+    fn the_axis_order_really_does_travel_with_the_rebuild() {
+        let _guard = lock_gdal();
+
+        let (live_traditional, rebuilt_traditional) = a_pair(
+            AxisMappingStrategy::TraditionalGisOrder,
+            AxisMappingStrategy::TraditionalGisOrder,
+        );
+        let (live_authority, rebuilt_authority) = a_pair(
+            AxisMappingStrategy::AuthorityCompliant,
+            AxisMappingStrategy::TraditionalGisOrder,
+        );
+
+        // Each rebuild agrees with the transform it stands in for…
+        assert_eq!(
+            transformed(&live_traditional, 13.4, 52.5),
+            transformed(&rebuilt_traditional, 13.4, 52.5)
+        );
+        assert_eq!(
+            transformed(&live_authority, 13.4, 52.5),
+            transformed(&rebuilt_authority, 13.4, 52.5)
+        );
+
+        // …and the two orders are different answers, so this is not vacuous. Read as
+        // longitude,latitude this is Berlin; read as latitude,longitude it is not.
+        let (traditional_x, _) = transformed(&rebuilt_traditional, 13.4, 52.5);
+        let (authority_x, _) = transformed(&rebuilt_authority, 13.4, 52.5);
+        assert!(
+            (traditional_x - authority_x).abs() > 1.0,
+            "the two orders should not agree: {traditional_x} vs {authority_x}"
+        );
     }
 }

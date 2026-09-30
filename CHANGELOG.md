@@ -423,12 +423,22 @@ First working cut — everything here is new.
   `withAxisMapping`. `dataset.spatialRef` and `layer.spatialRef` hand one back for
   something already open, and `createLayer` takes `wkt` as well as `epsg`.
 - `CoordinateTransform` turns coordinates between two `SpatialRef`s:
-  `transformPoint`, `transformPoints` (a flat `Float64Array` in and out),
-  `transformGeometry` (GeoJSON in, GeoJSON out — GDAL walks the geometry, so
-  polygons, rings and collections are handled and a straight line stops being
-  straight where it should) and `transformBounds`, which densifies the edges
-  because transforming four corners is wrong for any non-linear projection.
-  `identifyEpsg(wkt)` resolves a CRS description to an authority code, on the
+  `transformPoint`, `transformPointsSync` / `transformPoints` (a flat
+  `Float64Array` in and out), `transformGeometry` (GeoJSON in, GeoJSON out — GDAL
+  walks the geometry, so polygons, rings and collections are handled and a straight
+  line stops being straight where it should) and `transformBounds`, which densifies
+  the edges because transforming four corners is wrong for any non-linear
+  projection. **The point array is the one with a threaded twin**: `transformPoints`
+  moves the whole array on the pool, so a million coordinates is one call rather
+  than a chunking loop the caller writes to keep the event loop free. `CoordTransform`
+  is not `Send`, so the task carries the two CRSes as WKT *and the axis order in
+  force* and rebuilds the transform where it runs — the axis order because a WKT
+  round trip does not remember it, and losing it is the silent wrong-place answer
+  this area is prone to. Both forms run one body, and a test compares the rebuilt
+  transform against the live one under both orders. `transformGeometry` stays
+  synchronous: a geometry is one object, and it returns GDAL's GeoJSON, which a
+  threaded return cannot name a type for (`serde_json::Value` has no napi type
+  name). `identifyEpsg(wkt)` resolves a CRS description to an authority code, on the
   thread pool because it searches the database.
 - `vectorTranslate` takes `-overwrite`, which is ogr2ogr's flag rather than GDAL's:
   `GDALVectorTranslate` replaces an existing layer on its own, and `-append` asks
@@ -549,9 +559,13 @@ First working cut — everything here is new.
 
 ### Known gaps
 
-- Transformations are synchronous and 2D: `Geometry.transform` and
-  `transformGeometry` move a whole geometry in memory, so a million points has to
-  be chunked by the caller rather than streamed.
+- Transformations are 2D, and a *geometry* transform is synchronous. A coordinate
+  array has a threaded form (`transformPointsSync` / `transformPoints`), which is the
+  bulk entry; `Geometry.transform` and `transformGeometry` stay synchronous because a
+  geometry is one object and comes back as GDAL's GeoJSON, which a threaded return
+  cannot name a type for. An in-place `OGR_G_Transform` was weighed and not taken —
+  `Geometry` is a value type and one clone is what every operation on it already
+  costs; PHASE1 records the evaluation.
 - Histograms can be read and written (`histogram()`, `defaultHistogram()`,
   `setDefaultHistogram()`), so the pair now matches `statistics()` /
   `setStatistics()`.

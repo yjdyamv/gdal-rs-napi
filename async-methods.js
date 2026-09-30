@@ -28,6 +28,7 @@ const functions = [
 
 /** Methods that return a promise, by class. */
 const methods = {
+  CoordinateTransform: ['transformPoints'],
   Dataset: [
     'buildOverviews',
     'createCopy',

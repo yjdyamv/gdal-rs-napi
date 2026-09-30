@@ -19,7 +19,7 @@
 | WS-1 几何对象模型 | 🟡 进行中 | `gdal.Geometry` 类已落地（`fromWkt`/`fromWkb`/`fromJson`、`toWkt`/`toWkb`/`toJson`、`type`/`isEmpty`/`pointCount`/`area`/`length`/`envelope`、`flattenTo2D`/`segmentize`/`swapXY`/`transform`）；写入端已能收 `Geometry` 或 GeoJSON（`createFeature`/`updateFeature`/`setSpatialFilter`/`Feature.setGeometry`/`rasterize`/`transformGeometry`）；GEOS 谓词与集合运算已写好并带 `has_geos()` 守卫（`intersects`/`contains`/…/`buffer`/`union`…，共 19 个）；按形状的访问器（`x`/`y`/`z`、`points`、`rings`/`exteriorRing`/`interiorRings`、`children`、`coordinates`）；GEOS 已**默认静态链入**（Windows/MSVC 上实测 `features().geos === true`，谓词与集合运算跑通）。**类族不做**（见下）。**待**：其余平台验证 |
 | WS-2 Driver/Dataset 对象模型 | ✅ 已完成 | `Driver` 对象（+`createCopy`）、`dataset.driver` 对象化、`open({drivers})`、`Dataset.description`/`rasterSize`/`getFileList`、`setProjection` 收 `SpatialRef`。集合类**不做**，见下 |
 | WS-3 Feature/Field 对象模型 | ✅ 已完成 | `layer.field(name)`/`addField`/`deleteField`/`reorderFields`、`FieldInfo` 全量定义、`layer.features()`（异步）、`layer.setSpatialFilter(geom)`、`layer.defn`（`FeatureDefn`）、`layer.getFeature(fid)` → `Feature`（`fields` 直写穿、`geometry`、`defn`、`toObject`） |
-| WS-4 异步人体工学 | 🟡 部分完成 | `FeatureCursor` 已可用 `for await`（外壳加的，读的仍是同一个 `read()`）；异步错误已带 `err.code`（外壳从消息前缀提取）。**未做**：`Dataset.bands/layers` 的异步迭代、异步 getter、`eventLoopWarning` —— 理由见下 |
+| WS-4 异步人体工学 | 🟡 部分完成 | `FeatureCursor` 已可用 `for await`（外壳加的，读的仍是同一个 `read()`）；异步错误已带 `err.code`（外壳从消息前缀提取）；`CoordinateTransform.transformPoints` 已跑在线程池上（点数组，百万点不必调用方分块，同步版更名 `transformPointsSync`）。**未做**：`Dataset.bands/layers` 的异步迭代、异步 getter、`eventLoopWarning` —— 理由见下 |
 | WS-7 兼容层 | 🟡 进行中 | `gdal-rs-napi/compat` 已落地：1-based 索引、`xxx()`/`xxxAsync()`（含 node 回调形态）、setter 赋值（`noDataValue`/`geoTransform`/`srs`）、`Driver` 与各集合、`Feature`（`fields.toObject`/`toArray`、可赋值 `geometry`）、`SpatialReference`、几何类族（含 `instanceof`、`toWKT`/`toJSON`/`get*`）。**不做**：Streams、MDArray、`calcAsync`、像素函数 |
 
 ### 一个修正：`gdal.const` 应该是字符串词汇，不是 GDAL 数字码
@@ -364,6 +364,16 @@ compat 层用测试锁住形状即可。它的价值是——**让 `gdal-async` 
   以空批次为终点 —— 两种读法不可能不一致。`Dataset.bands/layers` 的异步迭代**不做**：
   它们返回的就是数组，数组本来就有同步迭代器，而给每次调用返回的数组现挂一个 async 迭代器，
   收益不抵那份怪异。
+- ✅ **点数组的异步孪生**：`CoordinateTransform.transformPoints` 把整条扁平 `Float64Array` 搬到
+  线程池上，于是上百万个坐标是一次调用，而不是调用方为了不堵事件循环手写的分块循环。`CoordTransform`
+  不是 `Send`，所以任务把两个 CRS 的 WKT **连同轴序**一起带过去，在 worker 上重建 —— 丢轴序正是这一带
+  最容易出的「坐标看着合理、位置却错」的静默故障，因此同步/异步共用同一个函数体，并有一条把「重建的
+  转换」与「活的转换」在两种轴序下逐一对照的测试。同步版随之更名 `transformPointsSync`（规则第 1 条：
+  阻塞版 `xxxSync()`）—— 包未发布，这次改名成本最低。
+- ⚖️ **`OGR_G_Transform` 的原地路径：评估后不采纳。** gdal crate 有 `transform_inplace`，能把「克隆一个
+  几何」这一次拷贝降到零；但 `Geometry` 是**值类型**（`flattenTo2D`/`segmentize`/`swapXY`/`transform`
+  一律返回新对象），加一个原地方法会成为唯一的例外，而省下的只是那一次克隆 —— 与其它值操作同一量级。
+  几何变换因此保持同步值语义；批量的入口是那个坐标数组，不是几何。
 - ❌ 异步 getter（`rasterSize()`、`srs()`、`colorTable()`）：**与命名约定冲突** ——
   本 API 的规则是「阻塞版 `xxxSync()`、异步版 `xxx()`」，getter 没有 `xxxSync` 之分，
   加一个 `rasterSizeAsync()` 等于引入 `Async` 后缀，而那正是兼容层才用的拼法。

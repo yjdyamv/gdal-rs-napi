@@ -96,11 +96,11 @@ test('a transform round-trips, and the origin is exact', () => {
   assert.ok(Math.abs(lat - 52.5) < 1e-9, `latitude came back as ${lat}`)
 })
 
-test('transformPoints handles a whole array at once', () => {
+test('transformPointsSync handles a whole array at once', () => {
   const transform = new gdal.CoordinateTransform(wgs84(), webMercator())
   const points = new Float64Array([0, 0, 13.4, 52.5, 2.35, 48.85])
 
-  const moved = transform.transformPoints(points)
+  const moved = transform.transformPointsSync(points)
   assert.equal(moved.length, points.length)
   assert.ok(moved instanceof Float64Array)
 
@@ -111,8 +111,34 @@ test('transformPoints handles a whole array at once', () => {
     assert.ok(Math.abs(moved[index + 1] - y) < 1e-9, `y at ${index}`)
   }
 
-  assert.equal(transform.transformPoints(new Float64Array([])).length, 0)
+  assert.equal(transform.transformPointsSync(new Float64Array([])).length, 0)
   // Coordinates come in pairs; an odd count is a bug in the caller.
+  assert.throws(() => transform.transformPointsSync(new Float64Array([1, 2, 3])), /pairs/)
+})
+
+test('transformPoints is the same array transform, off the event loop', async () => {
+  const transform = new gdal.CoordinateTransform(wgs84(), webMercator())
+  const points = new Float64Array([0, 0, 13.4, 52.5, 2.35, 48.85])
+
+  const threaded = await transform.transformPoints(points)
+  assert.ok(threaded instanceof Float64Array)
+  assert.deepEqual(threaded, transform.transformPointsSync(points))
+
+  // The threaded path rebuilds the transform from the two CRSes, so the axis order
+  // has to survive that round trip — otherwise it answers for the wrong place, and
+  // plausibly. Compare against the sync form, which never rebuilds.
+  const authority = new gdal.CoordinateTransform(
+    wgs84().withAxisMapping('authority'),
+    webMercator(),
+  )
+  assert.deepEqual(await authority.transformPoints(points), authority.transformPointsSync(points))
+  assert.notDeepEqual(
+    await authority.transformPoints(points),
+    threaded,
+    'the two orders should not agree, or this proves nothing',
+  )
+
+  // A caller mistake is thrown at the call, not delivered as a rejection.
   assert.throws(() => transform.transformPoints(new Float64Array([1, 2, 3])), /pairs/)
 })
 

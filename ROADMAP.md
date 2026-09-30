@@ -81,7 +81,7 @@
 
 **CRS / 几何**
 - [x] 暴露 `CoordTransformOptions`：`new CoordinateTransform(from, to, { pipeline, reverse, accuracy, ballpark, areaOfInterest })`。附带一个实测发现：具名管线拿到的坐标是**源 CRS 的 authority 顺序**，所以按本 API 顺序写的管线要自己 `axisswap`。
-- [ ] 几何变换支持流式/批量（百万点不必调用方手动分块）；评估 `OGR_G_Transform` 的原地路径减少拷贝。
+- [x] 几何变换支持流式/批量：`CoordinateTransform.transformPoints` 把点数组搬到线程池上（同步版更名 `transformPointsSync`），百万点不必调用方手动分块；`OGR_G_Transform` 的原地路径**已评估、不采纳** —— `Geometry` 是值类型，省下的只是一次克隆（理由见 PHASE1 WS-4）。
 
 **栅格**
 - [ ] 波段元数据写回：`setScale` / `setOffset` / `setUnitType` / `setDescription` / `setCategoryNames`。
