@@ -17,7 +17,9 @@ use napi_derive::napi;
 use crate::dataset::{DatasetRef, with_two};
 use crate::dtype::DataType;
 use crate::error::{GdalErrorCode, IntoGdalResult, Result, bad_argument, into_status_error, split};
-use crate::raster_io::{ReadOptions, read_window, resample_alg, resolve_window, write_window};
+use crate::raster_io::{
+    ReadOptions, read_window, read_window_into, resample_alg, resolve_window, write_window,
+};
 use crate::raster_tools::{
     ContourGenerateOptions, ContourGenerateRequest, FillNoDataOptions, FillNoDataRequest,
     PolygonizeOptions, PolygonizeRequest, SieveFilterOptions, SieveFilterRequest, checksum_options,
@@ -335,8 +337,34 @@ impl JsRasterBand {
         })
     }
 
+    /// The same read into memory the caller owns: GDAL writes through it, so there is
+    /// no allocation and no copy. See `raster_io::read_window_into`.
+    fn read_into_sync(
+        &self,
+        target: Option<DataType>,
+        options: &ReadOptions,
+        into: &mut [u8],
+    ) -> Result<()> {
+        ensure_initialized();
+        self.dataset.with(|dataset| {
+            with_band(dataset, self.index, |band| {
+                let (width, height) = band.size();
+                let window = resolve_window(options, width, height)?;
+                let resampling = resample_alg(options)?;
+                read_window_into(band, target, window, resampling, into)
+            })
+        })
+    }
+
     fn write_sync(&self, data: &[u8], options: &ReadOptions) -> Result<()> {
         ensure_initialized();
+        // A write takes its data as an argument; `into` belongs to reads. Saying so
+        // beats ignoring it and letting a caller wonder where their buffer went.
+        if options.into.is_some() {
+            return Err(bad_argument(
+                "`into` is for reads — writePixels takes the data as its first argument",
+            ));
+        }
         // `with_mut` rather than `with_exclusive`: writing must be refused on a
         // read-only thread-safe dataset, and taking `&mut` is how we say so.
         self.dataset.with_mut(|dataset| {
@@ -965,14 +993,27 @@ impl JsRasterBand {
         }))
     }
 
+    /// Both sync reads, with or without a destination — `options.into` chooses. A
+    /// destination is returned as it came in, which is the same object.
+    fn read_sync_any(&self, target: Option<DataType>, mut options: ReadOptions) -> Result<Buffer> {
+        match options.into.take() {
+            Some(mut into) => {
+                self.read_into_sync(target, &options, into.as_mut())?;
+                Ok(into)
+            }
+            None => Ok(self.read_sync(target, &options)?.into()),
+        }
+    }
+
     /// Read in the band's own sample type, with no conversion. The returned
     /// buffer is the raw little-endian bytes of `width * height` samples; use
     /// `bytesPerSample(band.dataType)` to view it as a typed array.
+    ///
+    /// With `options.into` the read writes through that buffer instead of allocating
+    /// one, and hands it straight back.
     #[napi]
     pub fn read_pixels_sync(&self, options: Option<ReadOptions>) -> Result<Buffer> {
-        let options = options.unwrap_or_default();
-        let bytes = self.read_sync(None, &options)?;
-        Ok(bytes.into())
+        self.read_sync_any(None, options.unwrap_or_default())
     }
 
     /// Read, asking GDAL to convert to `data_type`.
@@ -982,19 +1023,12 @@ impl JsRasterBand {
         data_type: DataType,
         options: Option<ReadOptions>,
     ) -> Result<Buffer> {
-        let options = options.unwrap_or_default();
-        let bytes = self.read_sync(Some(data_type), &options)?;
-        Ok(bytes.into())
+        self.read_sync_any(Some(data_type), options.unwrap_or_default())
     }
 
     #[napi(ts_return_type = "Promise<Buffer>")]
     pub fn read_pixels(&self, options: Option<ReadOptions>) -> AsyncTask<ReadBandTask> {
-        AsyncTask::new(ReadBandTask {
-            dataset: self.dataset.clone(),
-            index: self.index,
-            target: None,
-            options: options.unwrap_or_default(),
-        })
+        ReadBandTask::new(self.dataset.clone(), self.index, None, options)
     }
 
     #[napi(ts_return_type = "Promise<Buffer>")]
@@ -1003,12 +1037,7 @@ impl JsRasterBand {
         data_type: DataType,
         options: Option<ReadOptions>,
     ) -> AsyncTask<ReadBandTask> {
-        AsyncTask::new(ReadBandTask {
-            dataset: self.dataset.clone(),
-            index: self.index,
-            target: Some(data_type),
-            options: options.unwrap_or_default(),
-        })
+        ReadBandTask::new(self.dataset.clone(), self.index, Some(data_type), options)
     }
 
     /// Write raw sample bytes into a window. `data` must hold at least
@@ -1528,22 +1557,67 @@ pub struct ReadBandTask {
     index: usize,
     target: Option<DataType>,
     options: ReadOptions,
+    /// The caller's buffer, when the read was asked to fill one instead of allocating.
+    /// GDAL writes through it on the worker, and it goes home as the object it came in
+    /// as.
+    into: Option<Buffer>,
+}
+
+/// What a read produced. `Reused` carries nothing, because the buffer is already on the
+/// task — and has to stay there until `resolve` runs.
+pub enum ReadOutput {
+    Allocated(Vec<u8>),
+    Reused,
+}
+
+impl ReadBandTask {
+    fn new(
+        dataset: DatasetRef,
+        index: usize,
+        target: Option<DataType>,
+        options: Option<ReadOptions>,
+    ) -> AsyncTask<Self> {
+        // Taken out of the options here rather than on the worker: the buffer travels
+        // with the task, not inside the description of the read.
+        let mut options = options.unwrap_or_default();
+        let into = options.into.take();
+        AsyncTask::new(Self {
+            dataset,
+            index,
+            target,
+            options,
+            into,
+        })
+    }
 }
 
 impl Task for ReadBandTask {
-    type Output = OpResult<Vec<u8>>;
+    type Output = OpResult<ReadOutput>;
     type JsValue = Buffer;
 
     fn compute(&mut self) -> napi::Result<Self::Output> {
         // `data_type` is only used when writing, so `Unknown` is fine here.
         let band = JsRasterBand::new(self.dataset.clone(), self.index, DataType::Unknown);
-        Ok(op(band.read_sync(self.target, &self.options)))
+        Ok(op(match self.into.as_mut() {
+            Some(into) => band
+                .read_into_sync(self.target, &self.options, into.as_mut())
+                .map(|()| ReadOutput::Reused),
+            None => band
+                .read_sync(self.target, &self.options)
+                .map(ReadOutput::Allocated),
+        }))
     }
 
     fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
-        output
-            .map(Buffer::from)
-            .map_err(|(code, reason)| into_status_error(code, reason))
+        match output.map_err(|(code, reason)| into_status_error(code, reason))? {
+            ReadOutput::Allocated(bytes) => Ok(bytes.into()),
+            // A buffer that came from JS resolves back to that same object, so this is
+            // the caller's own memory going home rather than a fresh view of it.
+            ReadOutput::Reused => Ok(self
+                .into
+                .take()
+                .expect("a read asked to fill a buffer keeps it until resolve")),
+        }
     }
 }
 

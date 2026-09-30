@@ -354,6 +354,24 @@ const copy = Uint8Array.from(bytes)   // copy makes alignment a non-issue
 const values = new Float32Array(copy.buffer, 0, copy.length / gdal.bytesPerSample('Float32'))
 ```
 
+A read can also fill a buffer you already own, which is what to do when the same tile
+comes round again and again:
+
+```js
+const tile = Buffer.alloc(256 * 256)
+band.readPixelsSync({ x: 0, y: 0, width: 256, height: 256, into: tile })
+
+// `into` is the buffer; both come back filled.
+await band.readPixels({ x: 0, y: 0, width: 256, height: 256, into: tile })
+```
+
+GDAL writes through that memory, so the read costs no allocation and no copy — and the
+call hands the very same object back, on the promise as well as in the call. It has to
+be exactly the size the read produces (`outWidth * outHeight * bytesPerSample`); a
+mismatch is refused rather than half-filled. `into` is a *read* option: `writePixels`
+takes its data as the first argument, and passing `into` there is an error rather than
+a silent no-op.
+
 And for the small questions, where an options object is a lot of ceremony:
 
 ```js

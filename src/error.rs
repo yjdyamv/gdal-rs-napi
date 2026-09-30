@@ -101,6 +101,25 @@ pub fn gdal_error(err: gdal::errors::GdalError) -> Error<GdalErrorCode> {
     }
 }
 
+/// The error behind a GDAL call that answers with a `CPLErr`: last error message and
+/// number, with `fallback` standing in when the call failed leaving nothing behind —
+/// a missing directory, say. Resets GDAL's error state afterwards, which is what every
+/// caller here wants next.
+pub(crate) fn cpl_failure(fallback: String) -> Error<GdalErrorCode> {
+    let message = crate::runtime::c_string(unsafe { gdal_sys::CPLGetLastErrorMsg() });
+    let error = gdal_error(gdal::errors::GdalError::CplError {
+        class: gdal_sys::CPLErr::CE_Failure,
+        number: unsafe { gdal_sys::CPLGetLastErrorNo() },
+        msg: if message.is_empty() {
+            fallback
+        } else {
+            message
+        },
+    });
+    unsafe { gdal_sys::CPLErrorReset() };
+    error
+}
+
 /// Shorthand so call sites read `.gdal()?` instead of a nested `map_err`.
 pub trait IntoGdalResult<T> {
     fn gdal(self) -> Result<T>;

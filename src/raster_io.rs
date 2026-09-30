@@ -5,12 +5,13 @@
 //! lets the sync methods and the `AsyncTask` implementations share a code path.
 
 use gdal::cpl::CslStringList;
-use gdal::raster::{Buffer, RasterBand, ResampleAlg};
+use gdal::raster::{Buffer as GdalBuffer, RasterBand, ResampleAlg};
+use napi::bindgen_prelude::Buffer;
 use napi_derive::napi;
 use serde_json::Value;
 
 use crate::dtype::DataType;
-use crate::error::{IntoGdalResult, Result, bad_argument};
+use crate::error::{IntoGdalResult, Result, bad_argument, cpl_failure};
 use crate::json::option_pairs;
 
 /// Region to read or write, resolved against the band's own size.
@@ -24,8 +25,10 @@ pub struct Window {
     pub out_height: usize,
 }
 
+// No `Debug`/`Clone` on this one: `into` is a `napi::Buffer`, which implements neither
+// — it is a reference to JS memory rather than a value that can be copied or printed.
 #[napi(object)]
-#[derive(Debug, Clone, Default)]
+#[derive(Default)]
 pub struct ReadOptions {
     /// Left edge of the source window, in pixels. Default 0.
     pub x: Option<u32>,
@@ -43,6 +46,17 @@ pub struct ReadOptions {
     /// `nearest`, `bilinear`, `cubic`, `cubicspline`, `lanczos`, `average`,
     /// `mode`, `gauss`. Defaults to `nearest`.
     pub resampling: Option<String>,
+    /// The buffer to read into, instead of a fresh one — for reads only.
+    ///
+    /// GDAL writes through *this* memory, so a read costs no allocation and no copy:
+    /// pass the same buffer round after round and its contents are replaced in place.
+    /// It has to be exactly the size the read produces
+    /// (`outWidth * outHeight * bytesPerSample`), and it is returned as well, so
+    /// `readPixelsSync({ into })` hands back that same object.
+    ///
+    /// `writePixels` takes its data as the first argument, and `into` there is an error
+    /// rather than a silent no-op.
+    pub into: Option<Buffer>,
 }
 
 pub fn resolve_window(
@@ -112,19 +126,25 @@ fn bytes_to_samples<T: Copy>(bytes: &[u8]) -> Vec<T> {
         .collect()
 }
 
-/// Read `window` from a band. `target` of `None` reads in the band's own sample
-/// type; `Some(t)` asks GDAL to convert.
+/// The sample type a read produces: the band's own, unless the caller asked GDAL to
+/// convert.
+fn read_data_type(band: &RasterBand<'_>, target: Option<DataType>) -> Result<DataType> {
+    let data_type = target.unwrap_or_else(|| DataType::from_gdal(band.band_type()));
+    if data_type == DataType::Unknown {
+        return Err(bad_argument("cannot read an Unknown sample type"));
+    }
+    Ok(data_type)
+}
+
+/// Read `window` from a band, allocating the result. `target` of `None` reads in the
+/// band's own sample type; `Some(t)` asks GDAL to convert.
 pub fn read_window(
     band: &RasterBand<'_>,
     target: Option<DataType>,
     window: Window,
     resampling: Option<ResampleAlg>,
 ) -> Result<Vec<u8>> {
-    let native = DataType::from_gdal(band.band_type());
-    let data_type = target.unwrap_or(native);
-    if data_type == DataType::Unknown {
-        return Err(bad_argument("cannot read an Unknown sample type"));
-    }
+    let data_type = read_data_type(band, target)?;
 
     let source = (window.x as isize, window.y as isize);
     let source_size = (window.width, window.height);
@@ -154,6 +174,72 @@ pub fn read_window(
     }
 }
 
+/// Read `window` straight into memory the caller owns — no allocation and no copy.
+///
+/// This is what `ReadOptions.into` is for: [`read_window`] builds the result and then
+/// hands it to JS, while this has GDAL write through the caller's `Buffer`. The buffer
+/// has to be exactly the size the read produces.
+///
+/// GDAL is handed a raw pointer rather than a `&mut [T]`, and that is the point: a JS
+/// `Buffer` promises nothing about alignment, so the `gdal` crate's own
+/// `read_into_slice` — which takes `&mut [T]` — could not be used soundly here. GDAL
+/// only writes bytes through the pointer.
+pub fn read_window_into(
+    band: &RasterBand<'_>,
+    target: Option<DataType>,
+    window: Window,
+    resampling: Option<ResampleAlg>,
+    into: &mut [u8],
+) -> Result<()> {
+    let data_type = read_data_type(band, target)?;
+    let Some(buffer_type) = data_type.gdal_data_type() else {
+        return Err(bad_argument("cannot read an Unknown sample type"));
+    };
+
+    let expected = window.out_width * window.out_height * data_type.size();
+    if into.len() != expected {
+        return Err(bad_argument(format!(
+            "`into` holds {} bytes, but this read produces {}x{} samples of {} bytes each — {expected} bytes",
+            into.len(),
+            window.out_width,
+            window.out_height,
+            data_type.size()
+        )));
+    }
+
+    // `nVersion = 1` is the only field GDAL asks for; everything else zero is "no
+    // progress callback, no floating-point window, default scale handling". Built this
+    // way rather than field-by-field because `GDALRasterIOExtraArg` gains fields with
+    // GDAL versions.
+    let mut extra: gdal_sys::GDALRasterIOExtraArg = unsafe { std::mem::zeroed() };
+    extra.nVersion = 1;
+    extra.eResampleAlg = resampling
+        .unwrap_or(ResampleAlg::NearestNeighbour)
+        .to_gdal();
+
+    let result = unsafe {
+        gdal_sys::GDALRasterIOEx(
+            band.c_rasterband(),
+            gdal_sys::GDALRWFlag::GF_Read,
+            window.x as i32,
+            window.y as i32,
+            window.width as i32,
+            window.height as i32,
+            into.as_mut_ptr().cast(),
+            window.out_width as i32,
+            window.out_height as i32,
+            buffer_type,
+            0,
+            0,
+            &mut extra,
+        )
+    };
+    if result != gdal_sys::CPLErr::CE_None {
+        return Err(cpl_failure("GDALRasterIOEx failed".to_owned()));
+    }
+    Ok(())
+}
+
 /// Write raw bytes into `window`. `data_type` describes how to interpret them,
 /// and must be large enough for `window.width * window.height` samples.
 pub fn write_window(
@@ -180,7 +266,7 @@ pub fn write_window(
 
     macro_rules! write {
         ($ty:ty) => {{
-            let mut buffer = Buffer::new(source_size, bytes_to_samples::<$ty>(bytes));
+            let mut buffer = GdalBuffer::new(source_size, bytes_to_samples::<$ty>(bytes));
             band.write(source, source_size, &mut buffer).gdal()
         }};
     }

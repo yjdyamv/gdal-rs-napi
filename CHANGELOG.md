@@ -393,6 +393,17 @@ First working cut — everything here is new.
   `layerByName`, `layers`, `createLayer`, `metadata`, `setMetadataItem`,
   `setGeoTransform`, `setProjection`, `buildOverviews` / `buildOverviewsSync`,
   `flush` / `flushSync`, `close`, plus a `threadSafe` getter.
+- **A read can fill a buffer you already own**: `readPixels` / `readPixelsSync` and
+  `readAs` / `readAsSync` take `options.into`, and GDAL writes through it — no
+  allocation and no copy, which is what a tile read round after round wants. The buffer
+  has to be exactly the size the read produces (`outWidth * outHeight *
+  bytesPerSample`), a mismatch is refused rather than half-filled, and it comes back as
+  the same object: a `Buffer` that arrived from JS resolves back to *that* object, so
+  the return is an identity and not a fresh view of the same memory. GDAL is handed the
+  raw pointer rather than a `&mut [T]`, and that is deliberate — a JS `Buffer` promises
+  nothing about alignment, so the `gdal` crate's own `read_into_slice` could not be used
+  soundly. `into` is a read option: `writePixels` takes its data as the first argument
+  and refuses `into` rather than ignoring it.
 - `RasterBand`: `readPixels` / `readAs` (async and sync), `writePixels`,
   `statistics` / `statisticsSync`, `histogram` / `histogramSync`,
   `noDataValue`, `setNoDataValue`, `size`, `blockSize`, `colorInterpretation`,

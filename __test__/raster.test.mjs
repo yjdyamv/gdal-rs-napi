@@ -103,6 +103,66 @@ test('creates a GTiff, writes it, and reads back identical bytes', () => {
   reopened.close()
 })
 
+test('a read can fill a buffer the caller owns, and hands that same one back', async () => {
+  const path = tmp('into.tif')
+  const expected = ramp(8, 8)
+  const created = gdal.createSync(path, { driver: 'GTiff', width: 8, height: 8, bandCount: 1 })
+  created.band(0).writePixelsSync(bytesOf(expected))
+  created.close()
+
+  const dataset = gdal.openSync(path)
+  const band = dataset.band(0)
+
+  // GDAL writes through the buffer, so it is filled in place — and what comes back is
+  // that very object, not a fresh view of the same memory.
+  const into = Buffer.alloc(64)
+  assert.equal(band.readPixelsSync({ into }), into)
+  assert.deepEqual(Array.from(into), Array.from(expected))
+
+  // The same on the pool, and the memory is still the caller's afterwards.
+  const threaded = Buffer.alloc(64)
+  assert.equal(await band.readPixels({ into: threaded }), threaded)
+  assert.deepEqual(Array.from(threaded), Array.from(expected))
+
+  // A window fills exactly the window's worth…
+  const window = Buffer.alloc(4)
+  band.readPixelsSync({ x: 2, y: 3, width: 2, height: 2, into: window })
+  const rows = [3, 4].flatMap((row) => [2, 3].map((column) => expected[row * 8 + column]))
+  assert.deepEqual(Array.from(window), rows)
+
+  // …and a resampled read fills the size of the *result*, not of the window.
+  const shrunk = Buffer.alloc(4)
+  band.readPixelsSync({ width: 4, height: 4, outWidth: 2, outHeight: 2, into: shrunk })
+  assert.equal(shrunk.length, 4)
+
+  // `readAs` writes its converted samples through the buffer too.
+  const floats = Buffer.alloc(64 * 4)
+  assert.equal(band.readAsSync('Float32', { into: floats }), floats)
+
+  dataset.close()
+})
+
+test('a destination of the wrong size is refused, on both paths', async () => {
+  const path = tmp('into-size.tif')
+  const created = gdal.createSync(path, { driver: 'GTiff', width: 8, height: 8, bandCount: 1 })
+  created.close()
+
+  const dataset = gdal.openSync(path)
+  const band = dataset.band(0)
+
+  assert.throws(() => band.readPixelsSync({ into: Buffer.alloc(63) }), /holds 63 bytes/)
+  await assert.rejects(band.readPixels({ into: Buffer.alloc(63) }), /holds 63 bytes/)
+
+  // `into` describes a read. A write takes its data as an argument, and says so
+  // rather than quietly ignoring the buffer it was handed.
+  assert.throws(
+    () => band.writePixelsSync(Buffer.alloc(64), { into: Buffer.alloc(64) }),
+    /`into` is for reads/,
+  )
+
+  dataset.close()
+})
+
 test('MEM datasets need no file at all', () => {
   const dataset = gdal.createSync('', { driver: 'MEM', width: 3, height: 2, bandCount: 2 })
   assert.equal(dataset.driver.name, 'MEM')

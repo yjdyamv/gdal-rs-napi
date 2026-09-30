@@ -30,11 +30,10 @@
 
 use std::ffi::{CString, c_char, c_int};
 
-use gdal::errors::GdalError;
 use napi::bindgen_prelude::{Buffer, Error};
 use napi_derive::napi;
 
-use crate::error::{GdalErrorCode, IntoGdalResult, Result, bad_argument, gdal_error};
+use crate::error::{GdalErrorCode, IntoGdalResult, Result, bad_argument, cpl_failure};
 use crate::runtime::{c_string, ensure_initialized, lock_gdal_shared};
 
 /// GDAL's `VSI_ISDIR` and `VSI_ISREG`, which are the POSIX mode masks. The macros
@@ -371,23 +370,10 @@ fn vsi_status(status: c_int, method_name: &'static str) -> Result<()> {
     Err(vsi_failure(method_name))
 }
 
-/// The error behind a failed `VSI*` call — the same shape `raster_tools` builds for
-/// a failed `CPLErr`, reset included, and for the same reason.
+/// The error behind a failed `VSI*` call. A call that failed for an ordinary reason —
+/// a missing directory, say — may leave nothing behind, so the method name stands in.
 fn vsi_failure(method_name: &'static str) -> Error<GdalErrorCode> {
-    let message = c_string(unsafe { gdal_sys::CPLGetLastErrorMsg() });
-    let error = gdal_error(GdalError::CplError {
-        class: gdal_sys::CPLErr::CE_Failure,
-        number: unsafe { gdal_sys::CPLGetLastErrorNo() },
-        // A `VSI*` call that failed for an ordinary reason — a missing directory,
-        // say — may leave nothing behind, so the method name stands in.
-        msg: if message.is_empty() {
-            format!("{method_name} failed")
-        } else {
-            message
-        },
-    });
-    unsafe { gdal_sys::CPLErrorReset() };
-    error
+    cpl_failure(format!("{method_name} failed"))
 }
 
 /// Stat a path behind the lock. `None` means nothing is there.

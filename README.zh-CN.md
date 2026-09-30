@@ -285,7 +285,8 @@ band.setCategoryNames([])
 
 band.fill(0)            // 整条波段写同一个值
 
-// 按波段自身类型读原始字节（零拷贝 Buffer），不做转换
+// 按波段自身类型读原始字节，返回一个新 Buffer；不做转换。
+// （要零拷贝就传 `into`，见下。）
 band.readPixelsSync({ x: 0, y: 0, width: 256, height: 256 })
 // 或让 GDAL 在读的时候转换
 band.readAsSync('Uint8')
@@ -306,6 +307,22 @@ const bytes = band.readPixelsSync()
 const copy = Uint8Array.from(bytes)   // 复制一下，对齐问题就不存在了
 const values = new Float32Array(copy.buffer, 0, copy.length / gdal.bytesPerSample('Float32'))
 ```
+
+读取也可以写进**你自己已有的缓冲区** —— 反复读同一块瓦片时就该这么做：
+
+```js
+const tile = Buffer.alloc(256 * 256)
+band.readPixelsSync({ x: 0, y: 0, width: 256, height: 256, into: tile })
+
+// `into` 就是那个缓冲区；同步与异步两种调用都返回填好的它本身。
+await band.readPixels({ x: 0, y: 0, width: 256, height: 256, into: tile })
+```
+
+GDAL 直接写进那块内存，所以这次读取**不分配、不拷贝** —— 而且返回的就是**同一个对象**
+（Promise 上也是）。它的长度必须正好等于这次读取产出的字节数
+（`outWidth * outHeight * bytesPerSample`）；对不上就报错，而不是只填一半。
+`into` 是**读**的选项：`writePixels` 的数据是第一个参数，在写那里传 `into`
+是报错，不会被默默忽略。
 
 小问题就不必摆一个 options 对象了：
 

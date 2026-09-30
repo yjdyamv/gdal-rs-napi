@@ -65,6 +65,16 @@ impl DataType {
             Self::Uint64 | Self::Int64 | Self::Float64 => 8,
         }
     }
+
+    /// The `GDALDataType` ordinal, for the FFI calls that take one — `GDALRasterIO`,
+    /// where this says how to read the bytes in the caller's buffer.
+    ///
+    /// `GdalDataType`'s variants are *declared as* the `GDALDataType` constants, which
+    /// is the cast the crate itself makes; its own `gdal_ordinal` is not public.
+    pub(crate) fn gdal_data_type(self) -> Option<gdal_sys::GDALDataType::Type> {
+        self.to_gdal()
+            .map(|value| value as gdal_sys::GDALDataType::Type)
+    }
 }
 
 /// Bytes per sample. Handy for turning the raw buffer returned by `readPixels`
