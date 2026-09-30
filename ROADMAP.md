@@ -87,6 +87,8 @@
 **栅格**
 - [x] 波段元数据写回：`setScale` / `setOffset` / `setUnitType` / `setDescription` / `setCategoryNames`（见 PHASE1「WS-6 波段元数据写回」；唯一的不对称是 `scale`/`offset` 没有"清除"，因为 GDAL 的 setter 只收数字）。
 - [x] `setDefaultHistogram`（与已有 `setStatistics` 对齐）—— 同样见 PHASE1「WS-6 直方图写回」。
+- [x] 调色板：`colorTable` / `paletteInterpretation` / `setColorTable(entries, interpretation?)`。分量沿用 GDAL 自己的 `c1`..`c4`，且是**无符号 16 位**——`gdal` crate 按 `i16` 读，所以 65000 会以 -536 进来，边界处转回，两头都有 Rust 测试；含义由 `paletteInterpretation`（`Gray`/`Rgba`/`Cmyk`/`Hls`）给出。能存多少是驱动的事，实测四种各不相同：MEM 与 VRT 全 16 位无损（VRT 把有符号值写进自己的 XML），GTiff 的 TIFF 色表只有 8 位 × 256 项、没有 alpha，只读句柄不报错而是落到 `.aux.xml`（与 `setStatistics` 同一条路）。
+- [x] 掩膜波段：`band.mask`（掩膜就当成另一条 `RasterBand`，读走共享锁，线程安全数据集上也一样）、`band.maskFlags`（`allValid`/`perDataset`/`alpha`/`noData` 四个布尔——GDAL 的标志位不互斥）、`band.createMask(perDataset?)`。GDAL 无论文件里有没有掩膜都会给一条：没有时是"全有效"的隐式波段（处处 255，且**写不进去**，GDAL 报 "attempt to write to an all-valid implicit mask band"），用 `maskFlags.allValid` 区分。掩膜也可以是**派生**的（alpha 通道或 no-data 值），正是 `alpha`/`noData` 的含义。重复创建是驱动自己的答案而不是这里的规则：GTiff 第二次就拒绝（"already an internal mask band"）。
 - [x] `buildOverviews({ bands })` 的 per-band 限制：**不绕过，由 GDAL 显式报错** —— 本构建里唯一可写的 overview 驱动是 GTiff，它只接受全波段，消息就是 "Generation of overviews in TIFF currently only supported when operating on all bands"；`bands` 照常透传（给将来接受子集的驱动），并有测试钉住 GTiff 的拒绝。
 
 **矢量**

@@ -268,6 +268,27 @@ band.readOnly           // 跟随数据集的打开方式
 band.minimum            // GDAL 的缓存：statistics() 之前是 null
 band.maximum
 band.categoryNames      // 以像素值为下标的标签，没有则 []
+band.colorTable         // [{ c1, c2, c3, c4 }, ...]，没有则 null
+band.paletteInterpretation // 这四个数怎么读：'Rgba'、'Cmyk'、'Hls'、'Gray'
+band.maskFlags          // { allValid, perDataset, alpha, noData }
+band.mask               // 有效性掩膜，本身就是一条波段
+
+// 调色板就是 `PaletteIndex` 波段的意义：一个像素值一个条目，分量为 16 位。
+// `paletteInterpretation` 是表本身对"这些数是什么"的回答 —— 默认的 `'Rgba'`
+// 即红、绿、蓝、alpha —— 而 `setColorTable` 原样收下 `colorTable` 给出的东西。
+// 能不能进文件由格式决定：MEM 与 VRT 保留全部 16 位，GTiff 的 TIFF 色表是
+// 每通道 8 位、固定 256 项。
+band.setColorTable([{ c1: 255, c2: 0, c3: 0, c4: 65535 }])
+band.setColorTable([{ c1: 0, c2: 0, c3: 0, c4: 0 }], 'Cmyk')
+
+// 掩膜把有效样本和其余区分开。`band.mask` 总有东西可给：文件里没有掩膜的波段拿到一条
+// 隐式的"全有效"波段，处处读 255 —— 这正是 `maskFlags.allValid` 报告的。它是一条完整
+// 波段，所以各种读都成立；而 `createMask()` 才是把它变成"可写"的那一步。
+band.mask.readPixelsSync()            // 样本有效处为 255
+band.maskFlags                        // { allValid, perDataset, alpha, noData }
+band.createMask(true)                 // 整数据集共用一条掩膜
+band.mask.setNoDataValue(0)           // 之后通过掩膜本身写掩膜
+band.mask.writePixelsSync(bytes)
 
 // …… 上述每一项都可以写回，格式支持的话波段元数据就不再是只读的。
 band.setScale(2.5)
@@ -1304,7 +1325,9 @@ for (const feature of layer.features) {    // 可迭代，和集合一样
 gdal.fromWKT('POINT (9 9)')` 直接替换。阻塞/异步成对为 `xxx()` / `xxxAsync()`，
 `xxxAsync` 也接受 node 风格回调。
 
-**不覆盖**的部分（免得迁移时才发现）：Streams、多维数组、`calcAsync` 和 VRT 像素函数。
+**不覆盖**的部分（免得迁移时才发现）：Streams、多维数组、`calcAsync`、VRT 像素函数，
+以及两个由本绑定自己定形状的波段附加物——`colorTable` 与 `mask`（形状在主入口上，
+不在兼容层包装里）。
 原生 API 能做的其余一切，适配层都能做 —— 包括 GEOS 谓词，因为它们在同一个构建里。
 完整清单见 `PHASE1.md`（WS-7）。
 

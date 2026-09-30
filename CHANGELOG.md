@@ -12,6 +12,53 @@ First working cut — everything here is new.
   and nothing else, so unlike `setNoDataValue(null)` there is no way to unset
   them — `0` is a value like any other, and the docs say so rather than pretending
   a null means "clear". The three that take a string do clear on `null`.
+- `RasterBand` gains the palette, the last of the band-metadata pairings:
+  `band.colorTable` reads a band's colour table as `[{ c1, c2, c3, c4 }, ...]` — one
+  entry per pixel value, `null` when there is none — `band.paletteInterpretation`
+  says what those components stand for (`Gray`, `Rgba`, `Cmyk`, `Hls`), and
+  `setColorTable(entries, interpretation?)` writes the whole table back, defaulting
+  to `Rgba`. That is the pair that makes a `PaletteIndex` band mean anything, and
+  reading it touches nothing but the band, so it takes the shared side of the lock
+  with the other accessors.
+  **The components are unsigned 16-bit**, not the signed `short` GDAL's C struct
+  declares: the `gdal` crate reads them as `i16`, so 65000 arrives as `-536` and
+  writing 65000 through it would be an overflow. The two casts live in
+  `ColorTableEntry`, with a Rust test that pins both ends of the range, and the
+  signatures say `0..=65535` instead of leaving the surprise to the first palette
+  that needs the top half. Keeping GDAL's own `c1`..`c4` names rather than renaming
+  them per interpretation is deliberate — one table would otherwise have four
+  shapes, and the interpretation is right there.
+  **What a format keeps is the format's answer**, and the tests pin it rather than
+  assume it: `MEM` and `VRT` hold all 16 bits (VRT writes them into its XML as
+  signed shorts, so a palette survives a file exactly — read back, `-536` is 65000
+  again), while GTiff's colour map is the TIFF tag, 8 bits a channel and always 256
+  entries with no alpha, so a GTiff palette comes back quantised and padded rather
+  than refusing the write. A read-only handle does not fail either: the change lands
+  in GDAL's in-memory table and the PAM layer writes a `.aux.xml` sidecar, the same
+  caveat `setStatistics` carries. An interpretation name nothing answers to is
+  refused before GDAL sees it, and names the four that exist. It is one table that
+  is written, not one entry, and it does not touch `colorInterpretation` — that is
+  the band's own claim about its samples, a separate thing to be right about.
+- `RasterBand` gains the mask band. `band.mask` is the validity mask as another
+  `RasterBand`, `band.maskFlags` says where that mask comes from — `allValid`,
+  `perDataset`, `alpha` and `noData`, four booleans because GDAL's flags are not
+  exclusive — and `band.createMask(perDataset?)` builds one. **GDAL answers with a
+  mask whether or not the file carries one**, so `band.mask` is never `null`: a band
+  with no mask gets an implicit all-valid band that reads 255 everywhere, and
+  `maskFlags.allValid` is how to tell that from a stored one.
+  What comes back is a full band, not a decorator: `readPixels`, `statistics`,
+  `checksum`, `overviews` and the rest all work on it, a write to it writes the mask,
+  and reading it takes the shared side of the lock with the other reads — including
+  on a thread-safe dataset. The implicit mask is **not writable**, and GDAL refuses
+  rather than allocating one behind your back (`attempt to write to an all-valid
+  implicit mask band`), which is what makes `createMask()` the step that turns a mask
+  into a real one; asking twice is the driver's answer rather than a rule here, since
+  GTiff rejects the second call ("already an internal mask band"), so
+  `maskFlags.allValid` is how to ask instead. A mask can also be *derived* rather than
+  stored — from an alpha channel, or from the band's no-data value — which is what
+  `alpha` and `noData` report. The tests pin a stored mask surviving a file, a
+  per-dataset mask being answered by every band, and a no-data one marking exactly the
+  missing samples.
 - `band.defaultHistogram(force?)` and `band.setDefaultHistogram(histogram)` close
   the histogram gap in the other direction: `histogram()` computes one, these
   read and write the *stored* one, so a later reader gets it without a pass over

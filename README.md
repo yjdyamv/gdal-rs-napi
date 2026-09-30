@@ -310,6 +310,30 @@ band.readOnly                         // follows how the dataset was opened
 band.minimum                          // GDAL's cache: null until statistics() runs
 band.maximum
 band.categoryNames                    // labels indexed by pixel value, [] when none
+band.colorTable                       // [{ c1, c2, c3, c4 }, ...], or null
+band.paletteInterpretation            // how to read those: 'Rgba', 'Cmyk', 'Hls', 'Gray'
+band.maskFlags                        // { allValid, perDataset, alpha, noData }
+band.mask                             // the validity mask, as a band
+
+// A colour table is what a `PaletteIndex` band means: one entry per pixel value, and
+// the components are 16-bit. `paletteInterpretation` is the table's own answer to
+// what they stand for — red, green, blue and alpha on the default `'Rgba'` — and
+// `setColorTable` takes back exactly what `colorTable` handed out. What survives a
+// file is the format's answer: MEM and VRT keep all 16 bits, GTiff's TIFF colour map
+// is 8 bits a channel and always 256 entries.
+band.setColorTable([{ c1: 255, c2: 0, c3: 0, c4: 65535 }])
+band.setColorTable([{ c1: 0, c2: 0, c3: 0, c4: 0 }], 'Cmyk')
+
+// The mask is what separates a valid sample from the rest, and `band.mask` always
+// answers something: a band with no mask of its own gets an implicit all-valid band
+// reading 255 everywhere, which is what `maskFlags.allValid` reports. It is a full
+// band, so the reads work on it, and `createMask()` is what turns it into one that
+// takes a write.
+band.mask.readPixelsSync()            // 255 where the sample counts
+band.maskFlags                        // { allValid, perDataset, alpha, noData }
+band.createMask(true)                 // one mask for the whole dataset
+band.mask.setNoDataValue(0)           // then write the mask through the mask itself
+band.mask.writePixelsSync(bytes)
 
 // ... and each of them can be written back, so a format that carries band
 // metadata is not read-only through this API.
@@ -1542,7 +1566,9 @@ for (const feature of layer.features) {    // iterable, like a collection
 pair is `xxx()` / `xxxAsync()`, and `xxxAsync` also takes a node-style callback.
 
 What it does **not** cover, so a port does not find out the hard way: Streams,
-multi-dimensional arrays, `calcAsync` and the VRT pixel functions. Everything else
+multi-dimensional arrays, `calcAsync`, the VRT pixel functions, and the two band
+extras this API spells its own way — `colorTable` and `mask` — whose shapes are on
+the main entry point and not on the wrapper. Everything else
 the native API can do, the adapter can — including the GEOS predicates, since they
 are in the same build. `PHASE1.md` (WS-7) is the full list.
 

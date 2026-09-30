@@ -13,6 +13,8 @@
 | 文档 | ✅ 已落地 | `docs/API-STABILITY.md` —— 命名/索引/取值/资源/增长/弃用/能力探测/兼容立场 |
 | WS-6 波段元数据写回 | ✅ 已完成 | `setScale` / `setOffset` / `setUnitType` / `setDescription` / `setCategoryNames` |
 | WS-6 直方图写回 | ✅ 已完成 | `defaultHistogram(force?)` / `setDefaultHistogram()`，与 `statistics()` / `setStatistics()` 对齐 |
+| WS-6 调色板 | ✅ 已完成 | `colorTable` / `paletteInterpretation` / `setColorTable(entries, interpretation?)` —— 分量是无符号 16 位（crate 读成 `i16`，边界处转回），解释随表；MEM / VRT 无损，GTiff 只有 8 位 × 256 项 |
+| WS-6 掩膜波段 | ✅ 已完成 | `mask` / `maskFlags` / `createMask(perDataset?)` —— 掩膜是一条完整 `RasterBand`（读走共享锁）；没掩膜时给隐式"全有效"波段（只读、全 255）；`maskFlags` 区分存储型与派生型（`alpha` / `noData`） |
 | B2 特性探测 | ✅ 已完成 | `gdal.apiVersion`、`gdal.features()` |
 | WS-5 常量枚举 | ✅ 已完成 | `gdal.const` —— `DataType`/`FieldType`/`Justification`/`GeometryType`/`ColorInterpretation`/`Resampling`/`OverviewResampling`/`SqlDialect`，纯 JS（`index.js`）+ 逐值对照运行时的测试 |
 | C1 GEOS 决策 | ✅ 已定 | 自行构建 + **静态链接**（`geos_static`，进入 `bundled` 默认开启），见 [`docs/GEOS.md`](./docs/GEOS.md) |
@@ -20,7 +22,7 @@
 | WS-2 Driver/Dataset 对象模型 | ✅ 已完成 | `Driver` 对象（+`createCopy`）、`dataset.driver` 对象化、`open({drivers})`、`Dataset.description`/`rasterSize`/`getFileList`、`setProjection` 收 `SpatialRef`。集合类**不做**，见下 |
 | WS-3 Feature/Field 对象模型 | ✅ 已完成 | `layer.field(name)`/`addField`/`deleteField`/`reorderFields`、`FieldInfo` 全量定义、`layer.features()`（异步）、`layer.setSpatialFilter(geom)`、`layer.defn`（`FeatureDefn`）、`layer.getFeature(fid)` → `Feature`（`fields` 直写穿、`geometry`、`defn`、`toObject`） |
 | WS-4 异步人体工学 | 🟡 部分完成 | `FeatureCursor` 已可用 `for await`（外壳加的，读的仍是同一个 `read()`）；异步错误已带 `err.code`（外壳从消息前缀提取）；`CoordinateTransform.transformPoints` 已跑在线程池上（点数组，百万点不必调用方分块，同步版更名 `transformPointsSync`）。**未做**：`Dataset.bands/layers` 的异步迭代、异步 getter、`eventLoopWarning` —— 理由见下 |
-| WS-7 兼容层 | 🟡 进行中 | `gdal-rs-napi/compat` 已落地：1-based 索引、`xxx()`/`xxxAsync()`（含 node 回调形态）、setter 赋值（`noDataValue`/`geoTransform`/`srs`）、`Driver` 与各集合、`Feature`（`fields.toObject`/`toArray`、可赋值 `geometry`）、`SpatialReference`、几何类族（含 `instanceof`、`toWKT`/`toJSON`/`get*`）。**不做**：Streams、MDArray、`calcAsync`、像素函数 |
+| WS-7 兼容层 | 🟡 进行中 | `gdal-rs-napi/compat` 已落地：1-based 索引、`xxx()`/`xxxAsync()`（含 node 回调形态）、setter 赋值（`noDataValue`/`geoTransform`/`srs`）、`Driver` 与各集合、`Feature`（`fields.toObject`/`toArray`、可赋值 `geometry`）、`SpatialReference`、几何类族（含 `instanceof`、`toWKT`/`toJSON`/`get*`）。**不做**：Streams、MDArray、`calcAsync`、像素函数，以及两个本绑定自己定形状的波段附加物——`colorTable` 与 `mask`（形状在主入口上，不在兼容层包装里）。 |
 
 ### 一个修正：`gdal.const` 应该是字符串词汇，不是 GDAL 数字码
 

@@ -1,5 +1,5 @@
-//! `RasterBand`. Holds only a dataset handle plus this band's index, so it never
-//! owns GDAL memory and cannot outlive the dataset behind its back.
+//! `RasterBand`. Holds only a dataset handle plus which band of it this is, so it
+//! never owns GDAL memory and cannot outlive the dataset behind its back.
 //!
 //! What only *looks* goes through [`DatasetRef::with`] — pixel reads, and the
 //! getters that report what the band already knows — which is the access path that
@@ -12,7 +12,7 @@ use std::ffi::{CString, c_char, c_int};
 
 use gdal::Dataset as GdalDataset;
 use gdal::Metadata;
-use gdal::raster::RasterBand;
+use gdal::raster::{ColorEntry, ColorTable, PaletteInterpretation, RasterBand};
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 
@@ -31,18 +31,49 @@ use crate::raster_tools::{
 use crate::runtime::ensure_initialized;
 use crate::vector::JsLayer;
 
-/// Re-derive this band's `RasterBand` and hand it to `f`.
+/// Which band of a dataset a handle names.
+///
+/// A mask band is not an object GDAL hands out and forgets — it hangs off the band it
+/// belongs to — so neither kind is stored, and both are looked up again on each call.
+/// That is the same reason a `RasterBand` handle here holds no band of its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BandKind {
+    /// A 0-based index into the dataset's own band list.
+    Index(usize),
+    /// The mask band of the band at that index.
+    Mask(usize),
+}
+
+impl BandKind {
+    /// The index of the band this names, whether or not it is that band's mask.
+    fn parent(self) -> usize {
+        match self {
+            Self::Index(index) | Self::Mask(index) => index,
+        }
+    }
+}
+
+/// Re-derive the band a handle names — the indexed one, or its mask — and hand it to
+/// `f`.
 ///
 /// `RasterBand::write` takes `&mut self` but only needs a mutable *local*, so a
 /// single helper serves both reading and writing even though the dataset itself
 /// is only borrowed immutably.
 fn with_band<T>(
     dataset: &GdalDataset,
-    index: usize,
+    kind: BandKind,
     f: impl FnOnce(&mut RasterBand<'_>) -> Result<T>,
 ) -> Result<T> {
-    let mut band = dataset.rasterband(index + 1).gdal()?;
-    f(&mut band)
+    let mut band = dataset.rasterband(kind.parent() + 1).gdal()?;
+    match kind {
+        BandKind::Index(_) => f(&mut band),
+        // GDAL keeps the mask band under the band, and hands back an all-valid
+        // implicit one when the dataset has no mask at all, so this is never absent.
+        BandKind::Mask(_) => {
+            let mut mask = band.open_mask_band().gdal()?;
+            f(&mut mask)
+        }
+    }
 }
 
 /// GDAL spells "no value" as an empty string in several places; JS gets `null`
@@ -158,6 +189,129 @@ pub struct BandHistogram {
     pub counts: Vec<u32>,
 }
 
+/// One entry of a band's colour table, as GDAL stores it: four 16-bit components,
+/// named the way GDAL names them.
+///
+/// What they mean is the table's own `paletteInterpretation` — red, green, blue and
+/// alpha when it is `Rgba`, cyan, magenta, yellow and black when it is `Cmyk`, and
+/// so on. The names are not rewritten per interpretation because one table would
+/// then have four different shapes: the two casts below are where the components and
+/// the interpretation meet.
+///
+/// Each one is `0..=65535`. GDAL's C struct uses a signed `short`, so the values are
+/// reported here unsigned — the range the GDAL API documents and the range a colour
+/// ramp needs.
+#[napi(object)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ColorTableEntry {
+    pub c1: u16,
+    pub c2: u16,
+    pub c3: u16,
+    pub c4: u16,
+}
+
+/// The names `paletteInterpretation` reports and `setColorTable` accepts.
+const PALETTE_GRAY: &str = "Gray";
+const PALETTE_RGBA: &str = "Rgba";
+const PALETTE_CMYK: &str = "Cmyk";
+const PALETTE_HLS: &str = "Hls";
+
+fn palette_interpretation_from_str(name: &str) -> Result<PaletteInterpretation> {
+    match name.to_ascii_lowercase().as_str() {
+        "gray" => Ok(PaletteInterpretation::Gray),
+        "rgba" => Ok(PaletteInterpretation::Rgba),
+        "cmyk" => Ok(PaletteInterpretation::Cmyk),
+        "hls" => Ok(PaletteInterpretation::Hls),
+        other => Err(bad_argument(format!(
+            "unknown palette interpretation {other:?}; expected one of {PALETTE_GRAY}, \
+             {PALETTE_RGBA}, {PALETTE_CMYK}, {PALETTE_HLS}"
+        ))),
+    }
+}
+
+fn palette_interpretation_to_str(interpretation: PaletteInterpretation) -> &'static str {
+    match interpretation {
+        PaletteInterpretation::Gray => PALETTE_GRAY,
+        PaletteInterpretation::Rgba => PALETTE_RGBA,
+        PaletteInterpretation::Cmyk => PALETTE_CMYK,
+        PaletteInterpretation::Hls => PALETTE_HLS,
+    }
+}
+
+impl ColorTableEntry {
+    /// Flatten whichever variant GDAL handed back into the four components.
+    ///
+    /// The crate reads GDAL's C struct as `i16`, so a component above 32767 arrives
+    /// negative and is cast back to the unsigned 16-bit value it stands for.
+    fn from_entry(entry: ColorEntry) -> Self {
+        match entry {
+            ColorEntry::Gray(entry) => Self {
+                c1: entry.g as u16,
+                c2: 0,
+                c3: 0,
+                c4: 0,
+            },
+            ColorEntry::Rgba(entry) => Self {
+                c1: entry.r as u16,
+                c2: entry.g as u16,
+                c3: entry.b as u16,
+                c4: entry.a as u16,
+            },
+            ColorEntry::Cmyk(entry) => Self {
+                c1: entry.c as u16,
+                c2: entry.m as u16,
+                c3: entry.y as u16,
+                c4: entry.k as u16,
+            },
+            ColorEntry::Hls(entry) => Self {
+                c1: entry.h as u16,
+                c2: entry.l as u16,
+                c3: entry.s as u16,
+                c4: 0,
+            },
+        }
+    }
+
+    /// Back into the variant the interpretation calls for. `Gray` takes one
+    /// component and `Hls` three, so the rest are dropped — which is what makes
+    /// `colorTable` → `setColorTable` a round trip, since the getter reports the
+    /// components those interpretations do not use as zero.
+    fn into_entry(self, interpretation: PaletteInterpretation) -> ColorEntry {
+        let [c1, c2, c3, c4] = [
+            self.c1 as i16,
+            self.c2 as i16,
+            self.c3 as i16,
+            self.c4 as i16,
+        ];
+        match interpretation {
+            PaletteInterpretation::Gray => ColorEntry::grey(c1),
+            PaletteInterpretation::Rgba => ColorEntry::rgba(c1, c2, c3, c4),
+            PaletteInterpretation::Cmyk => ColorEntry::cmyk(c1, c2, c3, c4),
+            PaletteInterpretation::Hls => ColorEntry::hls(c1, c2, c3),
+        }
+    }
+}
+
+/// What kind of mask a band has — GDAL's `GDALGetMaskFlags`, one boolean per flag.
+///
+/// The flags are not exclusive, which is why this is four answers rather than one
+/// name: a stored per-dataset mask can also be *derived* from an alpha band, and
+/// `allValid` is the one that means "no mask at all".
+#[napi(object)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MaskFlags {
+    /// There is no real mask, so every pixel counts. A band with no mask of its own
+    /// says this, and so does one whose mask is all-valid.
+    pub all_valid: bool,
+    /// One mask covers the whole dataset rather than this band alone.
+    pub per_dataset: bool,
+    /// The mask is GDAL reading an alpha channel rather than a stored mask.
+    pub alpha: bool,
+    /// The mask is GDAL deriving one from the band's no-data value rather than
+    /// reading a stored one.
+    pub no_data: bool,
+}
+
 #[napi(object)]
 #[derive(Debug, Clone, Default)]
 pub struct StatisticsOptions {
@@ -229,18 +383,29 @@ pub fn histogram_request(options: HistogramOptions) -> Result<HistogramRequest> 
 #[napi(js_name = "RasterBand")]
 pub struct JsRasterBand {
     dataset: DatasetRef,
-    index: usize,
-    /// Cached so the getter does not have to reach into GDAL.
+    /// Which band of `dataset` this is, and whether it is that band or its mask.
+    kind: BandKind,
+    /// Cached so the getter does not have to reach into GDAL. A mask band is always
+    /// Byte, which is the one type GDAL builds one with.
     data_type: DataType,
 }
 
 impl JsRasterBand {
     pub fn new(dataset: DatasetRef, index: usize, data_type: DataType) -> Self {
+        Self::from_kind(dataset, BandKind::Index(index), data_type)
+    }
+
+    pub(crate) fn from_kind(dataset: DatasetRef, kind: BandKind, data_type: DataType) -> Self {
         Self {
             dataset,
-            index,
+            kind,
             data_type,
         }
+    }
+
+    /// The same handle, aimed at `index`'s mask band instead of at the band.
+    fn masked(dataset: DatasetRef, index: usize) -> Self {
+        Self::from_kind(dataset, BandKind::Mask(index), DataType::Uint8)
     }
 
     /// Fetch or compute this band's statistics.
@@ -254,7 +419,7 @@ impl JsRasterBand {
         // A read, but GDAL caches what it computes (and may write a `.aux.xml`
         // beside the raster), so it takes the exclusive side of the lock.
         self.dataset.with_exclusive(|dataset| {
-            with_band(dataset, self.index, |band| {
+            with_band(dataset, self.kind, |band| {
                 Ok(band
                     .get_statistics(force, approx)
                     .gdal()?
@@ -279,7 +444,7 @@ impl JsRasterBand {
         } = request;
         // Like `statistics`, this caches what it computes.
         self.dataset.with_exclusive(|dataset| {
-            with_band(dataset, self.index, |band| {
+            with_band(dataset, self.kind, |band| {
                 let histogram = band
                     .histogram(min, max, buckets, include_out_of_range, approx)
                     .gdal()?;
@@ -298,7 +463,7 @@ impl JsRasterBand {
     fn compute_checksum(&self, options: &ReadOptions) -> Result<u32> {
         ensure_initialized();
         self.dataset.with(|dataset| {
-            with_band(dataset, self.index, |band| {
+            with_band(dataset, self.kind, |band| {
                 let (width, height) = band.size();
                 let window = resolve_window(options, width, height)?;
                 let checksum = band
@@ -317,13 +482,13 @@ impl JsRasterBand {
         // `with_mut`, so writing is the caller's to make: a read-only thread-safe
         // dataset refuses it, and a closed one says so.
         self.dataset
-            .with_mut(|dataset| with_band(dataset, self.index, |band| fill_no_data(band, request)))
+            .with_mut(|dataset| with_band(dataset, self.kind, |band| fill_no_data(band, request)))
     }
 
     fn apply_sieve_filter(&self, request: SieveFilterRequest) -> Result<()> {
         ensure_initialized();
         self.dataset
-            .with_mut(|dataset| with_band(dataset, self.index, |band| sieve_filter(band, request)))
+            .with_mut(|dataset| with_band(dataset, self.kind, |band| sieve_filter(band, request)))
     }
 
     fn read_sync(&self, target: Option<DataType>, options: &ReadOptions) -> Result<Vec<u8>> {
@@ -331,7 +496,7 @@ impl JsRasterBand {
         // A pixel read is the one thing that runs concurrently on a thread-safe
         // dataset, so it is the only path that takes the shared lock.
         self.dataset.with(|dataset| {
-            with_band(dataset, self.index, |band| {
+            with_band(dataset, self.kind, |band| {
                 let (width, height) = band.size();
                 let window = resolve_window(options, width, height)?;
                 let resampling = resample_alg(options)?;
@@ -350,7 +515,7 @@ impl JsRasterBand {
     ) -> Result<()> {
         ensure_initialized();
         self.dataset.with(|dataset| {
-            with_band(dataset, self.index, |band| {
+            with_band(dataset, self.kind, |band| {
                 let (width, height) = band.size();
                 let window = resolve_window(options, width, height)?;
                 let resampling = resample_alg(options)?;
@@ -371,7 +536,7 @@ impl JsRasterBand {
         // `with_mut` rather than `with_exclusive`: writing must be refused on a
         // read-only thread-safe dataset, and taking `&mut` is how we say so.
         self.dataset.with_mut(|dataset| {
-            with_band(dataset, self.index, |band| {
+            with_band(dataset, self.kind, |band| {
                 let (width, height) = band.size();
                 let window = resolve_window(options, width, height)?;
                 write_window(band, self.data_type, window, data)
@@ -382,10 +547,12 @@ impl JsRasterBand {
 
 #[napi]
 impl JsRasterBand {
-    /// **0-based**, unlike GDAL's own 1-based band numbering.
+    /// **0-based**, unlike GDAL's own 1-based band numbering. A mask band reports the
+    /// index of the band it is the mask of — `band.mask.index === band.index` — since
+    /// a mask has no number of its own (`id` is 0 for one).
     #[napi(getter)]
     pub fn index(&self) -> u32 {
-        self.index as u32
+        self.kind.parent() as u32
     }
 
     #[napi(getter)]
@@ -397,7 +564,7 @@ impl JsRasterBand {
     #[napi(getter)]
     pub fn size(&self) -> Result<Vec<u32>> {
         self.dataset.with(|dataset| {
-            with_band(dataset, self.index, |band| {
+            with_band(dataset, self.kind, |band| {
                 let (width, height) = band.size();
                 Ok(vec![width as u32, height as u32])
             })
@@ -408,7 +575,7 @@ impl JsRasterBand {
     #[napi(getter)]
     pub fn block_size(&self) -> Result<Vec<u32>> {
         self.dataset.with(|dataset| {
-            with_band(dataset, self.index, |band| {
+            with_band(dataset, self.kind, |band| {
                 let (width, height) = band.block_size();
                 Ok(vec![width as u32, height as u32])
             })
@@ -418,13 +585,13 @@ impl JsRasterBand {
     #[napi(getter)]
     pub fn no_data_value(&self) -> Result<Option<f64>> {
         self.dataset
-            .with(|dataset| with_band(dataset, self.index, |band| Ok(band.no_data_value())))
+            .with(|dataset| with_band(dataset, self.kind, |band| Ok(band.no_data_value())))
     }
 
     #[napi]
     pub fn set_no_data_value(&self, value: Option<f64>) -> Result<()> {
         self.dataset.with_mut(|dataset| {
-            with_band(dataset, self.index, |band| {
+            with_band(dataset, self.kind, |band| {
                 band.set_no_data_value(value).gdal()
             })
         })
@@ -436,8 +603,100 @@ impl JsRasterBand {
     #[napi(getter)]
     pub fn color_interpretation(&self) -> Result<String> {
         self.dataset.with(|dataset| {
-            with_band(dataset, self.index, |band| {
+            with_band(dataset, self.kind, |band| {
                 Ok(format!("{:?}", band.color_interpretation()))
+            })
+        })
+    }
+
+    /// How this band's colour table is meant to be read — GDAL's `GDALPaletteInterp`:
+    /// `Gray`, `Rgba`, `Cmyk` or `Hls`. `null` when the band has no colour table.
+    ///
+    /// It is the companion of `colorTable`: the entry components `c1`..`c4` are red,
+    /// green, blue and alpha on an `Rgba` table, cyan, magenta, yellow and black on a
+    /// `Cmyk` one, and so on. Note this is the *table's* interpretation — what the
+    /// entries are — where `colorInterpretation` is the *band's* claim about its
+    /// samples (`GrayIndex`, `PaletteIndex`, `RedBand`, ...).
+    #[napi(getter)]
+    pub fn palette_interpretation(&self) -> Result<Option<String>> {
+        self.dataset.with(|dataset| {
+            with_band(dataset, self.kind, |band| {
+                Ok(band.color_table().map(|table| {
+                    palette_interpretation_to_str(table.palette_interpretation()).to_string()
+                }))
+            })
+        })
+    }
+
+    /// This band's colour table, or `null` when it has none.
+    ///
+    /// One entry per palette index, so `colorTable[i]` is the colour that pixel value
+    /// `i` stands for — the read that turns a paletted raster (an indexed PNG, a
+    /// palette TIFF, any band whose `colorInterpretation` is `PaletteIndex`) back into
+    /// colours. Each entry keeps GDAL's own four components, named `c1`..`c4`; read
+    /// them through `paletteInterpretation`, which is `Rgba` — red, green, blue,
+    /// alpha — in the ordinary case.
+    ///
+    /// Not every driver has one to give: a band with no colour table answers `null`
+    /// rather than an empty array, and `PaletteIndex` is a claim a band can make with
+    /// no table behind it.
+    #[napi(getter)]
+    pub fn color_table(&self) -> Result<Option<Vec<ColorTableEntry>>> {
+        self.dataset.with(|dataset| {
+            with_band(dataset, self.kind, |band| {
+                let Some(table) = band.color_table() else {
+                    return Ok(None);
+                };
+                Ok(Some(
+                    (0..table.entry_count())
+                        .filter_map(|index| table.entry(index))
+                        .map(ColorTableEntry::from_entry)
+                        .collect(),
+                ))
+            })
+        })
+    }
+
+    /// Write this band's colour table — the whole table, not one entry.
+    ///
+    /// `entries` is what `colorTable` returns and `interpretation` is what
+    /// `paletteInterpretation` returns; the interpretation defaults to `Rgba`, which
+    /// is what makes the common case a single array. Components an interpretation does
+    /// not use are ignored, so `setColorTable(band.colorTable, band.paletteInterpretation)`
+    /// reproduces a table exactly. An unknown interpretation is refused here rather
+    /// than by GDAL, and names the four that exist.
+    ///
+    /// Whether the table outlives the call is the format's answer, and the answers
+    /// differ: `MEM` and `VRT` keep all 16 bits, while GTiff stores a palette in the
+    /// TIFF color map — 8 bits a channel, always 256 entries, no alpha — so a GTiff
+    /// table comes back quantised and padded rather than as it went in. A read-only
+    /// handle does not fail either, the same caveat as `setStatistics`: the change
+    /// lands in GDAL's in-memory table and the PAM layer writes a `<file>.aux.xml`
+    /// sidecar next to the raster. This writes the table only — it does not change
+    /// `colorInterpretation`, which is the band's own claim about its samples and is a
+    /// separate thing to be right about.
+    #[napi]
+    pub fn set_color_table(
+        &self,
+        entries: Vec<ColorTableEntry>,
+        interpretation: Option<String>,
+    ) -> Result<()> {
+        let interpretation = match interpretation {
+            Some(name) => palette_interpretation_from_str(&name)?,
+            None => PaletteInterpretation::Rgba,
+        };
+
+        let mut table = ColorTable::new(interpretation);
+        for (index, entry) in entries.iter().enumerate() {
+            let index = u16::try_from(index)
+                .map_err(|_| bad_argument("a colour table cannot hold more than 65536 entries"))?;
+            table.set_color_entry(index, &entry.into_entry(interpretation));
+        }
+
+        self.dataset.with_mut(|dataset| {
+            with_band(dataset, self.kind, |band| {
+                band.set_color_table(&table);
+                Ok(())
             })
         })
     }
@@ -449,7 +708,7 @@ impl JsRasterBand {
     #[napi(getter)]
     pub fn id(&self) -> Result<u32> {
         self.dataset.with(|dataset| {
-            with_band(dataset, self.index, |band| {
+            with_band(dataset, self.kind, |band| {
                 Ok(unsafe { gdal_sys::GDALGetBandNumber(band.c_rasterband()) } as u32)
             })
         })
@@ -460,7 +719,7 @@ impl JsRasterBand {
     #[napi(getter)]
     pub fn description(&self) -> Result<Option<String>> {
         self.dataset.with(|dataset| {
-            with_band(dataset, self.index, |band| {
+            with_band(dataset, self.kind, |band| {
                 let text = crate::runtime::c_string(unsafe {
                     gdal_sys::GDALGetDescription(band.c_rasterband())
                 });
@@ -481,7 +740,7 @@ impl JsRasterBand {
     pub fn set_description(&self, value: Option<String>) -> Result<()> {
         let text = optional_c_string(value, "a description")?;
         self.dataset.with_mut(|dataset| {
-            with_band(dataset, self.index, |band| {
+            with_band(dataset, self.kind, |band| {
                 unsafe {
                     gdal_sys::GDALSetDescription(
                         band.c_rasterband() as gdal_sys::GDALMajorObjectH,
@@ -505,13 +764,83 @@ impl JsRasterBand {
         })
     }
 
+    /// What kind of mask this band has, as four booleans — GDAL's
+    /// `GDALGetMaskFlags`.
+    ///
+    /// `allValid` is the answer "there is no real mask, every pixel counts", which is
+    /// what a band with no mask reports. The other three say where a real one comes
+    /// from: `perDataset` for one mask shared by the whole dataset, `alpha` and
+    /// `noData` for one GDAL *derives* rather than stores. They are not exclusive —
+    /// a stored per-dataset mask can also be built from an alpha channel — so they are
+    /// answered separately instead of being folded into one name.
+    #[napi(getter)]
+    pub fn mask_flags(&self) -> Result<MaskFlags> {
+        self.dataset.with(|dataset| {
+            with_band(dataset, self.kind, |band| {
+                let flags = band.mask_flags().gdal()?;
+                Ok(MaskFlags {
+                    all_valid: flags.is_all_valid(),
+                    per_dataset: flags.is_per_dataset(),
+                    alpha: flags.is_alpha(),
+                    no_data: flags.is_nodata(),
+                })
+            })
+        })
+    }
+
+    /// This band's mask, as another band — GDAL's `GDALGetMaskBand`.
+    ///
+    /// It always answers something: a band with no mask of its own gets an *implicit*
+    /// one that reads 255 everywhere, and `maskFlags.allValid` is how to tell that
+    /// from a mask the file really carries. The mask is a sample-per-pixel band of the
+    /// same size, so it is read with the ordinary read methods:
+    ///
+    /// ```js
+    /// const valid = band.mask.readPixelsSync()   // 255 where the sample counts
+    /// band.mask.statistics()                     // or any other read of it
+    /// ```
+    ///
+    /// It is a full `RasterBand`, so everything that reads one works — and a write
+    /// (`writePixels`, `fill`) writes the mask. `index` reports the band this is the
+    /// mask *of*, and `id` is 0, because a mask has no band number.
+    #[napi(getter)]
+    pub fn mask(&self) -> JsRasterBand {
+        JsRasterBand::masked(self.dataset.clone(), self.kind.parent())
+    }
+
+    /// Give this band a mask, so that later readers — this binding included, and any
+    /// other GDAL tool — can tell valid samples from the rest. GDAL's
+    /// `GDALCreateMaskBand`.
+    ///
+    /// GDAL builds it all-valid and the size of the band; this call does not fill it
+    /// in, so a `0` written through `band.mask` is what marks a sample invalid.
+    /// `perDataset: true` asks for one mask covering every band instead of one per
+    /// band — both are real masks, and `maskFlags` reports which one the driver built.
+    ///
+    /// Asking twice is the driver's answer rather than a rule here: GTiff refuses the
+    /// second call (`this TIFF dataset has already an internal mask band`) while some
+    /// drivers accept it, so `maskFlags.allValid` is how to ask whether a mask is
+    /// already there.
+    ///
+    /// A write, so the dataset has to be writable, and a thread-safe (read-only)
+    /// dataset refuses it like any other write.
+    #[napi]
+    pub fn create_mask(&self, per_dataset: Option<bool>) -> Result<()> {
+        let per_dataset = per_dataset.unwrap_or(false);
+        self.dataset.with_mut(|dataset| {
+            with_band(dataset, self.kind, |band| {
+                band.create_mask_band(per_dataset).gdal()
+            })
+        })
+    }
+
     /// Scale, or `null` when the band has none. The value a sample stands for is
     /// `raw * scale + offset`, which is what makes a reflectance or DEM raster
     /// mean anything beyond its raw integers.
     #[napi(getter)]
     pub fn scale(&self) -> Result<Option<f64>> {
         self.dataset
-            .with(|dataset| with_band(dataset, self.index, |band| Ok(band.scale())))
+            .with(|dataset| with_band(dataset, self.kind, |band| Ok(band.scale())))
     }
 
     /// Offset, or `null` when the band has none — the other half of
@@ -519,7 +848,7 @@ impl JsRasterBand {
     #[napi(getter)]
     pub fn offset(&self) -> Result<Option<f64>> {
         self.dataset
-            .with(|dataset| with_band(dataset, self.index, |band| Ok(band.offset())))
+            .with(|dataset| with_band(dataset, self.kind, |band| Ok(band.offset())))
     }
 
     /// Write the band's scale: the multiplier in `raw * scale + offset`.
@@ -535,7 +864,7 @@ impl JsRasterBand {
     #[napi]
     pub fn set_scale(&self, scale: f64) -> Result<()> {
         self.dataset
-            .with_mut(|dataset| with_band(dataset, self.index, |band| band.set_scale(scale).gdal()))
+            .with_mut(|dataset| with_band(dataset, self.kind, |band| band.set_scale(scale).gdal()))
     }
 
     /// Write the band's offset — the other half of `raw * scale + offset`. The
@@ -543,7 +872,7 @@ impl JsRasterBand {
     #[napi]
     pub fn set_offset(&self, offset: f64) -> Result<()> {
         self.dataset.with_mut(|dataset| {
-            with_band(dataset, self.index, |band| band.set_offset(offset).gdal())
+            with_band(dataset, self.kind, |band| band.set_offset(offset).gdal())
         })
     }
 
@@ -551,7 +880,7 @@ impl JsRasterBand {
     #[napi(getter)]
     pub fn unit_type(&self) -> Result<Option<String>> {
         self.dataset
-            .with(|dataset| with_band(dataset, self.index, |band| Ok(non_empty(band.unit()))))
+            .with(|dataset| with_band(dataset, self.kind, |band| Ok(non_empty(band.unit()))))
     }
 
     /// Write the band's unit — `metre`, `DN`, anything the format will carry.
@@ -564,7 +893,7 @@ impl JsRasterBand {
     pub fn set_unit_type(&self, value: Option<String>) -> Result<()> {
         let unit = optional_c_string(value, "a unit type")?;
         self.dataset.with_mut(|dataset| {
-            with_band(dataset, self.index, |band| {
+            with_band(dataset, self.kind, |band| {
                 cpl_result(unsafe {
                     gdal_sys::GDALSetRasterUnitType(
                         band.c_rasterband(),
@@ -585,7 +914,7 @@ impl JsRasterBand {
     #[napi(getter)]
     pub fn minimum(&self) -> Result<Option<f64>> {
         self.dataset.with(|dataset| {
-            with_band(dataset, self.index, |band| {
+            with_band(dataset, self.kind, |band| {
                 let mut success = 0;
                 let value =
                     unsafe { gdal_sys::GDALGetRasterMinimum(band.c_rasterband(), &mut success) };
@@ -600,7 +929,7 @@ impl JsRasterBand {
     #[napi(getter)]
     pub fn maximum(&self) -> Result<Option<f64>> {
         self.dataset.with(|dataset| {
-            with_band(dataset, self.index, |band| {
+            with_band(dataset, self.kind, |band| {
                 let mut success = 0;
                 let value =
                     unsafe { gdal_sys::GDALGetRasterMaximum(band.c_rasterband(), &mut success) };
@@ -614,7 +943,7 @@ impl JsRasterBand {
     #[napi(getter)]
     pub fn category_names(&self) -> Result<Vec<String>> {
         self.dataset.with(|dataset| {
-            with_band(dataset, self.index, |band| {
+            with_band(dataset, self.kind, |band| {
                 Ok(category_names(unsafe {
                     gdal_sys::GDALGetRasterCategoryNames(band.c_rasterband())
                 }))
@@ -632,7 +961,7 @@ impl JsRasterBand {
     pub fn set_category_names(&self, names: Vec<String>) -> Result<()> {
         let list = string_list(&names)?;
         let result = self.dataset.with_mut(|dataset| {
-            with_band(dataset, self.index, |band| {
+            with_band(dataset, self.kind, |band| {
                 cpl_result(unsafe {
                     gdal_sys::GDALSetRasterCategoryNames(band.c_rasterband(), list)
                 })
@@ -647,7 +976,7 @@ impl JsRasterBand {
     pub fn metadata(&self, domain: Option<String>) -> Result<HashMap<String, String>> {
         let domain = domain.unwrap_or_default();
         self.dataset.with(|dataset| {
-            with_band(dataset, self.index, |band| {
+            with_band(dataset, self.kind, |band| {
                 let mut out = HashMap::new();
                 for entry in band.metadata() {
                     if entry.domain == domain {
@@ -662,7 +991,7 @@ impl JsRasterBand {
     #[napi]
     pub fn metadata_domains(&self) -> Result<Vec<String>> {
         self.dataset
-            .with(|dataset| with_band(dataset, self.index, |band| Ok(band.metadata_domains())))
+            .with(|dataset| with_band(dataset, self.kind, |band| Ok(band.metadata_domains())))
     }
 
     /// How many overview levels this band already has. Cheap: a query, not a
@@ -671,7 +1000,7 @@ impl JsRasterBand {
     #[napi(getter)]
     pub fn overview_count(&self) -> Result<i32> {
         self.dataset
-            .with(|dataset| with_band(dataset, self.index, |band| band.overview_count().gdal()))
+            .with(|dataset| with_band(dataset, self.kind, |band| band.overview_count().gdal()))
     }
 
     /// Min, max, mean and standard deviation.
@@ -694,7 +1023,7 @@ impl JsRasterBand {
     pub fn statistics(&self, options: Option<StatisticsOptions>) -> AsyncTask<StatisticsTask> {
         AsyncTask::new(StatisticsTask {
             dataset: self.dataset.clone(),
-            index: self.index,
+            kind: self.kind,
             request: statistics_request(options),
         })
     }
@@ -717,7 +1046,7 @@ impl JsRasterBand {
         let request = histogram_request(options)?;
         Ok(AsyncTask::new(HistogramTask {
             dataset: self.dataset.clone(),
-            index: self.index,
+            kind: self.kind,
             request,
         }))
     }
@@ -736,7 +1065,7 @@ impl JsRasterBand {
         let force = force.unwrap_or(false);
         // `force` computes and caches one, so this is on the exclusive side too.
         self.dataset.with_exclusive(|dataset| {
-            with_band(dataset, self.index, |band| {
+            with_band(dataset, self.kind, |band| {
                 let Some(histogram) = band.default_histogram(force).gdal()? else {
                     return Ok(None);
                 };
@@ -773,7 +1102,7 @@ impl JsRasterBand {
             .collect::<Vec<u64>>();
 
         self.dataset.with_mut(|dataset| {
-            with_band(dataset, self.index, |band| {
+            with_band(dataset, self.kind, |band| {
                 band.set_default_histogram(histogram.min, histogram.max, &mut counts)
                     .gdal()
             })
@@ -792,7 +1121,7 @@ impl JsRasterBand {
     #[napi]
     pub fn set_statistics(&self, statistics: BandStatistics) -> Result<()> {
         self.dataset.with_mut(|dataset| {
-            with_band(dataset, self.index, |band| {
+            with_band(dataset, self.kind, |band| {
                 unsafe {
                     gdal_sys::GDALSetRasterStatistics(
                         band.c_rasterband(),
@@ -838,7 +1167,7 @@ impl JsRasterBand {
         let options = checksum_options(options)?;
         Ok(AsyncTask::new(ChecksumTask {
             dataset: self.dataset.clone(),
-            index: self.index,
+            kind: self.kind,
             options,
         }))
     }
@@ -864,7 +1193,7 @@ impl JsRasterBand {
         let request = fill_nodata_request(options)?;
         Ok(AsyncTask::new(FillNoDataTask {
             dataset: self.dataset.clone(),
-            index: self.index,
+            kind: self.kind,
             request,
         }))
     }
@@ -890,7 +1219,7 @@ impl JsRasterBand {
         let request = sieve_filter_request(options)?;
         Ok(AsyncTask::new(SieveFilterTask {
             dataset: self.dataset.clone(),
-            index: self.index,
+            kind: self.kind,
             request,
         }))
     }
@@ -918,9 +1247,10 @@ impl JsRasterBand {
         // Both datasets at once: the process-wide lock is not reentrant, so the band
         // and the layer cannot each be reached through their own lock.
         with_two(&self.dataset, layer.dataset(), |raster, vector| {
-            let band = raster.rasterband(self.index + 1).gdal()?;
             let mut target = vector.layer(layer.index() as usize).gdal()?;
-            polygonize(&band, &mut target, &request)
+            with_band(raster, self.kind, |band| {
+                polygonize(band, &mut target, &request)
+            })
         })
     }
 
@@ -939,7 +1269,7 @@ impl JsRasterBand {
             // in a dataset other than this band's.
             layer: layer.dataset().clone(),
             layer_index: layer.index() as usize,
-            index: self.index,
+            kind: self.kind,
             request,
         }))
     }
@@ -969,9 +1299,10 @@ impl JsRasterBand {
     ) -> Result<()> {
         let request = contour_generate_request(options)?;
         with_two(&self.dataset, layer.dataset(), |raster, vector| {
-            let band = raster.rasterband(self.index + 1).gdal()?;
             let mut target = vector.layer(layer.index() as usize).gdal()?;
-            contour_generate(&band, &mut target, &request)
+            with_band(raster, self.kind, |band| {
+                contour_generate(band, &mut target, &request)
+            })
         })
     }
 
@@ -988,7 +1319,7 @@ impl JsRasterBand {
             dataset: self.dataset.clone(),
             layer: layer.dataset().clone(),
             layer_index: layer.index() as usize,
-            index: self.index,
+            kind: self.kind,
             request,
         }))
     }
@@ -1028,7 +1359,7 @@ impl JsRasterBand {
 
     #[napi(ts_return_type = "Promise<Buffer>")]
     pub fn read_pixels(&self, options: Option<ReadOptions>) -> AsyncTask<ReadBandTask> {
-        ReadBandTask::new(self.dataset.clone(), self.index, None, options)
+        ReadBandTask::new(self.dataset.clone(), self.kind, None, options)
     }
 
     #[napi(ts_return_type = "Promise<Buffer>")]
@@ -1037,7 +1368,7 @@ impl JsRasterBand {
         data_type: DataType,
         options: Option<ReadOptions>,
     ) -> AsyncTask<ReadBandTask> {
-        ReadBandTask::new(self.dataset.clone(), self.index, Some(data_type), options)
+        ReadBandTask::new(self.dataset.clone(), self.kind, Some(data_type), options)
     }
 
     /// Write raw sample bytes into a window. `data` must hold at least
@@ -1057,9 +1388,8 @@ impl JsRasterBand {
     /// so GDAL is always asked for a real fill.
     #[napi]
     pub fn fill(&self, value: f64) -> Result<()> {
-        self.dataset.with_mut(|dataset| {
-            with_band(dataset, self.index, |band| band.fill(value, None).gdal())
-        })
+        self.dataset
+            .with_mut(|dataset| with_band(dataset, self.kind, |band| band.fill(value, None).gdal()))
     }
 
     #[napi(ts_return_type = "Promise<void>")]
@@ -1070,7 +1400,7 @@ impl JsRasterBand {
     ) -> AsyncTask<WriteBandTask> {
         AsyncTask::new(WriteBandTask {
             dataset: self.dataset.clone(),
-            index: self.index,
+            kind: self.kind,
             data_type: self.data_type,
             options: options.unwrap_or_default(),
             data: data.to_vec(),
@@ -1215,10 +1545,10 @@ impl JsRasterBand {
     #[napi(getter)]
     pub fn overviews(&self) -> Result<Vec<JsBandOverview>> {
         self.dataset.with(|dataset| {
-            with_band(dataset, self.index, |band| {
+            with_band(dataset, self.kind, |band| {
                 let count = band.overview_count().gdal()?;
                 (0..count as usize)
-                    .map(|level| overview_level(band, &self.dataset, self.index, level))
+                    .map(|level| overview_level(band, &self.dataset, self.kind, level))
                     .collect()
             })
         })
@@ -1229,13 +1559,13 @@ impl JsRasterBand {
 impl JsRasterBand {
     fn block_window(&self, x: u32, y: u32) -> Result<ReadOptions> {
         let (block_width, block_height) = self.dataset.with(|dataset| {
-            with_band(dataset, self.index, |band| {
+            with_band(dataset, self.kind, |band| {
                 let (width, height) = band.block_size();
                 Ok((width as u32, height as u32))
             })
         })?;
         let (band_width, band_height) = self.dataset.with(|dataset| {
-            with_band(dataset, self.index, |band| {
+            with_band(dataset, self.kind, |band| {
                 let (width, height) = band.size();
                 Ok((width as u32, height as u32))
             })
@@ -1273,7 +1603,7 @@ fn window(x: u32, y: u32, width: u32, height: u32) -> ReadOptions {
 #[napi(js_name = "BandOverview")]
 pub struct JsBandOverview {
     dataset: DatasetRef,
-    index: usize,
+    kind: BandKind,
     level: usize,
     width: u32,
     height: u32,
@@ -1304,7 +1634,7 @@ impl JsBandOverview {
     #[napi]
     pub fn read_sync(&self) -> Result<Buffer> {
         let bytes = self.dataset.with(|dataset| {
-            with_band(dataset, self.index, |band| {
+            with_band(dataset, self.kind, |band| {
                 read_overview_bytes(band, self.level)
             })
         })?;
@@ -1317,7 +1647,7 @@ impl JsBandOverview {
     pub fn read(&self) -> AsyncTask<ReadOverviewTask> {
         AsyncTask::new(ReadOverviewTask {
             dataset: self.dataset.clone(),
-            index: self.index,
+            kind: self.kind,
             level: self.level,
         })
     }
@@ -1325,7 +1655,7 @@ impl JsBandOverview {
 
 pub struct ReadOverviewTask {
     dataset: DatasetRef,
-    index: usize,
+    kind: BandKind,
     level: usize,
 }
 
@@ -1336,11 +1666,11 @@ impl Task for ReadOverviewTask {
     fn compute(&mut self) -> napi::Result<Self::Output> {
         let ReadOverviewTask {
             dataset,
-            index,
+            kind,
             level,
         } = self;
         Ok(op(dataset.with(|dataset| {
-            with_band(dataset, *index, |band| read_overview_bytes(band, *level))
+            with_band(dataset, *kind, |band| read_overview_bytes(band, *level))
         })))
     }
 
@@ -1355,7 +1685,7 @@ impl Task for ReadOverviewTask {
 fn overview_level(
     band: &mut RasterBand<'_>,
     dataset: &DatasetRef,
-    index: usize,
+    kind: BandKind,
     level: usize,
 ) -> Result<JsBandOverview> {
     let overview = overview_band(band, level)?;
@@ -1367,7 +1697,7 @@ fn overview_level(
     };
     Ok(JsBandOverview {
         dataset: dataset.clone(),
-        index,
+        kind,
         level,
         width,
         height,
@@ -1464,7 +1794,7 @@ struct ChunkPlan {
 impl JsRasterBand {
     fn chunk_plan(&self, options: &ChunkOptions) -> Result<ChunkPlan> {
         let (band_width, band_height, block_rows) = self.dataset.with(|dataset| {
-            with_band(dataset, self.index, |band| {
+            with_band(dataset, self.kind, |band| {
                 let (width, height) = band.size();
                 Ok((width, height, band.block_size().1))
             })
@@ -1554,7 +1884,7 @@ fn op<T>(result: Result<T>) -> OpResult<T> {
 
 pub struct ReadBandTask {
     dataset: DatasetRef,
-    index: usize,
+    kind: BandKind,
     target: Option<DataType>,
     options: ReadOptions,
     /// The caller's buffer, when the read was asked to fill one instead of allocating.
@@ -1573,7 +1903,7 @@ pub enum ReadOutput {
 impl ReadBandTask {
     fn new(
         dataset: DatasetRef,
-        index: usize,
+        kind: BandKind,
         target: Option<DataType>,
         options: Option<ReadOptions>,
     ) -> AsyncTask<Self> {
@@ -1583,7 +1913,7 @@ impl ReadBandTask {
         let into = options.into.take();
         AsyncTask::new(Self {
             dataset,
-            index,
+            kind,
             target,
             options,
             into,
@@ -1597,7 +1927,7 @@ impl Task for ReadBandTask {
 
     fn compute(&mut self) -> napi::Result<Self::Output> {
         // `data_type` is only used when writing, so `Unknown` is fine here.
-        let band = JsRasterBand::new(self.dataset.clone(), self.index, DataType::Unknown);
+        let band = JsRasterBand::from_kind(self.dataset.clone(), self.kind, DataType::Unknown);
         Ok(op(match self.into.as_mut() {
             Some(into) => band
                 .read_into_sync(self.target, &self.options, into.as_mut())
@@ -1623,7 +1953,7 @@ impl Task for ReadBandTask {
 
 pub struct WriteBandTask {
     dataset: DatasetRef,
-    index: usize,
+    kind: BandKind,
     data_type: DataType,
     options: ReadOptions,
     data: Vec<u8>,
@@ -1634,7 +1964,7 @@ impl Task for WriteBandTask {
     type JsValue = ();
 
     fn compute(&mut self) -> napi::Result<Self::Output> {
-        let band = JsRasterBand::new(self.dataset.clone(), self.index, self.data_type);
+        let band = JsRasterBand::from_kind(self.dataset.clone(), self.kind, self.data_type);
         Ok(op(band.write_sync(&self.data, &self.options)))
     }
 
@@ -1647,7 +1977,7 @@ impl Task for WriteBandTask {
 /// the thread pool more than most things here.
 pub struct StatisticsTask {
     dataset: DatasetRef,
-    index: usize,
+    kind: BandKind,
     request: StatisticsRequest,
 }
 
@@ -1657,7 +1987,7 @@ impl Task for StatisticsTask {
 
     fn compute(&mut self) -> napi::Result<Self::Output> {
         // `data_type` only matters when writing; this path never does.
-        let band = JsRasterBand::new(self.dataset.clone(), self.index, DataType::Unknown);
+        let band = JsRasterBand::from_kind(self.dataset.clone(), self.kind, DataType::Unknown);
         Ok(op(band.compute_statistics(self.request)))
     }
 
@@ -1668,7 +1998,7 @@ impl Task for StatisticsTask {
 
 pub struct HistogramTask {
     dataset: DatasetRef,
-    index: usize,
+    kind: BandKind,
     request: HistogramRequest,
 }
 
@@ -1677,7 +2007,7 @@ impl Task for HistogramTask {
     type JsValue = BandHistogram;
 
     fn compute(&mut self) -> napi::Result<Self::Output> {
-        let band = JsRasterBand::new(self.dataset.clone(), self.index, DataType::Unknown);
+        let band = JsRasterBand::from_kind(self.dataset.clone(), self.kind, DataType::Unknown);
         Ok(op(band.compute_histogram(self.request)))
     }
 
@@ -1690,7 +2020,7 @@ impl Task for HistogramTask {
 /// so it earns the thread pool.
 pub struct ChecksumTask {
     dataset: DatasetRef,
-    index: usize,
+    kind: BandKind,
     options: ReadOptions,
 }
 
@@ -1700,7 +2030,7 @@ impl Task for ChecksumTask {
 
     fn compute(&mut self) -> napi::Result<Self::Output> {
         // `data_type` only matters when writing; this path never does.
-        let band = JsRasterBand::new(self.dataset.clone(), self.index, DataType::Unknown);
+        let band = JsRasterBand::from_kind(self.dataset.clone(), self.kind, DataType::Unknown);
         Ok(op(band.compute_checksum(&self.options)))
     }
 
@@ -1713,7 +2043,7 @@ impl Task for ChecksumTask {
 /// size — so it goes on the pool for the same reason.
 pub struct FillNoDataTask {
     dataset: DatasetRef,
-    index: usize,
+    kind: BandKind,
     request: FillNoDataRequest,
 }
 
@@ -1722,7 +2052,7 @@ impl Task for FillNoDataTask {
     type JsValue = ();
 
     fn compute(&mut self) -> napi::Result<Self::Output> {
-        let band = JsRasterBand::new(self.dataset.clone(), self.index, DataType::Unknown);
+        let band = JsRasterBand::from_kind(self.dataset.clone(), self.kind, DataType::Unknown);
         Ok(op(band.apply_fill_no_data(self.request)))
     }
 
@@ -1735,7 +2065,7 @@ impl Task for FillNoDataTask {
 /// `FillNoDataTask` is.
 pub struct SieveFilterTask {
     dataset: DatasetRef,
-    index: usize,
+    kind: BandKind,
     request: SieveFilterRequest,
 }
 
@@ -1744,7 +2074,7 @@ impl Task for SieveFilterTask {
     type JsValue = ();
 
     fn compute(&mut self) -> napi::Result<Self::Output> {
-        let band = JsRasterBand::new(self.dataset.clone(), self.index, DataType::Unknown);
+        let band = JsRasterBand::from_kind(self.dataset.clone(), self.kind, DataType::Unknown);
         Ok(op(band.apply_sieve_filter(self.request)))
     }
 
@@ -1760,7 +2090,7 @@ pub struct PolygonizeTask {
     /// The layer's own dataset: it is usually not the one the band is in.
     layer: DatasetRef,
     layer_index: usize,
-    index: usize,
+    kind: BandKind,
     request: PolygonizeRequest,
 }
 
@@ -1773,15 +2103,14 @@ impl Task for PolygonizeTask {
             dataset,
             layer,
             layer_index,
-            index,
+            kind,
             request,
         } = self;
-        let (index, layer_index) = (*index, *layer_index);
+        let (kind, layer_index) = (*kind, *layer_index);
 
         Ok(op(with_two(dataset, layer, |raster, vector| {
-            let band = raster.rasterband(index + 1).gdal()?;
             let mut target = vector.layer(layer_index).gdal()?;
-            polygonize(&band, &mut target, request)
+            with_band(raster, kind, |band| polygonize(band, &mut target, request))
         })))
     }
 
@@ -1797,7 +2126,7 @@ pub struct ContourGenerateTask {
     /// The layer's own dataset, as in `PolygonizeTask`.
     layer: DatasetRef,
     layer_index: usize,
-    index: usize,
+    kind: BandKind,
     request: ContourGenerateRequest,
 }
 
@@ -1810,19 +2139,117 @@ impl Task for ContourGenerateTask {
             dataset,
             layer,
             layer_index,
-            index,
+            kind,
             request,
         } = self;
-        let (index, layer_index) = (*index, *layer_index);
+        let (kind, layer_index) = (*kind, *layer_index);
 
         Ok(op(with_two(dataset, layer, |raster, vector| {
-            let band = raster.rasterband(index + 1).gdal()?;
             let mut target = vector.layer(layer_index).gdal()?;
-            contour_generate(&band, &mut target, request)
+            with_band(raster, kind, |band| {
+                contour_generate(band, &mut target, request)
+            })
         })))
     }
 
     fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
         output.map_err(|(code, reason)| into_status_error(code, reason))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const INTERPRETATIONS: [PaletteInterpretation; 4] = [
+        PaletteInterpretation::Gray,
+        PaletteInterpretation::Rgba,
+        PaletteInterpretation::Cmyk,
+        PaletteInterpretation::Hls,
+    ];
+
+    #[test]
+    fn palette_names_round_trip() {
+        for interpretation in INTERPRETATIONS {
+            let name = palette_interpretation_to_str(interpretation);
+            assert_eq!(
+                palette_interpretation_from_str(name).unwrap(),
+                interpretation,
+                "{name} did not come back"
+            );
+        }
+    }
+
+    /// The setter takes whatever the getter reports, in whatever case it arrives.
+    #[test]
+    fn palette_names_ignore_case() {
+        assert_eq!(
+            palette_interpretation_from_str("gRaY").unwrap(),
+            PaletteInterpretation::Gray
+        );
+    }
+
+    #[test]
+    fn an_unknown_palette_interpretation_lists_the_alternatives() {
+        let message = palette_interpretation_from_str("cmy").unwrap_err().reason;
+        for name in [PALETTE_GRAY, PALETTE_RGBA, PALETTE_CMYK, PALETTE_HLS] {
+            assert!(message.contains(name), "{message:?} does not name {name}");
+        }
+    }
+
+    /// The ordinary table is RGBA, so the component order has to be the obvious one:
+    /// `c1` red, `c2` green, `c3` blue, `c4` alpha.
+    #[test]
+    fn an_rgba_entry_is_red_green_blue_alpha() {
+        let entry = ColorTableEntry {
+            c1: 1,
+            c2: 2,
+            c3: 3,
+            c4: 4,
+        };
+        assert_eq!(
+            ColorTableEntry::from_entry(entry.into_entry(PaletteInterpretation::Rgba)),
+            entry
+        );
+    }
+
+    /// GDAL's components are unsigned 16-bit even though its C struct is a signed
+    /// `short`, so the top half of that range has to survive the sign change.
+    #[test]
+    fn components_above_the_signed_maximum_survive() {
+        let entry = ColorTableEntry {
+            c1: 65000,
+            c2: 32768,
+            c3: 65535,
+            c4: 1,
+        };
+        assert_eq!(
+            ColorTableEntry::from_entry(entry.into_entry(PaletteInterpretation::Rgba)),
+            entry
+        );
+    }
+
+    /// What the getter hands out has to be accepted by the setter exactly, including
+    /// for the interpretations that use fewer than four components — otherwise
+    /// `setColorTable(band.colorTable, band.paletteInterpretation)` would not be the
+    /// round trip the docs claim.
+    #[test]
+    fn entries_survive_a_round_trip_through_every_interpretation() {
+        let entry = ColorTableEntry {
+            c1: 1,
+            c2: 2,
+            c3: 3,
+            c4: 4,
+        };
+        for interpretation in INTERPRETATIONS {
+            // The getter reports a component the interpretation does not use as zero,
+            // so that is the shape a round trip has to preserve.
+            let reported = ColorTableEntry::from_entry(entry.into_entry(interpretation));
+            assert_eq!(
+                ColorTableEntry::from_entry(reported.into_entry(interpretation)),
+                reported,
+                "{interpretation:?} did not round-trip"
+            );
+        }
     }
 }
