@@ -111,8 +111,8 @@ MDArray、Node Streams、`calcAsync` 明确不做，记为设计取舍。
 
 > 目标：把"异步只解放事件循环"升级为"可预测的并行"。
 
-- [ ] **削弱全局锁**：调研 GDAL 3.10+ 的线程局部错误处理或自定义 `CPLErrorHandler`，让错误状态与锁解耦；先做 PoC 再决定是否改动 `runtime.rs`。
-- [ ] **扩大 `openThreadSafe` 覆盖面**：现状限只读栅格；评估更多驱动与读路径。矢量的线程安全如实测不可行，就在文档里写死。
+- [x] **削弱全局锁**：PoC 的结论是**前提已经过时** —— GDAL ≥3.10 的 last-error 是线程局部的（每线程一个 `CPLErrorContext`），`OGRSpatialReference` 的 PROJ context 来自 `OSRGetProjTLSContext()`，GEOS 则是每次调用一个 context。于是**无数据集**的调用（CRS / `CoordinateTransform`、几何 / GEOS、`gdal.fs`）改走共享锁、真正并发；数据集与进程级配置仍走独占（同一个 dataset 跨线程不安全，部分驱动本身也不安全）。实测 4 个并发 40 万点变换：**1.03x → 2.93x**。证据写进 `src/runtime.rs`，前提由 Rust 测试 `gdals_last_error_is_thread_local` 钉住，收益由 `scripts/bench-parallel.mjs` 量出。
+- [ ] **扩大 `openThreadSafe` 覆盖面**：现状限只读栅格；评估更多驱动与读路径。矢量的线程安全如实测不可行，就在文档里写死。（上一项 PoC 的补充结论：把**普通**数据集也放成并发，不能只靠"错误状态已解耦"就放开，得经 GDAL 的 `GDALGetThreadSafeDataset` 或逐驱动判断。）
 - [ ] **零拷贝**：`readPixels` 等回填到调用方提供的 `Buffer`/`TypedArray`，减少一次 memcpy。
 - [ ] **基准进 CI**：`scripts/bench-parallel.mjs` 加回归阈值（或至少存档趋势），防止性能回退。
 - [ ] **资源语义**：句柄/文件描述符/内存的上限与释放路径文档化；大栅格的流式读取模式统一。

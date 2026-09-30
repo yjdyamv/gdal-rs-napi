@@ -6,38 +6,59 @@ use std::os::raw::c_char;
 use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock, RwLock, RwLockReadGuard, RwLockWriteGuard};
 
-/// Serialises access to GDAL.
+/// Serialises the GDAL access that actually needs serialising.
 ///
-/// GDAL keeps its "last error" in process-global state, and the `gdal` crate
-/// reads + resets it right after each FFI call — so two threads inside GDAL at
-/// once can observe each other's error. Several drivers are not thread-safe
-/// either. Holding this for the duration of each operation keeps those races
-/// out.
+/// Two things take the **write** side, and they are why this is a lock at all:
 ///
-/// It is a reader/writer lock rather than a plain mutex so that pixel reads of a
-/// thread-safe dataset (see `DatasetRef::Concurrent`) can run genuinely in
-/// parallel. Everything else takes the write lock and therefore excludes them,
-/// which is what keeps the error-state race described above out of the picture.
+/// * **An open dataset.** GDAL is not thread-safe for one `GDALDataset` reached from
+///   two threads, so every dataset operation takes the write lock (and the dataset's
+///   own mutex). `openThreadSafe` is the opt-in for one GDAL has been asked to make
+///   safe for concurrent reads.
+/// * **Process-global configuration** — driver registration, `config.set`, and the
+///   `programs` entry points, which build datasets of their own.
 ///
-/// The consequence for the ordinary `open()` path is unchanged: the async APIs
-/// keep the Node event loop free, but they do **not** make GDAL work run in
-/// parallel. Only `openThreadSafe()` does.
+/// Everything that touches **neither a dataset nor global configuration** takes the
+/// **read** side instead ([`lock_gdal_shared`]) and therefore runs genuinely in
+/// parallel: the CRS and `CoordinateTransform` methods, the geometry/GEOS
+/// operations, and `gdal.fs`. Three things that look global are not, in the GDAL this
+/// links (3.12):
+///
+/// * the last-error state is **thread-local** — `CPLGetTLSEx(CTLS_ERRORCONTEXT, …)` —
+///   so the `gdal` crate's read-and-reset after each call stays on the calling
+///   thread's own context. `gdals_last_error_is_thread_local` pins that, because the
+///   read/write split depends on it;
+/// * `OGRSpatialReference` takes its PROJ context from `OSRGetProjTLSContext()`, so
+///   two threads transform through separate contexts;
+/// * `OGRGeometry::createGEOSContext()` creates a GEOS context per call and frees it,
+///   so predicates share no GEOS error state either.
+///
+/// This was the "weaken the global lock" PoC's answer: the error state no longer has
+/// to be protected, and the dataset-free surface can overlap (measured in
+/// `scripts/bench-parallel.mjs`). Datasets still cannot — a second dataset handle is
+/// the way to two concurrent readers there.
+///
+/// The consequence for the ordinary `open()` path is unchanged: the async APIs keep
+/// the Node event loop free, but dataset work does **not** run in parallel. Only
+/// `openThreadSafe()`, and work with no dataset in it, does.
 static GDAL_LOCK: RwLock<()> = RwLock::new(());
 
-/// Exclusive access. Everything except a thread-safe dataset's pixel reads takes
-/// this. A poisoned lock is recovered from on purpose: a panic in one operation
-/// must not brick the whole addon.
+/// Exclusive access: datasets, registers, and anything else process-global.
+///
+/// A poisoned lock is recovered from on purpose: a panic in one operation must not
+/// brick the whole addon.
 pub fn lock_gdal() -> RwLockWriteGuard<'static, ()> {
     GDAL_LOCK
         .write()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
-/// Shared access, for pixel reads of a thread-safe dataset only.
+/// Shared access: work with no dataset and no global configuration in it, plus pixel
+/// reads of a thread-safe dataset (see `DatasetRef::with`).
 ///
-/// **A closure running under this lock must never call `lock_gdal()`**: `RwLock`
-/// is not reentrant, so taking the write lock while holding the read lock
-/// deadlocks the process. See `DatasetRef::with`.
+/// **A closure running under this lock must never call `lock_gdal()`**, and must not
+/// take this lock again either: `RwLock` is not reentrant, so nesting either way
+/// deadlocks the process. Everything reached from the CRS, geometry and `fs` modules
+/// is dataset-free, which is what makes them eligible.
 pub fn lock_gdal_shared() -> RwLockReadGuard<'static, ()> {
     GDAL_LOCK
         .read()
@@ -164,4 +185,49 @@ pub(crate) fn c_string(ptr: *const c_char) -> String {
     unsafe { CStr::from_ptr(ptr) }
         .to_string_lossy()
         .into_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::ffi::CString;
+    use std::sync::{Arc, Barrier};
+
+    /// The lock's original reason was that GDAL kept its last error in process-global
+    /// state, so two threads inside GDAL could read each other's. That stopped being
+    /// true in GDAL 3.10, and the read/write split above rests on it — this fails
+    /// loudly if a future GDAL puts the state back where it was.
+    ///
+    /// The threads deliberately do not take the lock: the point is to run inside GDAL
+    /// at the same time and see whether their error states are the same one.
+    #[test]
+    fn gdals_last_error_is_thread_local() {
+        ensure_initialized();
+
+        let barrier = Arc::new(Barrier::new(2));
+        let provoke = |message: &'static str| {
+            let barrier = Arc::clone(&barrier);
+            std::thread::spawn(move || {
+                let message = CString::new(message).unwrap();
+                unsafe {
+                    gdal_sys::CPLErrorSetState(gdal_sys::CPLErr::CE_Failure, 1, message.as_ptr())
+                };
+                // Both threads have written their own message by the time either reads,
+                // which is the interleaving one process-wide slot could not survive.
+                barrier.wait();
+                c_string(unsafe { gdal_sys::CPLGetLastErrorMsg() })
+            })
+        };
+
+        // Both have to be running before either is joined: the barrier wants two
+        // arrivals, so joining the first would wait for one that never comes.
+        let one = provoke("the error from one");
+        let two = provoke("the error from two");
+
+        let one = one.join().unwrap();
+        let two = two.join().unwrap();
+
+        assert!(one.contains("from one"), "read back {one:?}");
+        assert!(two.contains("from two"), "read back {two:?}");
+    }
 }

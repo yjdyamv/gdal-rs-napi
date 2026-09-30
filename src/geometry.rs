@@ -6,8 +6,10 @@
 //! and `createFeature` accepts. This class is the other half — something you can
 //! hold, measure and transform without going through JSON on every step.
 //!
-//! Every call takes the process-wide lock: the operations reach into GDAL, and
-//! GEOS-backed ones (see the predicate group) share its error state.
+//! Every call takes the **shared** side of the GDAL lock. A geometry is a plain
+//! object with no dataset behind it, `OGRGeometry::createGEOSContext()` gives each
+//! GEOS call its own context, and the last-error slot is thread-local — so two of
+//! these run at once without touching each other. See `runtime` for the split.
 
 use gdal::vector::{Geometry, OGRwkbGeometryType, geometry_type_flatten, geometry_type_has_z};
 use napi::bindgen_prelude::*;
@@ -15,7 +17,7 @@ use napi_derive::napi;
 use serde_json::Value;
 
 use crate::error::{IntoGdalResult, Result, bad_argument};
-use crate::runtime::{ensure_initialized, lock_gdal};
+use crate::runtime::{ensure_initialized, lock_gdal_shared};
 use crate::spatial_ref::JsSpatialRef;
 use crate::vector::{from_geojson, geometry_type_name, to_geojson};
 
@@ -83,7 +85,7 @@ impl JsGeometry {
         axis: unsafe extern "C" fn(gdal_sys::OGRGeometryH, std::ffi::c_int) -> f64,
     ) -> Result<Option<f64>> {
         ensure_initialized();
-        let _guard = lock_gdal();
+        let _guard = lock_gdal_shared();
         if self.kind() != GeometryKind::Point {
             return Ok(None);
         }
@@ -194,7 +196,7 @@ impl JsGeometry {
     #[napi(factory)]
     pub fn from_wkt(wkt: String) -> Result<Self> {
         ensure_initialized();
-        let _guard = lock_gdal();
+        let _guard = lock_gdal_shared();
         Ok(Self::wrap(Geometry::from_wkt(&wkt).gdal()?))
     }
 
@@ -202,7 +204,7 @@ impl JsGeometry {
     #[napi(factory)]
     pub fn from_wkb(wkb: Buffer) -> Result<Self> {
         ensure_initialized();
-        let _guard = lock_gdal();
+        let _guard = lock_gdal_shared();
         Ok(Self::wrap(Geometry::from_wkb(wkb.as_ref()).gdal()?))
     }
 
@@ -211,7 +213,7 @@ impl JsGeometry {
     #[napi(factory)]
     pub fn from_json(geometry: Value) -> Result<Self> {
         ensure_initialized();
-        let _guard = lock_gdal();
+        let _guard = lock_gdal_shared();
         Ok(Self::wrap(from_geojson(&geometry)?))
     }
 
@@ -221,7 +223,7 @@ impl JsGeometry {
     #[napi(getter, js_name = "type")]
     pub fn geometry_type(&self) -> Result<String> {
         ensure_initialized();
-        let _guard = lock_gdal();
+        let _guard = lock_gdal_shared();
         Ok(geometry_type_name(self.inner.geometry_type()))
     }
 
@@ -231,7 +233,7 @@ impl JsGeometry {
     #[napi(getter)]
     pub fn is_empty(&self) -> Result<bool> {
         ensure_initialized();
-        let _guard = lock_gdal();
+        let _guard = lock_gdal_shared();
         Ok(self.inner.is_empty())
     }
 
@@ -242,7 +244,7 @@ impl JsGeometry {
     #[napi(getter)]
     pub fn point_count(&self) -> Result<u32> {
         ensure_initialized();
-        let _guard = lock_gdal();
+        let _guard = lock_gdal_shared();
         Ok(self.inner.point_count() as u32)
     }
 
@@ -250,7 +252,7 @@ impl JsGeometry {
     #[napi]
     pub fn to_wkt(&self) -> Result<String> {
         ensure_initialized();
-        let _guard = lock_gdal();
+        let _guard = lock_gdal_shared();
         self.inner.wkt().gdal()
     }
 
@@ -258,7 +260,7 @@ impl JsGeometry {
     #[napi]
     pub fn to_wkb(&self) -> Result<Buffer> {
         ensure_initialized();
-        let _guard = lock_gdal();
+        let _guard = lock_gdal_shared();
         Ok(Buffer::from(self.inner.wkb().gdal()?))
     }
 
@@ -267,7 +269,7 @@ impl JsGeometry {
     #[napi]
     pub fn to_json(&self) -> Result<Value> {
         ensure_initialized();
-        let _guard = lock_gdal();
+        let _guard = lock_gdal_shared();
         to_geojson(&self.inner)
     }
 
@@ -288,7 +290,7 @@ impl JsGeometry {
     #[napi(getter)]
     pub fn coordinates(&self) -> Result<Option<Value>> {
         ensure_initialized();
-        let _guard = lock_gdal();
+        let _guard = lock_gdal_shared();
         if self.kind() == GeometryKind::Collection {
             return Ok(None);
         }
@@ -313,7 +315,7 @@ impl JsGeometry {
     #[napi(getter)]
     pub fn z(&self) -> Result<Option<f64>> {
         ensure_initialized();
-        let _guard = lock_gdal();
+        let _guard = lock_gdal_shared();
         if self.kind() != GeometryKind::Point || !self.has_z() {
             return Ok(None);
         }
@@ -327,7 +329,7 @@ impl JsGeometry {
     #[napi]
     pub fn points(&self) -> Result<Option<Vec<Vec<f64>>>> {
         ensure_initialized();
-        let _guard = lock_gdal();
+        let _guard = lock_gdal_shared();
         if !matches!(self.kind(), GeometryKind::Point | GeometryKind::Line) {
             return Ok(None);
         }
@@ -339,7 +341,7 @@ impl JsGeometry {
     #[napi]
     pub fn rings(&self) -> Result<Option<Vec<Vec<Vec<f64>>>>> {
         ensure_initialized();
-        let _guard = lock_gdal();
+        let _guard = lock_gdal_shared();
         if self.kind() != GeometryKind::Polygon {
             return Ok(None);
         }
@@ -351,7 +353,7 @@ impl JsGeometry {
     #[napi(getter)]
     pub fn exterior_ring(&self) -> Result<Option<Vec<Vec<f64>>>> {
         ensure_initialized();
-        let _guard = lock_gdal();
+        let _guard = lock_gdal_shared();
         if self.kind() != GeometryKind::Polygon {
             return Ok(None);
         }
@@ -363,7 +365,7 @@ impl JsGeometry {
     #[napi(getter)]
     pub fn interior_rings(&self) -> Result<Option<Vec<Vec<Vec<f64>>>>> {
         ensure_initialized();
-        let _guard = lock_gdal();
+        let _guard = lock_gdal_shared();
         if self.kind() != GeometryKind::Polygon {
             return Ok(None);
         }
@@ -383,7 +385,7 @@ impl JsGeometry {
     #[napi]
     pub fn children(&self) -> Result<Option<Vec<JsGeometry>>> {
         ensure_initialized();
-        let _guard = lock_gdal();
+        let _guard = lock_gdal_shared();
         if self.kind() != GeometryKind::Collection {
             return Ok(None);
         }
@@ -409,7 +411,7 @@ impl JsGeometry {
     #[napi]
     pub fn envelope(&self) -> Result<Option<GeometryEnvelope>> {
         ensure_initialized();
-        let _guard = lock_gdal();
+        let _guard = lock_gdal_shared();
         if self.inner.is_empty() {
             return Ok(None);
         }
@@ -427,7 +429,7 @@ impl JsGeometry {
     #[napi]
     pub fn area(&self) -> Result<f64> {
         ensure_initialized();
-        let _guard = lock_gdal();
+        let _guard = lock_gdal_shared();
         Ok(self.inner.area())
     }
 
@@ -436,7 +438,7 @@ impl JsGeometry {
     #[napi]
     pub fn length(&self) -> Result<f64> {
         ensure_initialized();
-        let _guard = lock_gdal();
+        let _guard = lock_gdal_shared();
         Ok(self.inner.length())
     }
 
@@ -445,7 +447,7 @@ impl JsGeometry {
     #[napi]
     pub fn clone(&self) -> Result<JsGeometry> {
         ensure_initialized();
-        let _guard = lock_gdal();
+        let _guard = lock_gdal_shared();
         Ok(Self::wrap(self.inner.clone()))
     }
 
@@ -453,7 +455,7 @@ impl JsGeometry {
     #[napi]
     pub fn flatten_to_2d(&self) -> Result<JsGeometry> {
         ensure_initialized();
-        let _guard = lock_gdal();
+        let _guard = lock_gdal_shared();
         let mut flattened = self.inner.clone();
         flattened.flatten_to_2d();
         Ok(Self::wrap(flattened))
@@ -473,7 +475,7 @@ impl JsGeometry {
             )));
         }
         ensure_initialized();
-        let _guard = lock_gdal();
+        let _guard = lock_gdal_shared();
         let dense = self.inner.clone();
         unsafe { gdal_sys::OGR_G_Segmentize(dense.c_geometry(), max_length) };
         Ok(Self::wrap(dense))
@@ -484,7 +486,7 @@ impl JsGeometry {
     #[napi(js_name = "swapXY")]
     pub fn swap_xy(&self) -> Result<JsGeometry> {
         ensure_initialized();
-        let _guard = lock_gdal();
+        let _guard = lock_gdal_shared();
         let swapped = self.inner.clone();
         unsafe { gdal_sys::OGR_G_SwapXY(swapped.c_geometry()) };
         Ok(Self::wrap(swapped))
@@ -498,7 +500,7 @@ impl JsGeometry {
     #[napi]
     pub fn transform(&self, from: &JsSpatialRef, to: &JsSpatialRef) -> Result<JsGeometry> {
         ensure_initialized();
-        let _guard = lock_gdal();
+        let _guard = lock_gdal_shared();
         let transform = gdal::spatial_ref::CoordTransform::new(from.inner(), to.inner()).gdal()?;
         Ok(Self::wrap(self.inner.transform(&transform).gdal()?))
     }
@@ -568,7 +570,7 @@ impl JsGeometry {
     pub fn distance(&self, other: &JsGeometry) -> Result<f64> {
         require_geos()?;
         ensure_initialized();
-        let _guard = lock_gdal();
+        let _guard = lock_gdal_shared();
         Ok(unsafe { gdal_sys::OGR_G_Distance(self.handle(), other.handle()) })
     }
 
@@ -600,7 +602,7 @@ impl JsGeometry {
             )));
         }
         ensure_initialized();
-        let _guard = lock_gdal();
+        let _guard = lock_gdal_shared();
         let segments = quad_segments.unwrap_or(30);
         if segments < 0 {
             return Err(bad_argument("quadSegments cannot be negative"));
@@ -613,7 +615,7 @@ impl JsGeometry {
     pub fn centroid(&self) -> Result<JsGeometry> {
         require_geos()?;
         ensure_initialized();
-        let _guard = lock_gdal();
+        let _guard = lock_gdal_shared();
         // `OGR_G_Centroid` writes into a geometry it is given, rather than
         // returning one, so the output is made first.
         let output =
@@ -630,7 +632,7 @@ impl JsGeometry {
     pub fn convex_hull(&self) -> Result<JsGeometry> {
         require_geos()?;
         ensure_initialized();
-        let _guard = lock_gdal();
+        let _guard = lock_gdal_shared();
         unsafe { adopt(gdal_sys::OGR_G_ConvexHull(self.handle())) }
     }
 
@@ -644,7 +646,7 @@ impl JsGeometry {
             )));
         }
         ensure_initialized();
-        let _guard = lock_gdal();
+        let _guard = lock_gdal_shared();
         unsafe { adopt(gdal_sys::OGR_G_Simplify(self.handle(), tolerance)) }
     }
 
@@ -685,7 +687,7 @@ impl JsGeometry {
     ) -> Result<bool> {
         require_geos()?;
         ensure_initialized();
-        let _guard = lock_gdal();
+        let _guard = lock_gdal_shared();
         Ok(unsafe { predicate(self.handle(), other.handle()) } != 0)
     }
 
@@ -696,7 +698,7 @@ impl JsGeometry {
     ) -> Result<bool> {
         require_geos()?;
         ensure_initialized();
-        let _guard = lock_gdal();
+        let _guard = lock_gdal_shared();
         Ok(unsafe { predicate(self.handle()) } != 0)
     }
 
@@ -711,7 +713,7 @@ impl JsGeometry {
     ) -> Result<JsGeometry> {
         require_geos()?;
         ensure_initialized();
-        let _guard = lock_gdal();
+        let _guard = lock_gdal_shared();
         unsafe { adopt(overlay(self.handle(), other.handle())) }
     }
 }

@@ -1,7 +1,10 @@
 //! `SpatialRef` and `CoordinateTransform`: CRS objects and reprojection.
 //!
-//! Everything here reaches PROJ through GDAL, so the callers take the global lock
-//! and initialise first — resolving a CRS needs the packaged `proj.db`.
+//! Everything here reaches PROJ through GDAL, so the callers initialise first —
+//! resolving a CRS needs the packaged `proj.db`. They take the **shared** side of the
+//! GDAL lock rather than the exclusive one: `OGRSpatialReference` draws its PROJ
+//! context from `OSRGetProjTLSContext()`, so two threads transform through separate
+//! contexts, and the error slot they read is thread-local. See `runtime`.
 
 use gdal::spatial_ref::{
     AxisMappingStrategy, CoordTransform, CoordTransformOptions as GdalTransformOptions, SpatialRef,
@@ -12,7 +15,7 @@ use serde_json::Value;
 
 use crate::error::{GdalErrorCode, IntoGdalResult, Result, bad_argument, into_status_error, split};
 use crate::geometry::JsGeometry;
-use crate::runtime::{ensure_initialized, lock_gdal};
+use crate::runtime::{ensure_initialized, lock_gdal_shared};
 
 /// Axis-order strategies, as the strings this API takes.
 ///
@@ -100,14 +103,14 @@ impl JsSpatialRef {
     #[napi(factory)]
     pub fn from_epsg(code: u32) -> Result<Self> {
         ensure_initialized();
-        let _guard = lock_gdal();
+        let _guard = lock_gdal_shared();
         Ok(Self::wrap(SpatialRef::from_epsg(code).gdal()?))
     }
 
     #[napi(factory)]
     pub fn from_wkt(wkt: String) -> Result<Self> {
         ensure_initialized();
-        let _guard = lock_gdal();
+        let _guard = lock_gdal_shared();
         Ok(Self::wrap(SpatialRef::from_wkt(&wkt).gdal()?))
     }
 
@@ -115,7 +118,7 @@ impl JsSpatialRef {
     #[napi(factory)]
     pub fn from_proj4(proj4: String) -> Result<Self> {
         ensure_initialized();
-        let _guard = lock_gdal();
+        let _guard = lock_gdal_shared();
         Ok(Self::wrap(SpatialRef::from_proj4(&proj4).gdal()?))
     }
 
@@ -124,14 +127,14 @@ impl JsSpatialRef {
     #[napi(factory)]
     pub fn from_definition(definition: String) -> Result<Self> {
         ensure_initialized();
-        let _guard = lock_gdal();
+        let _guard = lock_gdal_shared();
         Ok(Self::wrap(SpatialRef::from_definition(&definition).gdal()?))
     }
 
     #[napi(getter)]
     pub fn wkt(&self) -> Result<String> {
         ensure_initialized();
-        let _guard = lock_gdal();
+        let _guard = lock_gdal_shared();
         self.inner.to_wkt().gdal()
     }
 
@@ -139,28 +142,28 @@ impl JsSpatialRef {
     #[napi(getter)]
     pub fn pretty_wkt(&self) -> Result<String> {
         ensure_initialized();
-        let _guard = lock_gdal();
+        let _guard = lock_gdal_shared();
         self.inner.to_pretty_wkt().gdal()
     }
 
     #[napi(getter)]
     pub fn proj4(&self) -> Result<String> {
         ensure_initialized();
-        let _guard = lock_gdal();
+        let _guard = lock_gdal_shared();
         self.inner.to_proj4().gdal()
     }
 
     #[napi(getter)]
     pub fn proj_json(&self) -> Result<String> {
         ensure_initialized();
-        let _guard = lock_gdal();
+        let _guard = lock_gdal_shared();
         self.inner.to_projjson().gdal()
     }
 
     #[napi(getter)]
     pub fn name(&self) -> Result<Option<String>> {
         ensure_initialized();
-        let _guard = lock_gdal();
+        let _guard = lock_gdal_shared();
         Ok(self.inner.name())
     }
 
@@ -168,14 +171,14 @@ impl JsSpatialRef {
     #[napi(getter)]
     pub fn auth_name(&self) -> Result<Option<String>> {
         ensure_initialized();
-        let _guard = lock_gdal();
+        let _guard = lock_gdal_shared();
         Ok(self.inner.auth_name())
     }
 
     #[napi(getter)]
     pub fn auth_code(&self) -> Result<Option<i32>> {
         ensure_initialized();
-        let _guard = lock_gdal();
+        let _guard = lock_gdal_shared();
         // `auth_code` fails when the CRS carries no identifier, which is normal
         // for a WKT that was written by hand — that is `null`, not an error.
         Ok(self.inner.auth_code().ok())
@@ -188,21 +191,21 @@ impl JsSpatialRef {
     #[napi(getter)]
     pub fn authority(&self) -> Result<Option<String>> {
         ensure_initialized();
-        let _guard = lock_gdal();
+        let _guard = lock_gdal_shared();
         Ok(self.inner.authority().ok())
     }
 
     #[napi(getter)]
     pub fn axis_mapping(&self) -> Result<String> {
         ensure_initialized();
-        let _guard = lock_gdal();
+        let _guard = lock_gdal_shared();
         Ok(axis_mapping_to_str(self.inner.axis_mapping_strategy()).to_string())
     }
 
     #[napi(getter)]
     pub fn linear_unit(&self) -> Result<Option<UnitInfo>> {
         ensure_initialized();
-        let _guard = lock_gdal();
+        let _guard = lock_gdal_shared();
         Ok(self.inner.linear_units_name().map(|name| UnitInfo {
             name,
             factor: self.inner.linear_units(),
@@ -212,7 +215,7 @@ impl JsSpatialRef {
     #[napi(getter)]
     pub fn angular_unit(&self) -> Result<Option<UnitInfo>> {
         ensure_initialized();
-        let _guard = lock_gdal();
+        let _guard = lock_gdal_shared();
         Ok(self.inner.angular_units_name().map(|name| UnitInfo {
             name,
             factor: self.inner.angular_units(),
@@ -222,35 +225,35 @@ impl JsSpatialRef {
     #[napi(getter)]
     pub fn is_geographic(&self) -> Result<bool> {
         ensure_initialized();
-        let _guard = lock_gdal();
+        let _guard = lock_gdal_shared();
         Ok(self.inner.is_geographic())
     }
 
     #[napi(getter)]
     pub fn is_projected(&self) -> Result<bool> {
         ensure_initialized();
-        let _guard = lock_gdal();
+        let _guard = lock_gdal_shared();
         Ok(self.inner.is_projected())
     }
 
     #[napi(getter)]
     pub fn is_compound(&self) -> Result<bool> {
         ensure_initialized();
-        let _guard = lock_gdal();
+        let _guard = lock_gdal_shared();
         Ok(self.inner.is_compound())
     }
 
     #[napi(getter)]
     pub fn is_vertical(&self) -> Result<bool> {
         ensure_initialized();
-        let _guard = lock_gdal();
+        let _guard = lock_gdal_shared();
         Ok(self.inner.is_vertical())
     }
 
     #[napi(getter)]
     pub fn area_of_use(&self) -> Result<Option<AreaOfUse>> {
         ensure_initialized();
-        let _guard = lock_gdal();
+        let _guard = lock_gdal_shared();
         Ok(self.inner.area_of_use().map(|area| AreaOfUse {
             name: area.name,
             west: area.west_lon_degree,
@@ -265,7 +268,7 @@ impl JsSpatialRef {
     #[napi]
     pub fn equals(&self, other: &JsSpatialRef) -> Result<bool> {
         ensure_initialized();
-        let _guard = lock_gdal();
+        let _guard = lock_gdal_shared();
         Ok(self.inner == other.inner)
     }
 
@@ -277,7 +280,7 @@ impl JsSpatialRef {
     #[napi]
     pub fn with_axis_mapping(&self, mapping: String) -> Result<JsSpatialRef> {
         ensure_initialized();
-        let _guard = lock_gdal();
+        let _guard = lock_gdal_shared();
 
         let strategy = axis_mapping_from_str(&mapping)?;
         let mut clone = self.inner.clone();
@@ -443,7 +446,7 @@ impl JsCoordinateTransform {
         options: Option<CoordinateTransformOptions>,
     ) -> Result<Self> {
         ensure_initialized();
-        let _guard = lock_gdal();
+        let _guard = lock_gdal_shared();
 
         let inner = match &options {
             None => CoordTransform::new(&from.inner, &to.inner),
@@ -467,7 +470,7 @@ impl JsCoordinateTransform {
     #[napi]
     pub fn transform_point(&self, x: f64, y: f64) -> Result<Vec<f64>> {
         ensure_initialized();
-        let _guard = lock_gdal();
+        let _guard = lock_gdal_shared();
 
         let mut xs = [x];
         let mut ys = [y];
@@ -485,7 +488,7 @@ impl JsCoordinateTransform {
     #[napi(js_name = "transformPointsSync")]
     pub fn transform_points_sync(&self, points: Float64Array) -> Result<Float64Array> {
         ensure_initialized();
-        let _guard = lock_gdal();
+        let _guard = lock_gdal_shared();
         Ok(Float64Array::new(transform_points_with(
             &self.inner,
             points.as_ref(),
@@ -538,7 +541,7 @@ impl JsCoordinateTransform {
             return Err(bad_argument("densify cannot be negative"));
         }
 
-        let _guard = lock_gdal();
+        let _guard = lock_gdal_shared();
         let out = self.inner.transform_bounds(&corners, densify).gdal()?;
         Ok(out.to_vec())
     }
@@ -564,7 +567,7 @@ impl JsCoordinateTransform {
             Either::B(unknown) => crate::vector::json_value(unknown)?,
         };
 
-        let _guard = lock_gdal();
+        let _guard = lock_gdal_shared();
         let geometry = crate::vector::from_geojson(&geometry)?;
         let moved = geometry.transform(&self.inner).gdal()?;
         crate::vector::to_geojson(&moved)
@@ -619,7 +622,7 @@ impl Task for TransformPointsTask {
     fn compute(&mut self) -> napi::Result<Self::Output> {
         Ok(op((|| {
             ensure_initialized();
-            let _guard = lock_gdal();
+            let _guard = lock_gdal_shared();
             let transform = self.def.build()?;
             transform_points_with(&transform, &self.points)
         })()))
@@ -645,7 +648,7 @@ impl Task for IdentifyEpsgTask {
     fn compute(&mut self) -> napi::Result<Self::Output> {
         Ok(op((|| {
             ensure_initialized();
-            let _guard = lock_gdal();
+            let _guard = lock_gdal_shared();
 
             let mut srs = SpatialRef::from_wkt(&self.wkt).gdal()?;
             srs.auto_identify_epsg().gdal()?;
@@ -739,7 +742,7 @@ mod tests {
 
     #[test]
     fn a_rebuilt_transform_answers_what_the_live_one_does() {
-        let _guard = lock_gdal();
+        let _guard = lock_gdal_shared();
         let (live, rebuilt) = a_pair(
             AxisMappingStrategy::TraditionalGisOrder,
             AxisMappingStrategy::TraditionalGisOrder,
@@ -752,7 +755,7 @@ mod tests {
 
     #[test]
     fn the_axis_order_really_does_travel_with_the_rebuild() {
-        let _guard = lock_gdal();
+        let _guard = lock_gdal_shared();
 
         let (live_traditional, rebuilt_traditional) = a_pair(
             AxisMappingStrategy::TraditionalGisOrder,

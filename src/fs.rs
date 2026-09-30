@@ -35,7 +35,7 @@ use napi::bindgen_prelude::{Buffer, Error};
 use napi_derive::napi;
 
 use crate::error::{GdalErrorCode, IntoGdalResult, Result, bad_argument, gdal_error};
-use crate::runtime::{c_string, ensure_initialized, lock_gdal};
+use crate::runtime::{c_string, ensure_initialized, lock_gdal_shared};
 
 /// GDAL's `VSI_ISDIR` and `VSI_ISREG`, which are the POSIX mode masks. The macros
 /// themselves are not bindgen-visible, but the numbers are fixed.
@@ -69,7 +69,7 @@ pub struct FileStat {
 #[napi(namespace = "fs")]
 pub fn read_file(path: String) -> Result<Buffer> {
     ensure_initialized();
-    let _guard = lock_gdal();
+    let _guard = lock_gdal_shared();
 
     let path = c_path(&path)?;
     let handle = open_handle(&path, b"rb")?;
@@ -119,7 +119,7 @@ pub fn read_file(path: String) -> Result<Buffer> {
 #[napi(namespace = "fs")]
 pub fn write_file(path: String, data: Buffer) -> Result<()> {
     ensure_initialized();
-    let _guard = lock_gdal();
+    let _guard = lock_gdal_shared();
 
     let path = c_path(&path)?;
     let bytes: &[u8] = &data;
@@ -159,7 +159,7 @@ pub fn stat(path: String) -> Option<FileStat> {
 #[napi(namespace = "fs")]
 pub fn mkdir(path: String) -> Result<()> {
     ensure_initialized();
-    let _guard = lock_gdal();
+    let _guard = lock_gdal_shared();
 
     let path = c_path(&path)?;
     let status = unsafe { gdal_sys::VSIMkdir(path.as_ptr(), 0o755) };
@@ -170,7 +170,7 @@ pub fn mkdir(path: String) -> Result<()> {
 #[napi(namespace = "fs")]
 pub fn mkdir_recursive(path: String) -> Result<()> {
     ensure_initialized();
-    let _guard = lock_gdal();
+    let _guard = lock_gdal_shared();
 
     let path = c_path(&path)?;
     let status = unsafe { gdal_sys::VSIMkdirRecursive(path.as_ptr(), 0o755) };
@@ -181,7 +181,7 @@ pub fn mkdir_recursive(path: String) -> Result<()> {
 #[napi(namespace = "fs")]
 pub fn rmdir(path: String) -> Result<()> {
     ensure_initialized();
-    let _guard = lock_gdal();
+    let _guard = lock_gdal_shared();
 
     let path = c_path(&path)?;
     let status = unsafe { gdal_sys::VSIRmdir(path.as_ptr()) };
@@ -192,7 +192,7 @@ pub fn rmdir(path: String) -> Result<()> {
 #[napi(namespace = "fs")]
 pub fn rmdir_recursive(path: String) -> Result<()> {
     ensure_initialized();
-    let _guard = lock_gdal();
+    let _guard = lock_gdal_shared();
 
     let path = c_path(&path)?;
     let status = unsafe { gdal_sys::VSIRmdirRecursive(path.as_ptr()) };
@@ -203,7 +203,7 @@ pub fn rmdir_recursive(path: String) -> Result<()> {
 #[napi(namespace = "fs")]
 pub fn unlink(path: String) -> Result<()> {
     ensure_initialized();
-    let _guard = lock_gdal();
+    let _guard = lock_gdal_shared();
 
     let path = c_path(&path)?;
     let status = unsafe { gdal_sys::VSIUnlink(path.as_ptr()) };
@@ -217,7 +217,7 @@ pub fn unlink(path: String) -> Result<()> {
 #[napi(namespace = "fs")]
 pub fn rename(from: String, to: String) -> Result<()> {
     ensure_initialized();
-    let _guard = lock_gdal();
+    let _guard = lock_gdal_shared();
 
     let from = c_path(&from)?;
     let to = c_path(&to)?;
@@ -232,7 +232,7 @@ pub fn rename(from: String, to: String) -> Result<()> {
 #[napi(namespace = "fs")]
 pub fn copy_file(from: String, to: String) -> Result<()> {
     ensure_initialized();
-    let _guard = lock_gdal();
+    let _guard = lock_gdal_shared();
 
     let from = c_path(&from)?;
     let to = c_path(&to)?;
@@ -259,7 +259,7 @@ pub fn copy_file(from: String, to: String) -> Result<()> {
 #[napi(namespace = "fs")]
 pub fn read_dir(path: String, recursive: Option<bool>) -> Result<Vec<String>> {
     ensure_initialized();
-    let _guard = lock_gdal();
+    let _guard = lock_gdal_shared();
 
     let entries = gdal::vsi::read_dir(&path, recursive.unwrap_or(false)).gdal()?;
     Ok(entries
@@ -278,7 +278,7 @@ pub fn read_dir(path: String, recursive: Option<bool>) -> Result<Vec<String>> {
 #[napi(namespace = "fs")]
 pub fn glob(pattern: String) -> Result<Vec<String>> {
     ensure_initialized();
-    let _guard = lock_gdal();
+    let _guard = lock_gdal_shared();
 
     let pattern = c_path(&pattern)?;
     let list = unsafe {
@@ -300,7 +300,7 @@ pub fn glob(pattern: String) -> Result<Vec<String>> {
 #[napi(namespace = "fs")]
 pub fn disk_free_space(path: String) -> Result<f64> {
     ensure_initialized();
-    let _guard = lock_gdal();
+    let _guard = lock_gdal_shared();
 
     let path = c_path(&path)?;
     Ok(unsafe { gdal_sys::VSIGetDiskFreeSpace(path.as_ptr()) } as f64)
@@ -314,7 +314,7 @@ pub fn disk_free_space(path: String) -> Result<f64> {
 #[napi(namespace = "fs")]
 pub fn is_local(path: String) -> Result<bool> {
     ensure_initialized();
-    let _guard = lock_gdal();
+    let _guard = lock_gdal_shared();
 
     let path = c_path(&path)?;
     Ok(unsafe { gdal_sys::VSIIsLocal(path.as_ptr()) })
@@ -393,7 +393,7 @@ fn vsi_failure(method_name: &'static str) -> Error<GdalErrorCode> {
 /// Stat a path behind the lock. `None` means nothing is there.
 fn stat_of(path: &str) -> Option<(CString, gdal_sys::VSIStatBufL)> {
     ensure_initialized();
-    let _guard = lock_gdal();
+    let _guard = lock_gdal_shared();
 
     let path = c_path(path).ok()?;
     let mut stat: gdal_sys::VSIStatBufL = unsafe { std::mem::zeroed() };

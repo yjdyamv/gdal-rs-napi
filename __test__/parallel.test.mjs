@@ -160,6 +160,31 @@ test('close() invalidates a thread-safe dataset, like the serialised one', () =>
   assert.throws(() => dataset.width, /the dataset is closed/)
 })
 
+test('dataset-free work runs together and still answers the same', async () => {
+  // None of this touches a dataset, so it takes the shared side of the GDAL lock and
+  // really does overlap. What is being checked here is that sharing it changes
+  // nothing it computes — the concurrency itself is what scripts/bench-parallel.mjs
+  // measures. (The lock's exclusive side would serialise these; either way the
+  // answers have to match, and a race would show up as a wrong one.)
+  const transform = new gdal.CoordinateTransform(
+    gdal.SpatialRef.fromEpsg(4326),
+    gdal.SpatialRef.fromEpsg(3857),
+  )
+  const points = Float64Array.from({ length: 2000 }, (_, index) => (index % 2 === 0 ? 13.4 : 52.5))
+  const expected = transform.transformPointsSync(points)
+
+  const answers = await Promise.all(Array.from({ length: 8 }, () => transform.transformPoints(points)))
+  for (const answer of answers) assert.deepEqual(answer, expected)
+
+  // `identifyEpsg` is on the same side of the lock — it reads the CRS database and
+  // nothing else — so it runs with the transforms above rather than behind them.
+  const wkt = gdal.SpatialRef.fromEpsg(4326).wkt
+  const found = await Promise.all(
+    Array.from({ length: 4 }, () => gdal.identifyEpsg(wkt)),
+  )
+  for (const authority of found) assert.equal(authority, 'EPSG:4326')
+})
+
 test('openThreadSafe rejects something that is not a read-only raster', () => {
   // A vector file cannot be opened with the raster-only flags openThreadSafe
   // needs, so it fails rather than quietly handing back a serialised dataset.

@@ -453,17 +453,29 @@ First working cut — everything here is new.
   `traditional` order explicitly, `axisMapping` reports which is in force, and
   `withAxisMapping('authority')` opts into GDAL's reading.
 - Index convention: raster bands and layers are **0-based** in JS, unlike GDAL.
-- Every GDAL call is serialised behind one process-wide lock, because GDAL keeps
-  its last-error state in process-global variables. The async methods keep the
-  Node event loop free; they do not make GDAL work run in parallel.
-- `openThreadSafe()` is the exception. It wraps GDAL 3.10's
+- **Concurrency is per thing, not global.** Work that touches an *open dataset* is
+  serialised behind one process-wide lock: the async methods keep the Node event loop
+  free, but they do not make dataset work run in parallel, because GDAL is not
+  thread-safe for one dataset reached from two threads and some drivers are not
+  thread-safe at all.
+- `openThreadSafe()` is how a dataset joins in. It wraps GDAL 3.10's
   `GDALGetThreadSafeDataset`, whose pixel reads take the *shared* side of that lock
   and therefore really do overlap — a measured 2.6x on four concurrent reads where
   the serialised path showed no gain at all from issuing them together. Such a
   dataset is read-only and raster-only: writes and layer access throw
-  `GDAL_BAD_ARGUMENT`, and everything other than a pixel read still takes the
-  exclusive side so the error-state race above stays excluded. Most drivers reopen
-  the file per thread, so concurrency costs file descriptors; GTiff/COG do not.
+  `GDAL_BAD_ARGUMENT`. Most drivers reopen the file per thread, so concurrency costs
+  file descriptors; GTiff/COG do not.
+- Work with **no dataset in it** takes the shared side too, so it overlaps as well:
+  the CRS and `CoordinateTransform` methods, geometry/GEOS, and `gdal.fs`. The one
+  exclusive lock's original justification — GDAL keeping its last error in
+  process-global variables — stopped being true in GDAL 3.10. That state is
+  thread-local now, `OGRSpatialReference` draws its PROJ context per thread
+  (`OSRGetProjTLSContext()`), and `OGRGeometry::createGEOSContext()` makes a GEOS
+  context per call. `runtime.rs` records the evidence, the Rust test
+  `gdals_last_error_is_thread_local` pins the part the split rests on, and
+  `scripts/bench-parallel.mjs` measures the rest: four concurrent 400k-point
+  transforms went from **1.03x to 2.93x**, a number near 1.00x being the lock
+  serialising them.
 - The async methods carry `ts_return_type` annotations, so the generated
   `binding.d.ts` names what they resolve to — `Promise<Dataset>`,
   `Promise<Buffer>`, `Promise<BandStatistics | null>` — instead of the
@@ -551,7 +563,9 @@ First working cut — everything here is new.
 
 - `scripts/bench-parallel.mjs` measures the thread-safe path against the serialised
   one: the same concurrent workload, on real data, with the numbers and their
-  spread printed. It is a benchmark, not a test, and asserts nothing.
+  spread printed. It also measures a workload with **no dataset in it** — concurrent
+  `transformPoints`, which is lock contention and nothing else, and the sharpest
+  reading of the split above. It is a benchmark, not a test, and asserts nothing.
 - `npm run smoke` installs the packed tarball into an **empty directory** and then
   uses it: the packaged CRS database resolves, the driver count is right, a GEOS
   predicate runs (so the statically linked GEOS works with nothing installed), and
