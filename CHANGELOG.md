@@ -366,14 +366,23 @@ First working cut — everything here is new.
   GDAL sniffs the content: GTiff, PNG, JPEG, VRT, GeoJSON and GPKG identify themselves,
   and a format a driver only knows by its extension does not.
 - `gdal.fs` — GDAL's virtual file system: `readFile`, `writeFile`, `exists`, `stat`,
-  `mkdir`, `rmdir`, `unlink`, `readDir`. These are the `VSI*` functions, so the same
+  `mkdir`, `rmdir`, `unlink`, `readDir`, plus the rest of the common surface —
+  `rename`, `copyFile`, `glob`, `mkdirRecursive` / `rmdirRecursive` (`mkdir -p` and
+  `rm -rf`), `isLocal` and `diskFreeSpace`. These are the `VSI*` functions, so the same
   call takes `/vsimem/`, `/vsizip/`, `/vsicurl/` or a plain path. They are synchronous
   deliberately: each one is a memory copy or a local syscall, and a `/vsicurl/` read is
   the exception — `open(url)` is the version of that which runs on the pool. A missing
   file answers `false` / `null` rather than throwing, while a call that was asked to
   change something throws. `readDir` drops the `.` and `..` GDAL reports for a real
   directory, and `/vsimem/` has no directories underneath at all: a name there is
-  opaque, so writing into a "directory" that was never created works.
+  opaque, so writing into a "directory" that was never created works. `glob` walks
+  GDAL's string list by the array, not by `CSLGetField`: that helper answers `""` past
+  the end — and for an empty list — so a walk that stops on a null field never stops;
+  the miss case (`glob('…/nothing*')` → `[]`) is a test. **What each operation does on
+  a given file system is GDAL's answer, not a rule added here**, and the README carries
+  the matrix for `/vsimem/`, `/vsizip/` and `/vsicurl/`: reading works everywhere,
+  `/vsizip/` can *add* an entry but not overwrite, delete or rename one, and
+  `/vsicurl/` refuses every write and needs the server (not GDAL) to list a directory.
 - Programs: `translate` / `translateSync`, `warp` / `warpSync`, `vectorTranslate` /
   `vectorTranslateSync` — `gdal_translate`, `gdalwarp` and `ogr2ogr`, each taking
   that tool's own command-line arguments. `warp` and `vectorTranslate` take a list

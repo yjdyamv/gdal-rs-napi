@@ -183,6 +183,13 @@ gdal.fs.mkdir('/tmp/scratch')
 gdal.fs.readDir('/tmp/scratch')      // ['a.txt', 'b.txt']，不含 '.' 和 '..'
 gdal.fs.unlink('/vsimem/data.tif')
 gdal.fs.rmdir('/tmp/scratch')
+
+gdal.fs.mkdirRecursive('/vsimem/out/2024/09')   // 相当于 mkdir -p
+gdal.fs.glob('/vsimem/out/**/*.tif')            // 一个扁平的路径数组
+gdal.fs.rename('/vsimem/a.tif', '/vsimem/b.tif')
+gdal.fs.copyFile('/vsimem/b.tif', '/tmp/b.tif')
+gdal.fs.rmdirRecursive('/vsimem/out')           // 相当于 rm -rf
+gdal.fs.isLocal('/vsicurl/https://host/a.tif')  // false
 ```
 
 这一组是同步的，而且是刻意的：每次调用要么是内存拷贝，要么是本地系统调用。例外是
@@ -190,6 +197,24 @@ gdal.fs.rmdir('/tmp/scratch')
 文件不存在不算错误（`exists` 是 `false`，`stat` 是 `null`）；被要求「改点什么」的调用才会抛。
 另外 `/vsimem/` 底下并不是真的文件系统：那里的路径只是个不透明名字，所以
 `writeFile('/vsimem/anything/nested.bin', bytes)` 不需要任何目录先存在。
+
+**每种文件系统支持什么，是 GDAL 的答案，不是本绑定的。** `gdal.fs` 自己不添加规则，
+所以下面是大家最常碰到的那三个前缀各自的矩阵：
+
+| | 普通路径 | `/vsimem/` | `/vsizip/` | `/vsicurl/` |
+|---|---|---|---|---|
+| `readFile`、`stat`、`exists`、`glob` | 是 | 是 | 是 | 是 —— 走网络 |
+| `writeFile`，写一个尚不存在的名字 | 是 | 是 | 是 —— 会往包里加一条 | 否 |
+| `writeFile`，写一个已存在的名字 | 是 | 是 | **否** —— “already exists in ZIP file” | 否 |
+| `mkdirRecursive` | 是 | 是 | 是 —— 一条目录项 | 否 |
+| `unlink`、`rename`、`rmdirRecursive` | 是 | 是 | 否 | 否 |
+| `readDir` | 是 | 是 | 是 | 仅当服务器支持列目录 |
+| `isLocal` | `true` | `true` | `true` | `false` |
+| `diskFreeSpace` | 字节数 | `0` | `0` | `0` |
+
+`/vsizip/` 值得多看两眼：它**不是**只读的 —— 往包里加一条可以，而且真的落进压缩包 ——
+但在里面覆盖、删除、改名都不行。`/vsicurl/` 是唯一一个测试套件不跑的行（它要联网），
+也是唯一一个 `readDir` 取决于服务器而非 GDAL 的行。
 
 **`open()` 除了路径也能收 `Buffer`**，这是「数据本来就没有文件」时的入口：
 

@@ -94,7 +94,7 @@
 - [ ] 评估"每图层单读者"限制的缓解（副本/独立 dataset 句柄）。
 
 **通用**
-- [ ] `gdal.fs` 补齐常用 VSI 操作；明确 `/vsimem`、`/vsicurl`、`/vsizip` 的支持矩阵并写入文档。
+- [x] `gdal.fs` 补齐常用 VSI 操作（`rename` / `copyFile` / `glob` / `mkdirRecursive` / `rmdirRecursive` / `isLocal` / `diskFreeSpace`）；`/vsimem`、`/vsizip`、`/vsicurl` 的支持矩阵已写作 README 的表格 —— 读处处可用，`/vsizip` 能**加**条目但不能覆盖/删除/改名，`/vsicurl` 拒一切写入。
 
 **验收**：README 的 Known gaps 只剩"设计取舍"（GEOS、Intel macOS 等），没有"未实现"。
 

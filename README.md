@@ -214,6 +214,13 @@ gdal.fs.mkdir('/tmp/scratch')
 gdal.fs.readDir('/tmp/scratch')      // ['a.txt', 'b.txt'] — no '.' or '..'
 gdal.fs.unlink('/vsimem/data.tif')
 gdal.fs.rmdir('/tmp/scratch')
+
+gdal.fs.mkdirRecursive('/vsimem/out/2024/09')   // mkdir -p
+gdal.fs.glob('/vsimem/out/**/*.tif')            // one flat array of paths
+gdal.fs.rename('/vsimem/a.tif', '/vsimem/b.tif')
+gdal.fs.copyFile('/vsimem/b.tif', '/tmp/b.tif')
+gdal.fs.rmdirRecursive('/vsimem/out')           // rm -rf
+gdal.fs.isLocal('/vsicurl/https://host/a.tif')  // false
 ```
 
 These are synchronous, and deliberately so: every call is a memory copy or a local
@@ -223,6 +230,26 @@ missing file is not an error (`exists` is `false`, `stat` is `null`); a call tha
 asked to change something throws instead. And `/vsimem/` is not a filesystem
 underneath: a path there is an opaque name, so
 `writeFile('/vsimem/anything/nested.bin', bytes)` works with no directory ever created.
+
+**What each file system supports is GDAL's answer, not this binding's.** `gdal.fs`
+adds no rules of its own, so this is the matrix for the three prefixes most code
+reaches for:
+
+| | plain path | `/vsimem/` | `/vsizip/` | `/vsicurl/` |
+|---|---|---|---|---|
+| `readFile`, `stat`, `exists`, `glob` | yes | yes | yes | yes — over the network |
+| `writeFile`, a name that is not there yet | yes | yes | yes — it adds an entry | no |
+| `writeFile`, a name that is | yes | yes | **no** — "already exists in ZIP file" | no |
+| `mkdirRecursive` | yes | yes | yes — an entry | no |
+| `unlink`, `rename`, `rmdirRecursive` | yes | yes | no | no |
+| `readDir` | yes | yes | yes | only where the server lists |
+| `isLocal` | `true` | `true` | `true` | `false` |
+| `diskFreeSpace` | bytes | `0` | `0` | `0` |
+
+`/vsizip/` is worth reading twice: it is not read-only — adding an entry works, and
+the entry lands in the archive — but overwriting, deleting and renaming inside it do
+not. `/vsicurl/` is the one row the test suite does not run (it wants a network), and
+its `readDir` is the one that depends on the server rather than on GDAL.
 
 **`open()` takes bytes as well as a path**, which is where data that never had a file
 comes in:

@@ -21,8 +21,14 @@
 //! so `writeFile('/vsimem/somewhere/nested.bin', bytes)` works without that
 //! "directory" ever having been created, and `mkdir` is only for where something
 //! insists on the shape of a tree.
+//!
+//! Not every operation means something on every file system: `/vsizip/`, `/vsitar/`
+//! and `/vsigzip/` are read-only, and `/vsicurl/` is a read-only network source.
+//! The support matrix, per operation and per file system, is in the README; the
+//! operations here are the ones GDAL answers for a path, so what each one does on
+//! a given `/vsi*/` prefix is GDAL's answer, not this binding's.
 
-use std::ffi::{CString, c_int};
+use std::ffi::{CString, c_char, c_int};
 
 use gdal::errors::GdalError;
 use napi::bindgen_prelude::{Buffer, Error};
@@ -160,6 +166,17 @@ pub fn mkdir(path: String) -> Result<()> {
     vsi_status(status, "VSIMkdir")
 }
 
+/// Create a directory and every missing parent, like `mkdir -p`.
+#[napi(namespace = "fs")]
+pub fn mkdir_recursive(path: String) -> Result<()> {
+    ensure_initialized();
+    let _guard = lock_gdal();
+
+    let path = c_path(&path)?;
+    let status = unsafe { gdal_sys::VSIMkdirRecursive(path.as_ptr(), 0o755) };
+    vsi_status(status, "VSIMkdirRecursive")
+}
+
 /// Remove an empty directory.
 #[napi(namespace = "fs")]
 pub fn rmdir(path: String) -> Result<()> {
@@ -171,6 +188,17 @@ pub fn rmdir(path: String) -> Result<()> {
     vsi_status(status, "VSIRmdir")
 }
 
+/// Remove a directory and everything under it, like `rm -rf`.
+#[napi(namespace = "fs")]
+pub fn rmdir_recursive(path: String) -> Result<()> {
+    ensure_initialized();
+    let _guard = lock_gdal();
+
+    let path = c_path(&path)?;
+    let status = unsafe { gdal_sys::VSIRmdirRecursive(path.as_ptr()) };
+    vsi_status(status, "VSIRmdirRecursive")
+}
+
 /// Remove a file.
 #[napi(namespace = "fs")]
 pub fn unlink(path: String) -> Result<()> {
@@ -180,6 +208,48 @@ pub fn unlink(path: String) -> Result<()> {
     let path = c_path(&path)?;
     let status = unsafe { gdal_sys::VSIUnlink(path.as_ptr()) };
     vsi_status(status, "VSIUnlink")
+}
+
+/// Rename or move a file or directory.
+///
+/// A rename stays inside one file system: moving a file out of `/vsimem/` and onto
+/// disk is a copy and a delete, which is `copyFile` / `unlink`, not this.
+#[napi(namespace = "fs")]
+pub fn rename(from: String, to: String) -> Result<()> {
+    ensure_initialized();
+    let _guard = lock_gdal();
+
+    let from = c_path(&from)?;
+    let to = c_path(&to)?;
+    let status = unsafe { gdal_sys::VSIRename(from.as_ptr(), to.as_ptr()) };
+    vsi_status(status, "VSIRename")
+}
+
+/// Copy a file, replacing the target if it is already there.
+///
+/// Unlike `rename`, this crosses file systems — `/vsicurl/` to `/vsimem/`, say —
+/// which is exactly what a copy is for.
+#[napi(namespace = "fs")]
+pub fn copy_file(from: String, to: String) -> Result<()> {
+    ensure_initialized();
+    let _guard = lock_gdal();
+
+    let from = c_path(&from)?;
+    let to = c_path(&to)?;
+    // No open source handle and no known size, so GDAL opens and stats the source
+    // itself; `-1` as an unsigned size is GDAL's "we do not know how long it is".
+    let status = unsafe {
+        gdal_sys::VSICopyFile(
+            from.as_ptr(),
+            to.as_ptr(),
+            std::ptr::null_mut(),
+            u64::MAX,
+            std::ptr::null(),
+            None,
+            std::ptr::null_mut(),
+        )
+    };
+    vsi_status(status, "VSICopyFile")
 }
 
 /// The entries in a directory, or everything under it when `recursive`.
@@ -199,6 +269,57 @@ pub fn read_dir(path: String, recursive: Option<bool>) -> Result<Vec<String>> {
         .collect())
 }
 
+/// Expand a glob pattern into the paths that match it.
+///
+/// `*` and `?` match within one path component and `**` descends through the tree,
+/// so `/vsimem/out/**/*.tif` is a whole tree. The pattern names the file system,
+/// which is the point: `/vsimem/part*.tif` and `/vsizip/archive.zip/*.tif` are the
+/// same call here but not the same source. No matches is an empty array.
+#[napi(namespace = "fs")]
+pub fn glob(pattern: String) -> Result<Vec<String>> {
+    ensure_initialized();
+    let _guard = lock_gdal();
+
+    let pattern = c_path(&pattern)?;
+    let list = unsafe {
+        gdal_sys::VSIGlob(
+            pattern.as_ptr(),
+            std::ptr::null(),
+            None,
+            std::ptr::null_mut(),
+        )
+    };
+    let matches = csl_to_vec(list);
+    unsafe { gdal_sys::CSLDestroy(list) };
+    Ok(matches)
+}
+
+/// Free space in bytes on the file system holding this path.
+///
+/// `0` when GDAL cannot say — a virtual file system with no size, a `/vsicurl/` URL.
+#[napi(namespace = "fs")]
+pub fn disk_free_space(path: String) -> Result<f64> {
+    ensure_initialized();
+    let _guard = lock_gdal();
+
+    let path = c_path(&path)?;
+    Ok(unsafe { gdal_sys::VSIGetDiskFreeSpace(path.as_ptr()) } as f64)
+}
+
+/// Whether this path is on the local file system.
+///
+/// `false` for the remote ones — `/vsicurl/`, `/vsis3/` — which is what a caller
+/// wants to know before treating a read as cheap. Local here includes `/vsimem/`,
+/// whose bytes do live in this process.
+#[napi(namespace = "fs")]
+pub fn is_local(path: String) -> Result<bool> {
+    ensure_initialized();
+    let _guard = lock_gdal();
+
+    let path = c_path(&path)?;
+    Ok(unsafe { gdal_sys::VSIIsLocal(path.as_ptr()) })
+}
+
 /// A path GDAL can be handed.
 fn c_path(path: &str) -> Result<CString> {
     CString::new(path).map_err(|_| bad_argument("a path cannot contain a NUL byte"))
@@ -216,6 +337,29 @@ fn open_handle(path: &CString, mode: &[u8]) -> Result<*mut gdal_sys::VSILFILE> {
         return Err(vsi_failure("VSIFOpenL"));
     }
     Ok(handle)
+}
+
+/// Copy a `CSL` string list — GDAL's null-terminated `char**` — into owned strings.
+///
+/// The terminator is a null *entry*, so the walk is over the array itself. Asking
+/// GDAL instead (`CSLGetField`) is a trap: past the end — and for a null list — it
+/// answers with an empty string rather than null, which never ends a loop. The list
+/// belongs to the `VSI*` caller; freeing stays with it, so this only reads.
+fn csl_to_vec(list: *mut *mut c_char) -> Vec<String> {
+    let mut names = Vec::new();
+    if list.is_null() {
+        return names;
+    }
+    let mut entry = list;
+    loop {
+        let item = unsafe { *entry };
+        if item.is_null() {
+            break;
+        }
+        names.push(c_string(item));
+        entry = unsafe { entry.add(1) };
+    }
+    names
 }
 
 /// A `VSI*` call that answers with a status code: non-zero is a failure, and the
@@ -291,5 +435,75 @@ mod tests {
     fn a_path_with_a_nul_byte_never_reaches_gdal() {
         assert!(write_file("/vsimem/bad\0name".to_string(), Buffer::from(vec![1_u8])).is_err());
         assert!(!exists("/vsimem/bad\0name".to_string()));
+    }
+
+    #[test]
+    fn glob_finds_matching_mem_files_and_a_miss_is_empty() {
+        let dir = "/vsimem/gdal-rs-napi-fs-glob";
+        write_file(format!("{dir}/one.bin"), Buffer::from(vec![1_u8])).unwrap();
+        write_file(format!("{dir}/two.bin"), Buffer::from(vec![2_u8])).unwrap();
+        write_file(format!("{dir}/three.txt"), Buffer::from(vec![3_u8])).unwrap();
+
+        // The regression this pins: GDAL's `CSLGetField` answers "" past the end of a
+        // list — and for a null one — so a walk that stops on a null *field* never
+        // stops. A miss has to come back as an empty array.
+        assert!(glob(format!("{dir}/nothing*.bin")).unwrap().is_empty());
+
+        let found = glob(format!("{dir}/*.bin")).unwrap();
+        assert_eq!(found.len(), 2);
+        assert!(found.iter().any(|path| path.ends_with("one.bin")));
+        assert!(found.iter().any(|path| path.ends_with("two.bin")));
+
+        for name in ["one.bin", "two.bin", "three.txt"] {
+            unlink(format!("{dir}/{name}")).unwrap();
+        }
+    }
+
+    #[test]
+    fn rename_and_copy_move_bytes_between_mem_names() {
+        let from = "/vsimem/gdal-rs-napi-fs-rename-from.bin".to_string();
+        let to = "/vsimem/gdal-rs-napi-fs-rename-to.bin".to_string();
+        let copied = "/vsimem/gdal-rs-napi-fs-copy.bin".to_string();
+
+        write_file(from.clone(), Buffer::from(vec![1_u8, 2, 3])).unwrap();
+        rename(from.clone(), to.clone()).unwrap();
+        assert!(!exists(from));
+        assert_eq!(read_file(to.clone()).unwrap().to_vec(), vec![1_u8, 2, 3]);
+
+        copy_file(to.clone(), copied.clone()).unwrap();
+        assert_eq!(
+            read_file(copied.clone()).unwrap().to_vec(),
+            vec![1_u8, 2, 3]
+        );
+        // A copy leaves the source where it was.
+        assert!(exists(to.clone()));
+
+        unlink(to).unwrap();
+        unlink(copied).unwrap();
+    }
+
+    #[test]
+    fn recursive_directories_come_and_go_in_one_call() {
+        let root = std::env::temp_dir().join("gdal-rs-napi-fs-recursive");
+        let nested = root.join("a").join("b");
+        let root = root.to_string_lossy().into_owned();
+        let nested = nested.to_string_lossy().into_owned();
+
+        // `mkdir` would refuse the missing parent; `mkdir_recursive` makes the chain.
+        let _ = rmdir_recursive(root.clone());
+        mkdir_recursive(nested.clone()).unwrap();
+        assert!(stat(nested.clone()).unwrap().is_directory);
+
+        write_file(format!("{nested}/x.bin"), Buffer::from(vec![1_u8])).unwrap();
+        // And removing the root takes the file and the parents with it.
+        rmdir_recursive(root).unwrap();
+        assert!(!exists(nested));
+    }
+
+    #[test]
+    fn a_plain_path_is_local_and_has_free_space() {
+        let dir = std::env::temp_dir().to_string_lossy().into_owned();
+        assert!(is_local(dir.clone()).unwrap());
+        assert!(disk_free_space(dir).unwrap() > 0.0);
     }
 }
