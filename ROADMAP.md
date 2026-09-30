@@ -62,7 +62,7 @@
 - [x] **安装冒烟测试**：`npm run smoke` —— 在一个空目录里 `npm install <tarball>`，再跑一个消费者程序（`diagnostics()`、`drivers().length`、GEOS 谓词、栅格往返）。CI 每个平台都跑，而 CI runner 正是"干净机器"本身。
 - [ ] **审计 Known gaps**：逐条对代码核验，修掉文档漂移（`transformGeometry`、统计写回、批量读等）。
 - [x] **修 `open` 错误消息**：已修 —— 失败原因是漏了 `GDAL_OF_VERBOSE_ERROR`：不设这个标志时 GDAL 静默返回空句柄，last-error 里什么都没有。加上标志即可，消息走原有错误路径。
-- [ ] **CI 策略定案**：musl 要么转正（`experimental: false`），要么在 README 明确为"尽力而为"。
+- [x] **CI 策略定案**：**定为"尽力而为"，不转正** —— 两条 musl 腿保持 `experimental`，README 的两处（Prebuilt binaries 的矩阵、Targets）都写明"绿了算加分、红了不拦发布"，并指向 `docker/` 自行构建。转正的前提是有人真的把 vendored 的 HDF5/netCDF/curl/libpq 在 musl 上盯住，现在没有这个人也没有这条需求，所以写死比含糊更诚实。
 - [ ] 补 `SECURITY.md` / issue 模板 / 贡献指南。
 
 **验收**：`npm view gdal-rs-napi version` 有值；全新机器 `npm i` 后第一次调用 `gdal.version()` 成功。
@@ -116,7 +116,7 @@ MDArray、Node Streams、`calcAsync` 明确不做，记为设计取舍。
 - [x] **削弱全局锁**：PoC 的结论是**前提已经过时** —— GDAL ≥3.10 的 last-error 是线程局部的（每线程一个 `CPLErrorContext`），`OGRSpatialReference` 的 PROJ context 来自 `OSRGetProjTLSContext()`，GEOS 则是每次调用一个 context。于是**无数据集**的调用（CRS / `CoordinateTransform`、几何 / GEOS、`gdal.fs`）改走共享锁、真正并发；数据集与进程级配置仍走独占（同一个 dataset 跨线程不安全，部分驱动本身也不安全）。实测 4 个并发 40 万点变换：**1.03x → 2.93x**。证据写进 `src/runtime.rs`，前提由 Rust 测试 `gdals_last_error_is_thread_local` 钉住，收益由 `scripts/bench-parallel.mjs` 量出。
 - [ ] **扩大 `openThreadSafe` 覆盖面**：现状限只读栅格；评估更多驱动与读路径。矢量的线程安全如实测不可行，就在文档里写死。（上一项 PoC 的补充结论：把**普通**数据集也放成并发，不能只靠"错误状态已解耦"就放开，得经 GDAL 的 `GDALGetThreadSafeDataset` 或逐驱动判断。）读路径本身已放宽一格：只读访问器（尺寸、geotransform、projection、元数据、band/overview 查询）与 `checksum` 都走共享锁，判据是"是否只查看已有状态、是否会让 GDAL 把算出来的结果存下"；实测 4 并发读中夹 39 轮访问器：**22.2 ms 串行 vs 8.1 ms 并发（2.75x）**。数据集之外的**模块级自省**（`version` / `info` / `diagnostics` / `lastError` / `epsgToWkt`、`geometry*`、`drivers()` / `driver(name)` 及其 `Driver` 方法）也已并到共享锁——它们本来就不含数据集；同一把锁上实测 146 轮自省：**空闲 79.5 ms vs 四个变换在飞时 90.7 ms（1.14x，若排队应为 2.34x）**。剩下的仍是写、矢量侧与 programs；唯一的例外读是 `config.get`，它必须留在独占侧——`CPLGetConfigOption` 返回指向配置表内部的指针并随即放手，并发的 `config.set` 会 use-after-free。
 - [x] **零拷贝**：`readPixels` / `readAs` 的 options 增加 `into: Buffer`，GDAL 直接写进调用方内存（`GDALRasterIOEx`，传裸指针而不是 `&mut [T]`——JS 的 `Buffer` 不保证对齐），**不分配、不拷贝**；长度必须精确匹配，返回值就是传入的那个对象（同步与异步都是）。写路径拒绝 `into` 而不是忽略。跨距/子区域填充（gdal-async 的 `buffer_width`/`line_space`）**不做**：那要自己铺开 RasterIO 的行跨距，等真有需求再说。
-- [ ] **基准进 CI**：`scripts/bench-parallel.mjs` 加回归阈值（或至少存档趋势），防止性能回退。
+- [x] **基准进 CI**：`scripts/bench-parallel.mjs` 新增 `--min-speedup <x>`，门槛卡的是**比值**而不是绝对耗时 —— 四个不碰数据集的变换"一起发出 vs 一个个发"（共享侧约 3x，一旦挪回独占侧就掉到约 1x），同一台机器上两次测量的比值换台慢机器依然成立。CI 在 linux-x64-gnu 腿以 `--min-speedup 1.5` 跑（实测 3.0–3.6x，门槛留足余量），无论成败都**归档**整份输出：该次运行的 summary + `bench.log` artifact。顺带收敛 workflow：顶层 `permissions: contents: read`（只有 release job 自己申请 `contents: write`）、`concurrency` 取消同 ref 的旧运行（tag 除外）。
 - [ ] **资源语义**：句柄/文件描述符/内存的上限与释放路径文档化；大栅格的流式读取模式统一。
 
 **验收**：并发读吞吐随 `UV_THREADPOOL_SIZE` 线性增长的区间有实测数据支撑。
@@ -141,7 +141,7 @@ MDArray、Node Streams、`calcAsync` 明确不做，记为设计取舍。
 |---|---|
 | 代码结构 | 拆分 `dataset.rs` / `band.rs` / `vector.rs` 为子模块；统一 `raster_tools.rs` 的错误路径 |
 | 测试 | 真实数据 fixtures 版本化；补失败路径与边界；目标覆盖率 > 80% |
-| CI | 冷构建 180min 上限是隐患 → 缓存 + 并行；把 fmt/clippy/单测固定在 linux-x64 |
+| CI | 冷构建 180min 上限是隐患 → **缓存已做**；fmt/clippy/单测固定在 linux-x64 一条腿上，**锁基准也挂在那里**（都是同一个理由：为它们单开一条腿等于再花一整次 GDAL 构建）；顶层权限收窄到 `contents: read`、同 ref 的旧运行自动取消 —— 三项均已落地 |
 | 文档 | 每个公开 API 的 doc comment 即文档源；Known gaps 与代码在 CI 里做一致性检查（可行的话） |
 | 构建 | 增量构建与 `assets` staging 的确定性；三平台工具链 pin |
 

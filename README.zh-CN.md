@@ -1075,7 +1075,7 @@ const [size, transform] = [band.size, dataset.geoTransform]
 **指向它内部的指针**并且随即放开锁，并发的 `config.set` 可能在本次拷贝之前就把它 free 掉。
 
 ```sh
-node scripts/bench-parallel.mjs big.tif --concurrency 4
+node scripts/bench-parallel.mjs big.tif --concurrency 4 [--min-speedup 1.5]
 ```
 
 它量四组负载：两条路径上的整波段读取、同样这批读取但**中间夹着只读访问器**、完全不涉及数据集
@@ -1083,6 +1083,12 @@ node scripts/bench-parallel.mjs big.tif --concurrency 4
 同一批轮数先在空闲进程上量一遍、再在变换进行中量一遍，两个数字就说明了自省有没有排队。
 访问器循环和自省循环的轮数都按它们所插入的那批工作的耗时校准，
 所以在任何机器、任何栅格上都是可比的。
+
+它是基准而不是测试：默认情况下没有任何耗时会让它失败，因为这些数字取决于机器和存储。唯一的
+例外是 `--min-speedup`，CI 会带上它：门槛卡的是**比值** —— 四个不碰数据集的变换一起发出 vs
+一个一个发，纯粹是锁竞争（这段工作在共享侧时约 3x，一旦被挪回独占侧就掉到约 1x）。
+同一台机器上两次测量之间的比值，换台慢机器也照样成立，而绝对耗时不行。CI 除了卡这个比值，
+还会**归档**这次运行：数字进该次运行的 summary，也进一个 `bench.log` artifact。
 
 代价与边界：
 
@@ -1160,12 +1166,23 @@ glibc/Windows/macOS 各条腿都跑在**对应架构的原生运行器**上（�
 自带的工具链本来就是 cargo 要的那个 musl 三元组 —— 没有交叉工具链、没有 sysroot、没有
 模拟执行。它仍是矩阵里最不确定的一环，原因是全驱动集会拉进 HDF5、netCDF、curl、libpq
 这些自带 C 库以及它们的 CMake/configure；这一步失败只会被报告，不会让整轮变红。测试也在
-同一个镜像里跑，那里 musl 就是原生 libc。Intel macOS 未构建。
+同一个镜像里跑，那里 musl 就是原生 libc。
 
 那两条 musl 腿的测试跑在同一个容器里，而不是 runner 上：napi 会把 musl
 **动态**链接（加 `-C target-feature=-crt-static`），runner 上的 glibc Node 根本无法加载
 这样的 addon（一个进程里两个 libc）。容器也是更诚实的验证场所 —— 那里生成的 loader 会
 解析到 musl，跑的就是真产物，而不是披着 musl 标签的宿主构建。
+
+**这就是 musl 的定案，不是留着没答的问题。** 两条腿**有意**保持 `experimental`：它们构建的
+源码与 glibc 各条腿完全相同，只是 libc 不同，而脆弱的地方是那几个自带的 C 库、不是本 crate
+—— 所以 musl 腿绿了算加分，红了也不拦发布。真需要 musl 就用 `docker/` 里的容器自己构建。
+
+每条腿都跑 Node 测试套件和打包 tarball 的冒烟测试；`linux-x64-gnu` 那条还多带三样东西，因为
+为它们单开一条腿等于再花一整次 GDAL 构建去说同样的话。这三样是风格门禁（`cargo fmt
+--check` 与带 `-D warnings` 的 clippy）、Rust 单测，以及那把锁的基准 —— 门槛是什么、为什么
+它可以失败，见《异步语义》；它的数字会归档到该次运行的 summary 和 artifact 里。
+
+Intel macOS 未构建。需要的话加一条 `macos-13` 腿即可，构建本身不用改。
 
 ## 从源码构建
 

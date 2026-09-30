@@ -1273,7 +1273,7 @@ mutex around it, but because `CPLGetConfigOption` returns a pointer into it and 
 guard, so a concurrent `config.set` could free the string before this binding copies it.
 
 ```sh
-node scripts/bench-parallel.mjs big.tif --concurrency 4
+node scripts/bench-parallel.mjs big.tif --concurrency 4 [--min-speedup 1.5]
 ```
 
 It measures four workloads: whole-band reads on both paths, the same batch of reads
@@ -1283,6 +1283,15 @@ module-level surface asked during that workload — the same rounds on an idle p
 then while the transforms are in flight, so the two numbers say whether the
 introspection waited. The accessor and surface loops are calibrated against the work
 they run during, so they are comparable on any machine and any raster.
+
+It is a benchmark and not a test — nothing fails on the timings by default, because
+they depend on the machine and on the storage. The exception is `--min-speedup`, which
+CI passes: it gates the *ratio* between four dataset-free transforms issued together and
+one at a time, which is lock contention and nothing else (about 3x while that work is on
+the shared side, about 1x if it ever moves back). A ratio between two measurements on
+the same machine survives a slower machine where a wall time would not, and CI
+**archives** the run rather than only asserting on it: the numbers land in the run
+summary and in a `bench.log` artifact.
 
 What it costs, and what it does not do:
 
@@ -1392,6 +1401,18 @@ Two things worth knowing about that matrix:
   the vendored C libraries `all_drivers` pulls in (HDF5, netCDF, curl, libpq) and
   their CMake and configure steps, so a failure there is reported but does not fail
   the run. The suite runs in the same image, where musl is the native libc.
+- **That is the decision on musl, not a question left open.** The legs stay
+  `experimental` on purpose: they build the same source as the glibc ones against a
+  different libc, and the fragile part is the vendored C libraries rather than this
+  crate — so a green musl leg is a bonus and a red one does not hold a release. If
+  you need musl for certain, build it yourself with the container in `docker/`.
+
+Every leg runs the Node suite and the packed-tarball smoke test; the
+`linux-x64-gnu` one carries the extras, because a leg of its own would cost a second
+full GDAL build to say the same things. Those extras are the style gate
+(`cargo fmt --check` and clippy with `-D warnings`), the Rust unit tests, and the lock
+benchmark — see *Async semantics* for what that gate is and why it can fail — whose
+numbers are archived in the run summary and as an artifact.
 
 Intel macOS is not built. If you need it, add a `macos-13` leg — the build itself
 needs no changes.

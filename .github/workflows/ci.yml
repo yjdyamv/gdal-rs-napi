@@ -11,6 +11,19 @@ on:
   pull_request:
   workflow_dispatch:
 
+# The build job only reads the repository, and the release job asks for the wider
+# `contents: write` on its own — so say the narrow thing here and let it be overridden
+# where it is needed. A pull request from a fork then inherits nothing else.
+permissions:
+  contents: read
+
+# A run that has been superseded answers a question nobody is asking any more, and a
+# cold one compiles PROJ and GDAL from source; cancelling is worth it. Tags are exempt:
+# a release build must not be cancelled by a later push that happens to share the ref.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -185,6 +198,46 @@ jobs:
       - name: Test (musl)
         if: matrix.musl_container
         run: docker run --rm -v "$PWD:/work" -w /work gdal-rs-napi-musl npm test
+
+      # The one benchmark that is also a check, on the one leg that is already through
+      # its toolchain. `--min-speedup` gates the *ratio* between four dataset-free
+      # transforms issued together and one at a time, which is lock contention and
+      # nothing else: about 3x while the dataset-free work sits on the shared side of
+      # the lock, about 1x if it ever moves back to the exclusive side. A ratio between
+      # two measurements on the same runner is what makes a floor safe to fail on,
+      # where a wall time would not be — and the floor is set well below the measured
+      # value for the same reason. The numbers themselves are archived rather than
+      # only asserted: this run's summary and a `bench.log` artifact, which is the
+      # trend the roadmap asks for.
+      - name: Benchmark the lock
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        shell: bash
+        run: |
+          set -o pipefail
+          # `dist/` is the build-output directory and is git-ignored, so the log goes
+          # there rather than into the repository root.
+          mkdir -p dist
+          # `|| status=$?` keeps a failure from ending the step before the log has been
+          # archived, and because of `pipefail` it is the benchmark's status, not tee's.
+          status=0
+          node scripts/bench-parallel.mjs --min-speedup 1.5 2>&1 | tee dist/bench.log || status=$?
+          {
+            echo '### Lock benchmark'
+            echo
+            echo '`scripts/bench-parallel.mjs --min-speedup 1.5`'
+            echo
+            echo '```'
+            cat dist/bench.log
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$status"
+
+      - uses: actions/upload-artifact@v5
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        with:
+          name: lock-benchmark
+          path: dist/bench.log
+          if-no-files-found: error
 
       # One installable tarball per platform: root package files + assets/ + the
       # binary, with os/cpu/libc set so npm refuses a mismatched machine. Run

@@ -628,7 +628,17 @@ First working cut — everything here is new.
   targets the musl triple cargo is asked for: an ordinary native build, with no
   cross toolchain, no sysroot and no emulation. The suite has to run in there
   because napi links musl dynamically, so the runner's glibc Node cannot load the
-  addon at all — one process, two libcs.
+  addon at all — one process, two libcs. **That stance is the decision, not a
+  question left open**: the two legs build the same source as the glibc ones against
+  a different libc, and what is fragile is the vendored C libraries rather than this
+  crate, so a green musl leg is a bonus and a red one does not hold a release. The
+  README says so where a consumer will read it, and points at `docker/` for anyone
+  who needs musl for certain.
+- The workflow itself was tightened: `permissions: contents: read` at the top (only
+  the release job asks for the `contents: write` it needs), and a `concurrency`
+  group that cancels a superseded run on the same ref — a cold run compiles PROJ and
+  GDAL from source, so a stale one is expensive. Tags are exempt, because a release
+  build must not be cancelled by a later push that happens to share the ref.
 - Getting there took three attempts, and the container is the first that holds.
   The vendored C libraries `all_drivers` pulls in (HDF5, netCDF, curl, libpq) never
   configured under napi's zig-based `--cross-compile`; napi's cross-rs
@@ -661,6 +671,18 @@ First working cut — everything here is new.
   concurrent `transformPoints`, which is lock contention and nothing else and the
   sharpest reading of the split above. It is a benchmark, not a test, and asserts
   nothing beyond the two paths answering the same.
+- …with one exception, which CI uses: `--min-speedup <x>` turns that dataset-free
+  measurement into a gate, on the **ratio** between four transforms issued together
+  and one at a time rather than on a wall time. That is what makes a floor safe to
+  fail on — a slower runner moves both numbers together — and the floor is set well
+  under what it measures (about 3x here, against a floor of 1.5x in CI), because what
+  it is really watching for is structural: that work going back onto the exclusive
+  side of the lock, which lands near 1x. The run is archived rather than only
+  asserted on, since a number nobody keeps cannot show a trend: CI writes the whole
+  output into the run summary and a `bench.log` artifact. Only the
+  `x86_64-unknown-linux-gnu` leg runs it, for the same reason that leg is the one
+  holding fmt, clippy and the Rust tests — a leg of its own would cost a second full
+  GDAL build to say the same thing.
 - `npm run smoke` installs the packed tarball into an **empty directory** and then
   uses it: the packaged CRS database resolves, the driver count is right, a GEOS
   predicate runs (so the statically linked GEOS works with nothing installed), and

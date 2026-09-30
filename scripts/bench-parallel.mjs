@@ -14,6 +14,7 @@
 // workload rather than behind it.
 //
 //   node scripts/bench-parallel.mjs [raster.tif] [--concurrency 4] [--rounds 5]
+//                                   [--min-speedup 1.5]
 //
 // Without a path it generates a temporary raster that compresses badly on purpose,
 // so the reads are real work rather than a constant being squashed by the driver.
@@ -29,8 +30,13 @@
 //   * The first round pays for a cold cache. Every round is printed so you can see
 //     the spread; only the later ones are used to rank the paths.
 //
-// This is a benchmark, not a test: the numbers depend on the machine, the driver
-// and the storage, and there is no threshold to fail.
+// This is a benchmark, not a test: the numbers depend on the machine, the driver and
+// the storage, and by default nothing here fails on them. The one exception is
+// `--min-speedup`, which CI passes to catch a *structural* regression — dataset-free
+// work being put back on the exclusive side of the lock, which takes the four
+// concurrent transforms from about 3x down to about 1x. That is a ratio of two
+// measurements on the same machine rather than a wall time, which is what makes it
+// safe to fail on; the other numbers have no floor and are there to be read.
 
 import { createRequire } from 'node:module'
 import { mkdtempSync, rmSync } from 'node:fs'
@@ -51,13 +57,16 @@ const option = (name, fallback) => {
 }
 // The raster path is the one argument that is neither an option nor an option's
 // value — without that second test, `--rounds 3` reads `3` as a filename.
-const optionNames = ['concurrency', 'rounds', 'size']
+const optionNames = ['concurrency', 'rounds', 'size', 'min-speedup']
 const provided = argv.find(
   (arg, index) => !arg.startsWith('--') && !optionNames.includes(argv[index - 1]?.replace(/^--/, '')),
 )
 const concurrency = option('concurrency', 4)
 const rounds = option('rounds', 5)
 const generated = option('size', 2048)
+// The floor for the dataset-free overlap, in multiples of one transform. Zero — the
+// default — means no gate, which is what keeps this a benchmark rather than a test.
+const minSpeedup = option('min-speedup', 0)
 
 let workdir = null
 let source = provided
@@ -402,13 +411,35 @@ try {
   console.log('')
   const sequenceTransforms = await measureValues('transforms, one at a time', transformed)
   const togetherTransforms = await measureValues('transforms, all at once', transformedTogether)
+  const overlap = sequenceTransforms / togetherTransforms
   console.log(
     `[bench] with no dataset involved: ${concurrency} transforms took ` +
       `${togetherTransforms.toFixed(1)} ms issued together vs ` +
       `${(sequenceTransforms / concurrency).toFixed(1)} ms apiece one at a time -> ` +
-      `${(sequenceTransforms / togetherTransforms).toFixed(2)}x. A number near 1.00x means the ` +
+      `${overlap.toFixed(2)}x. A number near 1.00x means the ` +
       `lock serialised them; near ${concurrency}.00x means they overlapped.`,
   )
+
+  // The one gate. Everything above is a ratio of two runs on this machine, which is
+  // what lets a floor be safe here: a slower runner moves both numbers together. The
+  // floor is well under the ~3x this measures on a developer machine, because the
+  // thing it is watching for is structural — the dataset-free work going back onto the
+  // exclusive side, which lands near 1x.
+  if (minSpeedup > 0) {
+    if (overlap < minSpeedup) {
+      console.error(
+        `[bench] ${overlap.toFixed(2)}x is below the ${minSpeedup.toFixed(2)}x floor for ` +
+          `dataset-free work: ${concurrency} concurrent transforms did not overlap, so they ` +
+          `were serialised. That is the shared side of the lock not being shared.`,
+      )
+      process.exitCode = 1
+    } else {
+      console.log(
+        `[bench] the ${minSpeedup.toFixed(2)}x floor for dataset-free work is met at ` +
+          `${overlap.toFixed(2)}x`,
+      )
+    }
+  }
 
   console.log('')
   // The same question as the accessors above, asked of the module surface instead of a
