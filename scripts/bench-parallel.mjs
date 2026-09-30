@@ -7,9 +7,11 @@
 // genuinely overlap. This script runs the *same* concurrent workload through
 // both and compares the wall times.
 //
-// Three workloads are measured, because the shared side covers more than pixels:
+// Four workloads are measured, because the shared side covers more than pixels:
 // whole-band reads, a batch of reads with the read-only accessors asked in the
-// middle of them, and a workload with no dataset in it at all.
+// middle of them, a workload with no dataset in it at all, and the module-level
+// surface — which is dataset-free in the same way, so it answers *during* that
+// workload rather than behind it.
 //
 //   node scripts/bench-parallel.mjs [raster.tif] [--concurrency 4] [--rounds 5]
 //
@@ -284,6 +286,35 @@ const transformed = async () => {
 const transformedTogether = () =>
   Promise.all(Array.from({ length: concurrency }, () => transform.transformPoints(coordinates)))
 
+/**
+ * The module-level surface, asked once: the versions, the driver registry, the CRS
+ * database, and a geometry round trip. None of it touches a dataset, so it takes the
+ * same shared side of the lock the transforms above take, and the numbers are only
+ * here to be compared with each other.
+ */
+const askModuleSurface = () => [
+  gdal.version().gdal.length,
+  gdal.info().driverCount,
+  gdal.drivers().length,
+  gdal.driver('GTiff').longName.length,
+  gdal.epsgToWkt(4326).length,
+  gdal.geometryTypeOf({ type: 'Point', coordinates: [1, 2] }).length,
+  gdal.diagnostics().crsDatabaseFound ? 1 : 0,
+  gdal.lastError() === null ? 0 : 1,
+]
+
+/** Time `rounds` of `ask`, best of `samples`; the first call is warm-up and is not timed. */
+function timeRounds(ask, rounds, samples = 4) {
+  ask()
+  let best = Number.POSITIVE_INFINITY
+  for (let index = 0; index < samples; index += 1) {
+    const start = performance.now()
+    for (let round = 0; round < rounds; round += 1) ask()
+    best = Math.min(best, performance.now() - start)
+  }
+  return best
+}
+
 const threadSafe = gdal.openThreadSafeSync(source)
 console.log(
   `[bench] ${threadSafe.width}x${threadSafe.height} ${threadSafe.driver}, ` +
@@ -377,6 +408,38 @@ try {
       `${(sequenceTransforms / concurrency).toFixed(1)} ms apiece one at a time -> ` +
       `${(sequenceTransforms / togetherTransforms).toFixed(2)}x. A number near 1.00x means the ` +
       `lock serialised them; near ${concurrency}.00x means they overlapped.`,
+  )
+
+  console.log('')
+  // The same question as the accessors above, asked of the module surface instead of a
+  // dataset. It is dataset-free, so it takes the shared side with the transforms and
+  // does not queue behind them — and unlike the accessors there is no serialised
+  // counterpart to race against: the comparison is the loop against *itself*, the same
+  // rounds on an idle process and then while a batch of transforms is in flight. The
+  // round count is calibrated against the transform batch for the reason the accessor
+  // loop is: a shorter one is hidden behind the transforms, a longer one outlasts them.
+  const perModuleRound = Math.max(timeRounds(askModuleSurface, 1, 3), 0.001)
+  const moduleRounds = Math.max(1, Math.round(togetherTransforms / perModuleRound))
+  const moduleIdle = timeRounds(askModuleSurface, moduleRounds)
+
+  const moduleTimes = []
+  for (let round = 0; round < rounds; round += 1) {
+    // Dispatched first and only awaited afterwards, so the transforms are what the
+    // surface is asked *during*.
+    const inFlight = transformedTogether()
+    const start = performance.now()
+    for (let index = 0; index < moduleRounds; index += 1) askModuleSurface()
+    moduleTimes.push(performance.now() - start)
+    await inFlight
+  }
+  const moduleDuring = Math.min(...(moduleTimes.length > 1 ? moduleTimes.slice(1) : moduleTimes))
+
+  console.log(
+    `[bench] ${moduleRounds} rounds of the module surface (versions, drivers, CRS, geometry) ` +
+      `took ${moduleIdle.toFixed(1)} ms idle and ${moduleDuring.toFixed(1)} ms while ` +
+      `${concurrency} transforms were in flight -> ${(moduleDuring / moduleIdle).toFixed(2)}x. ` +
+      `Near 1.00x means they overlapped those transforms; had they queued behind them it ` +
+      `would be about ${((moduleIdle + togetherTransforms) / moduleIdle).toFixed(2)}x.`,
   )
 
   console.log('')

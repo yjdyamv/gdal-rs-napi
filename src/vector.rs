@@ -29,7 +29,7 @@ use crate::error::{
 };
 use crate::geometry::JsGeometry;
 use crate::json::{is_scalar, json_f64, json_i64, json_joined_text, json_text};
-use crate::runtime::{ensure_initialized, lock_gdal};
+use crate::runtime::{ensure_initialized, lock_gdal_shared};
 use crate::spatial_ref::JsSpatialRef;
 
 /// One attribute of a layer.
@@ -1677,35 +1677,41 @@ pub(crate) fn json_value(unknown: Unknown<'_>) -> Result<Value> {
 #[napi]
 pub fn geometry_type_of(geometry: Value) -> Result<String> {
     ensure_initialized();
-    let _guard = lock_gdal();
+    // A geometry built from GeoJSON and then asked its type: no dataset, no global
+    // configuration, so it takes the shared side like the rest of the geometry work.
+    let _guard = lock_gdal_shared();
     Ok(geometry_type_name(from_geojson(&geometry)?.geometry_type()))
 }
 
+/// These four are the module-level spelling of what `Geometry` now does as an
+/// object, and they are dataset-free the same way: building one from a string or
+/// bytes and taking it back out touches no dataset, so they share the lock with the
+/// rest of the geometry work.
 #[napi]
 pub fn geometry_to_wkt(geometry: Value) -> Result<String> {
     ensure_initialized();
-    let _guard = lock_gdal();
+    let _guard = lock_gdal_shared();
     from_geojson(&geometry)?.wkt().gdal()
 }
 
 #[napi]
 pub fn geometry_to_wkb(geometry: Value) -> Result<Buffer> {
     ensure_initialized();
-    let _guard = lock_gdal();
+    let _guard = lock_gdal_shared();
     Ok(from_geojson(&geometry)?.wkb().gdal()?.into())
 }
 
 #[napi]
 pub fn geometry_from_wkt(wkt: String) -> Result<Value> {
     ensure_initialized();
-    let _guard = lock_gdal();
+    let _guard = lock_gdal_shared();
     to_geojson(&gdal::vector::Geometry::from_wkt(&wkt).gdal()?)
 }
 
 #[napi]
 pub fn geometry_from_wkb(wkb: Buffer) -> Result<Value> {
     ensure_initialized();
-    let _guard = lock_gdal();
+    let _guard = lock_gdal_shared();
     to_geojson(&gdal::vector::Geometry::from_wkb(wkb.as_ref()).gdal()?)
 }
 

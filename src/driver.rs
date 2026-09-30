@@ -24,7 +24,7 @@ use crate::dataset::{
 };
 use crate::dtype::DataType;
 use crate::error::{IntoGdalResult, Result, bad_argument};
-use crate::runtime::{ensure_initialized, lock_gdal};
+use crate::runtime::{ensure_initialized, lock_gdal, lock_gdal_shared};
 
 /// GDAL stores a driver's capabilities as metadata items whose value is `YES` or
 /// `NO`, and reads them back with `GDALDriver::GetMetadataItem`. There is no public
@@ -46,12 +46,16 @@ impl JsDriver {
         Self { name }
     }
 
-    /// Run `f` against GDAL's driver. Takes the process-wide lock, which is why the
-    /// two methods that re-enter `dataset.rs` — `open` and `create` — do **not**
-    /// come through here: the lock is not reentrant, so that would deadlock.
+    /// Run `f` against GDAL's driver. Reading a driver is reading the registry,
+    /// which `ensure_initialized` filled once and nothing mutates afterwards, so
+    /// this takes the **shared** side of the lock and overlaps whatever else is
+    /// dataset-free. That is also why the methods that re-enter `dataset.rs` —
+    /// `open`, `create`, `createCopy` — do **not** come through here: they need a
+    /// dataset, and the lock is not reentrant, so they take the exclusive side
+    /// themselves.
     fn with_driver<T>(&self, f: impl FnOnce(&gdal::Driver) -> Result<T>) -> Result<T> {
         ensure_initialized();
-        let _guard = lock_gdal();
+        let _guard = lock_gdal_shared();
         let driver = DriverManager::get_driver_by_name(&self.name).gdal()?;
         f(&driver)
     }
@@ -301,7 +305,8 @@ impl DriverCreateOptions {
 #[napi]
 pub fn drivers() -> Vec<JsDriver> {
     ensure_initialized();
-    let _guard = lock_gdal();
+    // Walking the registry, not changing it — see `with_driver`.
+    let _guard = lock_gdal_shared();
 
     let mut out = Vec::new();
     for index in 0..DriverManager::count() {
@@ -321,7 +326,8 @@ pub fn drivers() -> Vec<JsDriver> {
 #[napi]
 pub fn driver(name: String) -> Result<Option<JsDriver>> {
     ensure_initialized();
-    let _guard = lock_gdal();
+    // A registry lookup, not a registration — see `with_driver`.
+    let _guard = lock_gdal_shared();
     match DriverManager::get_driver_by_name(&name) {
         Ok(_) => Ok(Some(JsDriver::new(name))),
         // `get_driver_by_name` reports every failure the same way — an invalid name

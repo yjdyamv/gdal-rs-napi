@@ -31,6 +31,12 @@ use crate::runtime::{c_string, ensure_initialized, lock_gdal};
 #[napi(namespace = "config")]
 pub fn get(key: String, default_value: Option<String>) -> Result<Option<String>> {
     ensure_initialized();
+    // The exclusive side, and the one read-only call here that needs it. Not
+    // because the store is unguarded — GDAL takes its own mutex around the global
+    // map — but because `CPLGetConfigOption` hands back a pointer *into* that map
+    // and releases the mutex on the way out; the string is only valid until the
+    // next `set` with the same key frees it. Copying it while a concurrent `set`
+    // could run is a use-after-free, so reads and writes stay on the same side.
     let _guard = lock_gdal();
 
     // `CPLGetConfigOption` reads GDAL's global + thread-local store, so it is

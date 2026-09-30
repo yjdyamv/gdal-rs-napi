@@ -1194,11 +1194,23 @@ JS thread, and the callback has to run on that thread, so it could never be call
 
 ## Async semantics — read this before relying on it
 
-Every operation that touches GDAL takes a **process-wide lock**, because GDAL
-keeps its last-error state globally and the `gdal` crate reads and resets it
-right after each FFI call; concurrent calls can observe each other's errors.
+GDAL work in this binding goes through a **process-wide `RwLock`**, taken on one of two
+sides. An `RwLock` rather than a mutex because the two sides answer different hazards,
+and neither of them is GDAL's last-error state any more: that became *thread-local* in
+GDAL 3.10, which is what makes the split possible at all.
 
-The async APIs therefore keep the Node **event loop** free — by themselves they do
+- **The exclusive (write) side** is what GDAL is genuinely not safe for: one open
+  dataset reached from two threads, and anything process-global — driver registration,
+  `config.set`, `configureDataPaths()`, and the `programs`, which build datasets of
+  their own.
+- **The shared (read) side** is everything with no dataset and no global configuration
+  in it, and it really does run in parallel: the CRS and `CoordinateTransform` methods,
+  geometry/GEOS, `gdal.fs`, and the module-level introspection — `version()`, `info()`,
+  `diagnostics()`, `lastError()`, `epsgToWkt()`, the `geometry*` helpers, and the
+  registry reads `drivers()` / `driver(name)` (a method on the `Driver` they hand back
+  reads the registry too). `openThreadSafe()` is the one way a *dataset* joins it.
+
+The async APIs keep the Node **event loop** free either way — by themselves they do
 not make GDAL work run in parallel. Ten concurrent `readPixels()` calls on a
 dataset from `open()` take as long as ten sequential ones.
 
@@ -1231,18 +1243,22 @@ The rule for what is left: anything that writes, and anything that makes GDAL *c
 and keep* an answer, takes the exclusive side. `writePixels`, `setProjection`,
 `setGeoTransform`, `setMetadataItem`, `flush` and the vector side obviously; so do
 `statistics()`, `histogram()` and `defaultHistogram()`, which store what they compute on
-the dataset, and the programs, which build datasets of their own. The global error-state
-race described above stays out of the picture on both sides.
+the dataset, and the programs, which build datasets of their own. `config.get` is the one
+*read* that has to stay there too — not because the store is unguarded, GDAL takes its own
+mutex around it, but because `CPLGetConfigOption` returns a pointer into it and drops the
+guard, so a concurrent `config.set` could free the string before this binding copies it.
 
 ```sh
 node scripts/bench-parallel.mjs big.tif --concurrency 4
 ```
 
-It measures three workloads: whole-band reads on both paths, the same batch of reads
-with the read-only accessors asked in the middle of them, and a dataset-free workload
-(a coordinate transform) as the sharpest measurement of the lock itself. The accessor
-loop is calibrated against the read time it runs during, so the two are comparable on
-any machine and any raster.
+It measures four workloads: whole-band reads on both paths, the same batch of reads
+with the read-only accessors asked in the middle of them, a dataset-free workload
+(a coordinate transform) as the sharpest measurement of the lock itself, and the
+module-level surface asked during that workload — the same rounds on an idle process and
+then while the transforms are in flight, so the two numbers say whether the
+introspection waited. The accessor and surface loops are calibrated against the work
+they run during, so they are comparable on any machine and any raster.
 
 What it costs, and what it does not do:
 

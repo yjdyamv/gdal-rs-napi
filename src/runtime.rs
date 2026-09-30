@@ -14,23 +14,37 @@ use std::sync::{Mutex, OnceLock, RwLock, RwLockReadGuard, RwLockWriteGuard};
 ///   two threads, so every dataset operation takes the write lock (and the dataset's
 ///   own mutex). `openThreadSafe` is the opt-in for one GDAL has been asked to make
 ///   safe for concurrent reads.
-/// * **Process-global configuration** — driver registration, `config.set`, and the
-///   `programs` entry points, which build datasets of their own.
+/// * **Process-global configuration** — driver registration, `config.set`,
+///   `configureDataPaths`, which writes the data-directory variables and registers
+///   every driver, and the `programs` entry points, which build datasets of their own.
 ///
 /// Everything that touches **neither a dataset nor global configuration** takes the
 /// **read** side instead ([`lock_gdal_shared`]) and therefore runs genuinely in
 /// parallel: the CRS and `CoordinateTransform` methods, the geometry/GEOS
-/// operations, and `gdal.fs`. Three things that look global are not, in the GDAL this
-/// links (3.12):
+/// operations, `gdal.fs`, and the module-level introspection — `gdal.version`,
+/// `gdal.info`, `gdal.diagnostics`, `gdal.lastError`, `gdal.epsgToWkt`, the
+/// `geometry*` helpers, and the driver-registry reads `gdal.drivers()` /
+/// `gdal.driver(name)` (calling a method on the `Driver` they hand back reads the
+/// registry too). Three things that look global are not, in the GDAL this links
+/// (3.12):
 ///
 /// * the last-error state is **thread-local** — `CPLGetTLSEx(CTLS_ERRORCONTEXT, …)` —
 ///   so the `gdal` crate's read-and-reset after each call stays on the calling
 ///   thread's own context. `gdals_last_error_is_thread_local` pins that, because the
-///   read/write split depends on it;
+///   read/write split depends on it — `lastError()` included;
 /// * `OGRSpatialReference` takes its PROJ context from `OSRGetProjTLSContext()`, so
 ///   two threads transform through separate contexts;
 /// * `OGRGeometry::createGEOSContext()` creates a GEOS context per call and frees it,
 ///   so predicates share no GEOS error state either.
+///
+/// The registry the driver reads walk is frozen the same way: `ensure_initialized`
+/// registers every driver once, through a `OnceLock`, and nothing deregisters any
+/// of them.
+///
+/// One read-only call is deliberately **not** on the read side: `config.get`. GDAL
+/// guards its own config map, but `CPLGetConfigOption` returns a pointer *into* it
+/// and drops the guard, so a concurrent `config.set` can free the string before the
+/// copy happens — the two have to stay on the same side.
 ///
 /// This was the "weaken the global lock" PoC's answer: the error state no longer has
 /// to be protected, and the dataset-free surface can overlap (measured in
@@ -57,8 +71,10 @@ pub fn lock_gdal() -> RwLockWriteGuard<'static, ()> {
 ///
 /// **A closure running under this lock must never call `lock_gdal()`**, and must not
 /// take this lock again either: `RwLock` is not reentrant, so nesting either way
-/// deadlocks the process. Everything reached from the CRS, geometry and `fs` modules
-/// is dataset-free, which is what makes them eligible.
+/// deadlocks the process. Everything reached from the CRS, geometry and `fs` modules,
+/// from the module-level introspection (`version` / `info` / `diagnostics` /
+/// `lastError` / `epsgToWkt` and the `geometry*` helpers) and from the
+/// driver-registry reads is dataset-free, which is what makes them eligible.
 pub fn lock_gdal_shared() -> RwLockReadGuard<'static, ()> {
     GDAL_LOCK
         .read()

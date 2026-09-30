@@ -185,6 +185,60 @@ test('dataset-free work runs together and still answers the same', async () => {
   for (const authority of found) assert.equal(authority, 'EPSG:4326')
 })
 
+test('the module-level surface is dataset-free too', async () => {
+  // `version` / `info` / `diagnostics` / `lastError` / `epsgToWkt`, the driver-registry
+  // reads and the `geometry*` helpers touch no dataset, so they take the same shared
+  // side of the lock as the transforms below. A test cannot see which side a call
+  // took; what it can see is that asking the whole surface *while* the transforms are
+  // in flight neither hangs nor changes an answer, and a lock-ordering mistake lands
+  // as exactly one of those two. The overlap itself is what scripts/bench-parallel.mjs
+  // measures.
+  const geometry = { type: 'Point', coordinates: [1, 2] }
+  const surface = () => {
+    const gtiff = gdal.driver('GTiff')
+    return {
+      gdal: gdal.version().gdal,
+      proj: gdal.version().proj,
+      driverCount: gdal.info().driverCount,
+      drivers: gdal.drivers().length,
+      longName: gtiff.longName,
+      mimetype: gtiff.metadata()['DMD_MIMETYPE'],
+      extension: gtiff.fileExtensions[0],
+      wkt: gdal.epsgToWkt(4326).slice(0, 15),
+      geometryWkt: gdal.geometryToWkt(geometry),
+      geometryType: gdal.geometryTypeOf(geometry),
+      // A name nothing registered answers `null` rather than throwing, which is the
+      // lookup contract `gdal.driver()` documents.
+      unknownDriver: gdal.driver('NoSuchDriverHere'),
+      crsDatabase: gdal.diagnostics().crsDatabaseFound,
+      lastError: gdal.lastError(),
+    }
+  }
+
+  // Warmed first: GDAL answers a couple of these from a one-time lookup, and the
+  // claim is that the repeat agrees, not that it is cheap.
+  surface()
+  const expected = surface()
+  assert.equal(expected.geometryType, 'Point')
+  assert.equal(expected.unknownDriver, null)
+  assert.equal(expected.crsDatabase, true)
+
+  const transform = new gdal.CoordinateTransform(
+    gdal.SpatialRef.fromEpsg(4326),
+    gdal.SpatialRef.fromEpsg(3857),
+  )
+  const points = Float64Array.from({ length: 20_000 }, (_, index) => (index % 2 === 0 ? 13.4 : 52.5))
+
+  const during = await Promise.all(
+    Array.from({ length: 8 }, async () => {
+      const answers = surface()
+      await transform.transformPoints(points)
+      return answers
+    }),
+  )
+  for (const answers of during) assert.deepEqual(answers, expected)
+})
+
 test('the read-only accessors answer the same on a thread-safe dataset', async () => {
   const path = tmp('threadsafe-accessors.tif')
   fixture(path, 32, 32)

@@ -1008,10 +1008,19 @@ try {
 
 ## 异步语义（用之前请读）
 
-触碰 GDAL 的每个操作都会拿一把**进程级锁**：GDAL 的 last-error 是进程全局状态，
-`gdal` crate 每次 FFI 后立刻读取并重置它，并发调用会互相串错错误信息。
+本绑定里碰 GDAL 的工作都走一把**进程级 `RwLock`**，取它的**某一侧**。用读写锁而不是互斥锁，
+是因为两侧面对的危险不同——而这两者现在都**不是** GDAL 的 last-error 状态了：它在 GDAL 3.10
+变成了**线程局部**，这正是这个划分得以成立的前提。
 
-所以异步 API 让 **event loop** 不被阻塞，但**仅靠它不会**让 GDAL 工作并行。
+- **独占（写）侧**才是 GDAL 真正不安全的部分：同一个打开的数据集被两个线程碰，以及一切进程级
+  配置——驱动注册、`config.set`、`configureDataPaths()`，还有 programs（它们自建数据集）。
+- **共享（读）侧**是"既不含数据集、也不含全局配置"的一切，而且是**真的并行**：CRS 与
+  `CoordinateTransform`、几何 / GEOS、`gdal.fs`，以及模块级自省——`version()`、`info()`、
+  `diagnostics()`、`lastError()`、`epsgToWkt()`、`geometry*` 系列，还有注册表读取
+  `drivers()` / `driver(name)`（对它们返回的 `Driver` 调方法同样是读注册表）。
+  数据集里只有 `openThreadSafe()` 能站到这一侧。
+
+无论走哪一侧，异步 API 都只保证 **event loop** 不被阻塞——**仅靠它不会**让 GDAL 工作并行。
 `open()` 出来的数据集上十个并发 `readPixels()` 和顺序执行十个耗时一样。
 
 ### 真并行：`openThreadSafe()`
@@ -1040,15 +1049,19 @@ const [size, transform] = [band.size, dataset.geoTransform]
 剩下的怎么判断：**写**，以及**让 GDAL 算出一个答案并把它存下来**的，都走独占侧。
 `writePixels`、`setProjection`、`setGeoTransform`、`setMetadataItem`、`flush` 以及矢量一侧
 显然属于此列；`statistics()`、`histogram()`、`defaultHistogram()` 也是——它们把算出来的结果
-写在数据集上；programs 同理，它们自建数据集。上面说的全局错误状态串扰在两侧都不会发生。
+写在数据集上；programs 同理，它们自建数据集。`config.get` 是唯一必须留在独占侧的**读**：
+不是因为这个存储没有保护——GDAL 自己拿互斥锁护着它——而是因为 `CPLGetConfigOption` 返回的是
+**指向它内部的指针**并且随即放开锁，并发的 `config.set` 可能在本次拷贝之前就把它 free 掉。
 
 ```sh
 node scripts/bench-parallel.mjs big.tif --concurrency 4
 ```
 
-它量三组负载：两条路径上的整波段读取、同样这批读取但**中间夹着只读访问器**、以及完全不涉及数据集
-的负载（一次坐标变换）作为对锁本身最锋利的测量。访问器循环的轮数按它所插入的那批读取的耗时校准，
-所以在任何机器、任何栅格上两侧都是可比的。
+它量四组负载：两条路径上的整波段读取、同样这批读取但**中间夹着只读访问器**、完全不涉及数据集
+的负载（一次坐标变换）作为对锁本身最锋利的测量，以及**在那组负载进行期间**去问模块级自省——
+同一批轮数先在空闲进程上量一遍、再在变换进行中量一遍，两个数字就说明了自省有没有排队。
+访问器循环和自省循环的轮数都按它们所插入的那批工作的耗时校准，
+所以在任何机器、任何栅格上都是可比的。
 
 代价与边界：
 

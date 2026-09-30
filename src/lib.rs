@@ -3,10 +3,14 @@
 //! Layering: `index.js` (data-path injection) -> this napi module -> `gdal` /
 //! `gdal-sys` -> a statically linked `libgdal` + `libproj`.
 //!
-//! Every operation that touches GDAL takes `runtime::lock_gdal()` first; see
-//! the comment on that lock for why. The one exception is a pixel read of a
-//! dataset opened through `openThreadSafe`, which takes the shared side of that
-//! lock and therefore runs genuinely in parallel.
+//! Every operation that touches GDAL takes a side of the process-wide lock first;
+//! see the comment on `runtime::GDAL_LOCK` for why there are two. Which side is a
+//! property of the call, not of the module it lives in: the **shared** side is for
+//! work with no dataset and no global configuration in it — the module-level
+//! introspection below (`version`, `info`, `diagnostics`, `lastError`,
+//! `epsgToWkt`), the CRS, geometry and `fs` modules, and a read of a dataset opened
+//! through `openThreadSafe`; the **exclusive** side is for datasets, programs and
+//! anything process-global.
 
 #![deny(clippy::all)]
 // Statically linking PROJ into GDAL makes MSVC emit a batch of LNK4217
@@ -42,7 +46,7 @@ use gdal::spatial_ref::SpatialRef;
 use napi_derive::napi;
 
 use crate::error::IntoGdalResult;
-use crate::runtime::lock_gdal;
+use crate::runtime::lock_gdal_shared;
 
 /// WKT for an EPSG code, ready to hand to `Dataset.setProjection`.
 ///
@@ -53,7 +57,9 @@ use crate::runtime::lock_gdal;
 #[napi]
 pub fn epsg_to_wkt(code: u32) -> crate::error::Result<String> {
     runtime::ensure_initialized();
-    let _guard = lock_gdal();
+    // The CRS database and PROJ, nothing else — the same work the `SpatialRef`
+    // constructors do, so it takes the same side of the lock they do.
+    let _guard = lock_gdal_shared();
     SpatialRef::from_epsg(code).gdal()?.to_wkt().gdal()
 }
 
@@ -70,7 +76,7 @@ pub struct Versions {
 #[napi]
 pub fn version() -> Versions {
     runtime::ensure_initialized();
-    let _guard = runtime::lock_gdal();
+    let _guard = lock_gdal_shared();
     Versions {
         gdal: runtime::gdal_version(),
         proj: runtime::proj_version(),
@@ -107,7 +113,7 @@ pub struct GdalInfo {
 #[napi]
 pub fn info() -> GdalInfo {
     runtime::ensure_initialized();
-    let _guard = runtime::lock_gdal();
+    let _guard = lock_gdal_shared();
 
     use gdal::version::VersionInfo;
 
@@ -116,6 +122,8 @@ pub fn info() -> GdalInfo {
         release_date: VersionInfo::release_date(),
         version_num: VersionInfo::version_num(),
         build: VersionInfo::build_info(),
+        // Reading the registry, not changing it: the drivers were registered once,
+        // in `ensure_initialized` above, and nothing deregisters them.
         driver_count: gdal::DriverManager::count() as u32,
     }
 }
@@ -139,12 +147,14 @@ pub struct LastError {
 /// on past, or the last state left behind by a call whose return value was not a
 /// failure. It is the same store GDAL's own tools read.
 ///
-/// Every GDAL operation in this binding is serialised, so what you read here was
-/// not overwritten by another thread in the meantime.
+/// The store is **thread-local**, not process-global — that is what makes this
+/// callable from the shared side of the lock at all. So it reports what *this*
+/// thread last did; another thread's failure never shows up here, whether or not
+/// the two overlapped.
 #[napi]
 pub fn last_error() -> Option<LastError> {
     runtime::ensure_initialized();
-    let _guard = runtime::lock_gdal();
+    let _guard = lock_gdal_shared();
 
     // 0 is CE_None: either nothing has gone wrong, or the last thing that did has
     // been reset since. `CPLGetLastErrorMsg` can still hold a stale message at
@@ -175,6 +185,13 @@ pub struct DataPathsOptions {
 /// Values already present in `PROJ_DATA` / `GDAL_DATA` are never overwritten.
 #[napi]
 pub fn configure_data_paths(options: DataPathsOptions) {
+    // Process-global like `config.set`: it writes `PROJ_DATA` / `GDAL_DATA` and can
+    // register every driver, so it takes the exclusive side. It used to take no side
+    // at all, which was a hole rather than a decision — `diagnostics` reads those two
+    // variables and `drivers()` reads the registry, and both are on the shared side
+    // now. `index.js` makes this call at require time, so it is uncontended in the
+    // ordinary case; the lock is for the case where it is not.
+    let _guard = runtime::lock_gdal();
     runtime::set_data_paths(runtime::DataPaths {
         proj: options.proj,
         gdal: options.gdal,
@@ -211,7 +228,7 @@ pub struct Diagnostics {
 #[napi]
 pub fn diagnostics() -> Diagnostics {
     runtime::ensure_initialized();
-    let _guard = runtime::lock_gdal();
+    let _guard = lock_gdal_shared();
 
     let (resolves, error) = match gdal::spatial_ref::SpatialRef::from_epsg(4326) {
         Ok(_) => (true, None),

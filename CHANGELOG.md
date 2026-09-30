@@ -494,16 +494,33 @@ First working cut — everything here is new.
   against 7.9 ms — the same calls, and the difference is how long each one waited for
   the read holding the lock.
 - Work with **no dataset in it** takes the shared side too, so it overlaps as well:
-  the CRS and `CoordinateTransform` methods, geometry/GEOS, and `gdal.fs`. The one
-  exclusive lock's original justification — GDAL keeping its last error in
-  process-global variables — stopped being true in GDAL 3.10. That state is
-  thread-local now, `OGRSpatialReference` draws its PROJ context per thread
-  (`OSRGetProjTLSContext()`), and `OGRGeometry::createGEOSContext()` makes a GEOS
-  context per call. `runtime.rs` records the evidence, the Rust test
+  the CRS and `CoordinateTransform` methods, geometry/GEOS, `gdal.fs`, and the whole
+  module-level surface — `version()`, `info()`, `diagnostics()`, `lastError()`,
+  `epsgToWkt()`, the `geometry*` helpers, and the registry reads `drivers()` /
+  `driver(name)`, whose `Driver` methods (`longName`, `metadata`, `testCapability`, the
+  option lists) walk that same registry. The exclusive lock's original justification —
+  GDAL keeping its last error in process-global variables — stopped being true in GDAL
+  3.10. That state is thread-local now, `OGRSpatialReference` draws its PROJ context per
+  thread (`OSRGetProjTLSContext()`), `OGRGeometry::createGEOSContext()` makes a GEOS
+  context per call, and the driver registry is frozen once `ensure_initialized` has
+  filled it through a `OnceLock`. `runtime.rs` records the evidence, the Rust test
   `gdals_last_error_is_thread_local` pins the part the split rests on, and
-  `scripts/bench-parallel.mjs` measures the rest: four concurrent 400k-point
-  transforms went from **1.03x to 2.93x**, a number near 1.00x being the lock
-  serialising them.
+  `scripts/bench-parallel.mjs` measures the rest: four concurrent 400k-point transforms
+  went from **1.03x to 2.93x**, a number near 1.00x being the lock serialising them,
+  and the module surface now rides along with that workload rather than queueing behind
+  it — 146 rounds came to **79.5 ms on an idle process vs 90.7 ms while the four
+  transforms were in flight (1.14x, where queueing would have been 2.34x)**.
+- `config.get` is the one *read* that cannot join it, and the reason is not that GDAL's
+  config map is unguarded — it has its own mutex. `CPLGetConfigOption` hands back a
+  pointer *into* the map and drops the guard on the way out, so a concurrent
+  `config.set` can free the string before this binding copies it, and the two have to
+  stay on the same side. `config.rs` says so where the next person will look.
+- `configureDataPaths` takes the exclusive side as well. It writes `PROJ_DATA` /
+  `GDAL_DATA` and can register every driver, so it is a configuration change like
+  `config.set` — and it used to take *no* lock at all, which was a hole rather than a
+  decision: `diagnostics()` reads those two variables and `drivers()` reads the
+  registry that registration fills. `index.js` makes the call at require time, so in
+  the ordinary case it is uncontended; the lock is for the case where it is not.
 - The async methods carry `ts_return_type` annotations, so the generated
   `binding.d.ts` names what they resolve to — `Promise<Dataset>`,
   `Promise<Buffer>`, `Promise<BandStatistics | null>` — instead of the
