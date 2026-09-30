@@ -98,6 +98,65 @@ test('a cursor refuses nonsense, and stops when it is closed', async () => {
   await assert.rejects(other.read(), /closed/)
 })
 
+const nOf = (feature) => feature.properties.n
+
+test('one layer reads one way at a time, and a second handle is the way around it', () => {
+  const path = tmp('one-reader.gpkg')
+  manyFeatures(path, 8)
+
+  // GDAL keeps the reading position on the layer, so two cursors on one handle
+  // share it: their batches interleave rather than each seeing the layer.
+  const shared = gdal.openSync(path)
+  const layer = shared.layer(0)
+  const one = layer.openCursor({ batchSize: 2 })
+  const two = layer.openCursor({ batchSize: 2 })
+
+  assert.deepEqual(one.readSync().map(nOf), [0, 1])
+  assert.deepEqual(two.readSync().map(nOf), [0, 1])
+  // The second cursor's first read rewound the layer under the first, so from here
+  // they are walking one shared position between them.
+  assert.deepEqual(one.readSync().map(nOf), [2, 3])
+  assert.deepEqual(two.readSync().map(nOf), [4, 5])
+
+  // A whole-layer read is still the whole layer, even with a cursor part-way
+  // through: it rewinds first rather than picking up wherever the cursor stopped.
+  // (It does still rewind the cursor afterwards — one position, one reader.)
+  assert.equal(layer.featuresSync().length, 8)
+  assert.deepEqual(one.readSync().map(nOf), [0, 1])
+  shared.close()
+
+  // Two handles have two positions, so both cursors see everything. That is the
+  // mitigation: reopen the dataset, do not fight over the layer.
+  const left = gdal.openSync(path)
+  const right = gdal.openSync(path)
+  const leftCursor = left.layer(0).openCursor({ batchSize: 2 })
+  const rightCursor = right.layer(0).openCursor({ batchSize: 2 })
+
+  assert.deepEqual(leftCursor.readSync().map(nOf), [0, 1])
+  assert.deepEqual(rightCursor.readSync().map(nOf), [0, 1])
+  assert.deepEqual(leftCursor.readSync().map(nOf), [2, 3])
+  assert.deepEqual(rightCursor.readSync().map(nOf), [2, 3])
+  left.close()
+  right.close()
+})
+
+test('reading one feature by id does not move the reading position', () => {
+  const path = tmp('random-access.gpkg')
+  manyFeatures(path, 8)
+
+  const dataset = gdal.openSync(path)
+  const layer = dataset.layer(0)
+  const cursor = layer.openCursor({ batchSize: 2 })
+  assert.deepEqual(cursor.readSync().map(nOf), [0, 1])
+
+  // `getFeature(fid)` is random access, so it answers for its one feature without
+  // disturbing a reader that is part-way through the layer.
+  assert.equal(layer.getFeature(5).fields.get('n'), 4)
+  assert.deepEqual(cursor.readSync().map(nOf), [2, 3])
+
+  dataset.close()
+})
+
 const collection = {
   type: 'FeatureCollection',
   features: [

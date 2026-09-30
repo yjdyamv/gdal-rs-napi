@@ -996,14 +996,25 @@ for await (const feature of layer.openCursor()) {
 The iterator yields what `read()`'s batches contain, and stops on the empty batch
 that ends them — so `for await` and the manual loop cannot disagree.
 
-Two things to know, both of them GDAL's shape rather than this API's:
+Three things to know, all of them GDAL's shape rather than this API's:
 
 - **One reader per layer at a time.** GDAL keeps the reading position *on the
   layer*, which is what lets a batch resume where the last one stopped — and what
   makes a second cursor, or a `featuresSync()` call, rewind the first. Read the
   batches in order and do not mix the two ways of reading one layer.
+- **Two independent readers means two dataset handles.** There is no per-cursor
+  position to hand out: `open(path)` the same source a second time and read one
+  layer from each. The two then page independently and each sees the whole layer —
+  a test pins that, and pins the interleaving that happens without it.
+  `layer.getFeature(fid)` is the other way in: it is random access, so it answers
+  for its one feature without moving the position under a reader.
 - **`close()` does not touch GDAL.** Anything else reading that layer rewinds it
   anyway, so leaving the position where it stopped costs nothing.
+
+The whole-layer reads (`featuresSync()` / `features()`) rewind before they start, so
+they return the whole layer even with a cursor part-way through it. They do still
+leave the position at the end — there is only one position to leave it at — so a
+cursor picks up from the beginning afterwards.
 
 On a feature, `fid` and `geometry` are `null` when absent — matching
 `properties`, where a SQL `NULL` is also `null`.

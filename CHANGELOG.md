@@ -410,7 +410,9 @@ First working cut — everything here is new.
   and each batch holds exactly what `featuresSync` would have returned for those
   rows. Note that GDAL keeps the reading position on the *layer*, not in the
   cursor: that is what lets batches resume, and it also means one reader per layer
-  at a time, read in order.
+  at a time, read in order. A second `open()` of the same source is the way to two
+  independent readers, and `getFeature(fid)` is random access that does not disturb
+  one — the README's *Reading in batches* has the measurements.
 - `Dataset`: `demProcess` / `demProcessSync` for `gdaldem`'s hillshade, slope,
   aspect, color-relief, tri, tpi and roughness (with `gdal.demProcess` by path);
   `deleteLayer(name)`, by name because deleting shifts every later index; and
@@ -579,7 +581,12 @@ First working cut — everything here is new.
   overview driver compiled in — refuses anything short of every band.
 - No terrain algorithms beyond the ones `gdaldem` itself offers.
 - GDAL keeps the reading position on the layer, so a layer takes one reader at a
-  time — a second cursor, or a `featuresSync()`, rewinds the first.
+  time — a second cursor, or a `featuresSync()`, rewinds the first. There is no
+  per-cursor position to hand out, so two independent readers means two dataset
+  handles (`open()` the same source again); `getFeature(fid)` is random access and
+  does not move the position. `featuresSync()` / `features()` rewound first as of
+  this cut, so they return the whole layer even with a cursor part-way through it
+  rather than only the tail.
 - A list field is only a list on drivers that have one, and the four here disagree
   — see the note under `### Binding`. Inference writes comma-joined text, which
   every driver keeps.

@@ -358,6 +358,14 @@ compat 层用测试锁住形状即可。它的价值是——**让 `gdal-async` 
 - `Layer.setSpatialFilter(geometry)` 重载（收 `Geometry` 或 GeoJSON）。
 - 验收：不用 `createLayer` 声明 schema，也能给已存在图层加字段。
 
+**单读者限制：评估结果（实测）。** GDAL 把读取位置放在**图层**上，所以同一图层同时只有一个读者。
+缓解不是"给每个游标发一份位置"——GDAL 没有这个概念——而是**再开一个 dataset 句柄**：`open(path)`
+同一个数据源一次，两个句柄各自按批推进、各自看完整层（两个游标在同一句柄上则会互相穿插，各自只看
+到一部分）。另一条路是 `layer.getFeature(fid)`：随机访问，不移动位置，所以查一条不会打断正在读的
+游标。顺带修掉一个真问题：`featuresSync()` / `features()` 此前从**当前位置**开始读，因此跟在游标
+后面时会只拿到尾部（gdal crate 的 `FeatureIterator` 只在 drop 时倒带）——现在它们**先倒带**，
+"整层读取"名副其实；读完仍把位置留在末尾（位置只有一个），之后那个游标会从头接着读。
+
 **WS-4 · 异步人体工学** —— 🟡 部分完成
 - ✅ `FeatureCursor` 的 `Symbol.asyncIterator`：napi 给不了生成类这个属性（`AsyncGenerator`
   够不到，见 CHANGELOG），所以由**外壳**（`index.js`）加上，读的仍是同一个 `read()`，

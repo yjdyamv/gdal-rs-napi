@@ -92,7 +92,7 @@
 **矢量**
 - [x] `FeatureCursor` 实现 `Symbol.asyncIterator`：`for await (const feature of layer.openCursor())`，由外壳加上，读的是同一个 `read()`。
 - [x] 列表字段写入 —— **核实后决定不改**。实测：GeoJSON 与 SQLite 真能存列表并读回数组；GPKG 接受声明却降级成标量列（列表值落成 GDAL 内部的 `(2:a,b)`）；FlatGeobuf 收下字段、拒绝写要素。所以推断继续写逗号连接的 `String` —— 那是唯一四种都成立的形态，而且它就是那个值。四种行为有测试钉住。
-- [ ] 评估"每图层单读者"限制的缓解（副本/独立 dataset 句柄）。
+- [x] 评估"每图层单读者"限制的缓解 —— 缓解就是**再开一个 dataset 句柄**（实测：两个句柄各自按批推进、各自看完整层）；`layer.getFeature(fid)` 是随机访问、不移动位置。顺带修掉一个真问题：`featuresSync()` / `features()` 此前跟在游标后面只返回**尾部**，现在先倒带，整层读取名副其实。详见 PHASE1（WS-3 之后的评估段）。
 
 **通用**
 - [x] `gdal.fs` 补齐常用 VSI 操作（`rename` / `copyFile` / `glob` / `mkdirRecursive` / `rmdirRecursive` / `isLocal` / `diskFreeSpace`）；`/vsimem`、`/vsizip`、`/vsicurl` 的支持矩阵已写作 README 的表格 —— 读处处可用，`/vsizip` 能**加**条目但不能覆盖/删除/改名，`/vsicurl` 拒一切写入。

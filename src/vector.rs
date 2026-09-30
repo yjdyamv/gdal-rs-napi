@@ -1114,6 +1114,13 @@ impl JsLayer {
         self.dataset.with_exclusive(|dataset| {
             let mut layer = dataset.layer(self.index).gdal()?;
 
+            // Rewound on purpose. GDAL keeps the reading position on the layer, and
+            // its `FeatureIterator` only resets it when it is *dropped* — so without
+            // this, a read that follows a cursor starts wherever that cursor stopped
+            // and collects just the tail. "Every visible feature" is the contract.
+            // SAFETY: the layer handle is live for as long as `layer` is.
+            unsafe { gdal_sys::OGR_L_ResetReading(layer.c_layer()) };
+
             // Collected before iterating: `features()` borrows the layer mutably.
             let field_names = layer_field_names(&layer);
 
