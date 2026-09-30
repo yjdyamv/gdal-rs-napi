@@ -84,12 +84,16 @@ impl DatasetHandle {
 ///
 /// * [`DatasetRef::Serialised`] is what `open`/`create` produce. Every operation
 ///   takes the process-wide GDAL lock in *write* mode plus this dataset's own
-///   mutex, so nothing runs concurrently — which is what GDAL's process-global
-///   error state requires.
+///   mutex, so nothing runs concurrently — which is what GDAL is not thread-safe
+///   for, one dataset reached from two threads.
 /// * `DatasetRef::Concurrent` comes from `openThreadSafe` and holds a
-///   `GDALGetThreadSafeDataset`. Pixel reads take the process-wide lock in *read*
-///   mode and skip the per-dataset mutex, so several of them genuinely run at
-///   once. Everything else still takes the write lock.
+///   `GDALGetThreadSafeDataset`, which GDAL has been asked to make safe for
+///   concurrent reads. Reads take the process-wide lock in *read* mode and skip the
+///   per-dataset mutex, so several of them genuinely run at once — pixel reads, and
+///   the accessors that only look at the dataset's own read-only state (sizes,
+///   geotransform, projection, metadata, band and overview lookup). Anything that
+///   writes, caches a computed value, or reaches into another GDAL object still
+///   takes the write lock.
 #[derive(Clone)]
 pub enum DatasetRef {
     Serialised(SharedDataset),
@@ -129,13 +133,19 @@ impl DatasetRef {
     /// Run `f` with **read** access, under the shared lock when this handle is
     /// concurrent.
     ///
+    /// This is for work that reads the dataset and nothing else: a pixel window, or
+    /// one of the accessors that report what the dataset already knows. On a
+    /// `Serialised` handle it takes the write lock like everything else, so widening
+    /// the set of callers here changes nothing for `open()` — the difference only
+    /// ever shows on a thread-safe one.
+    ///
     /// # Lock rules
     ///
-    /// Only pixel reads call this. **The closure must not reach anything that
-    /// takes the write lock**: `RwLock` is not reentrant, so that deadlocks the
-    /// process. Concretely — no [`Self::with_exclusive`], no [`Self::with_mut`],
-    /// no second dataset, no program call. `read_window` only touches GDAL, so it
-    /// is safe.
+    /// **The closure must not reach anything that takes the write lock**: `RwLock` is
+    /// not reentrant, so that deadlocks the process. Concretely — no
+    /// [`Self::with_exclusive`], no [`Self::with_mut`], no second dataset, no program
+    /// call, and no band method that caches (`statistics`, `histogram`). A window
+    /// read and the metadata getters only look, so they are safe.
     pub fn with<T>(&self, f: impl FnOnce(&GdalDataset) -> Result<T>) -> Result<T> {
         match self {
             Self::Serialised(shared) => {
@@ -157,8 +167,9 @@ impl DatasetRef {
     /// Run `f` with read access under the **write** lock, even for a concurrent
     /// handle.
     ///
-    /// Everything other than a pixel read uses this, because the rest of the API
-    /// reaches into GDAL in ways that touch global state.
+    /// What is left for it is what a plain read is not: writes, anything that caches
+    /// what it computes, the vector side, and the programs, which build datasets of
+    /// their own.
     pub fn with_exclusive<T>(&self, f: impl FnOnce(&GdalDataset) -> Result<T>) -> Result<T> {
         match self {
             Self::Serialised(shared) => {
@@ -647,7 +658,7 @@ impl JsDataset {
     pub fn driver(&self) -> Result<JsDriver> {
         let name = self
             .dataset
-            .with_exclusive(|dataset| Ok(dataset.driver().short_name()))?;
+            .with(|dataset| Ok(dataset.driver().short_name()))?;
         Ok(JsDriver::new(name))
     }
 
@@ -657,15 +668,14 @@ impl JsDataset {
     /// reports the subdataset string.
     #[napi(getter)]
     pub fn description(&self) -> Result<String> {
-        self.dataset
-            .with_exclusive(|dataset| dataset.description().gdal())
+        self.dataset.with(|dataset| dataset.description().gdal())
     }
 
     /// Raster dimensions as one object, the shape `gdalinfo` prints. `width` and
     /// `height` remain as the flat accessors; this is the same pair grouped.
     #[napi(getter)]
     pub fn raster_size(&self) -> Result<RasterSize> {
-        self.dataset.with_exclusive(|dataset| {
+        self.dataset.with(|dataset| {
             let (width, height) = dataset.raster_size();
             Ok(RasterSize {
                 width: width as u32,
@@ -685,27 +695,27 @@ impl JsDataset {
     /// "nothing to copy".
     #[napi]
     pub fn get_file_list(&self) -> Result<Vec<String>> {
-        self.dataset.with_exclusive(file_list)
+        self.dataset.with(file_list)
     }
 
     /// Raster width in pixels.
     #[napi(getter)]
     pub fn width(&self) -> Result<u32> {
         self.dataset
-            .with_exclusive(|dataset| Ok(dataset.raster_size().0 as u32))
+            .with(|dataset| Ok(dataset.raster_size().0 as u32))
     }
 
     /// Raster height in pixels.
     #[napi(getter)]
     pub fn height(&self) -> Result<u32> {
         self.dataset
-            .with_exclusive(|dataset| Ok(dataset.raster_size().1 as u32))
+            .with(|dataset| Ok(dataset.raster_size().1 as u32))
     }
 
     #[napi(getter)]
     pub fn band_count(&self) -> Result<u32> {
         self.dataset
-            .with_exclusive(|dataset| Ok(dataset.raster_count() as u32))
+            .with(|dataset| Ok(dataset.raster_count() as u32))
     }
 
     /// Six affine geotransform coefficients, or `null` when the dataset has none
@@ -713,7 +723,7 @@ impl JsDataset {
     #[napi(getter)]
     pub fn geo_transform(&self) -> Result<Option<Vec<f64>>> {
         self.dataset
-            .with_exclusive(|dataset| Ok(dataset.geo_transform().ok().map(|gt| gt.to_vec())))
+            .with(|dataset| Ok(dataset.geo_transform().ok().map(|gt| gt.to_vec())))
     }
 
     /// Set the geotransform: `[originX, pixelWidth, rowRotation, originY,
@@ -757,7 +767,7 @@ impl JsDataset {
     /// CRS as WKT, or `null` when the dataset has no projection.
     #[napi(getter)]
     pub fn projection(&self) -> Result<Option<String>> {
-        self.dataset.with_exclusive(|dataset| {
+        self.dataset.with(|dataset| {
             let wkt = dataset.projection();
             Ok(if wkt.is_empty() { None } else { Some(wkt) })
         })
@@ -768,7 +778,7 @@ impl JsDataset {
     #[napi(getter)]
     pub fn spatial_ref(&self) -> Result<Option<JsSpatialRef>> {
         ensure_initialized();
-        self.dataset.with_exclusive(|dataset| {
+        self.dataset.with(|dataset| {
             let wkt = dataset.projection();
             if wkt.is_empty() {
                 return Ok(None);
@@ -784,7 +794,7 @@ impl JsDataset {
     #[napi]
     pub fn metadata(&self, domain: Option<String>) -> Result<HashMap<String, String>> {
         let domain = domain.unwrap_or_default();
-        self.dataset.with_exclusive(|dataset| {
+        self.dataset.with(|dataset| {
             let mut out = HashMap::new();
             for entry in dataset.metadata() {
                 if entry.domain == domain {
@@ -797,8 +807,7 @@ impl JsDataset {
 
     #[napi]
     pub fn metadata_domains(&self) -> Result<Vec<String>> {
-        self.dataset
-            .with_exclusive(|dataset| Ok(dataset.metadata_domains()))
+        self.dataset.with(|dataset| Ok(dataset.metadata_domains()))
     }
 
     #[napi]
@@ -817,7 +826,7 @@ impl JsDataset {
     #[napi]
     pub fn band(&self, index: u32) -> Result<JsRasterBand> {
         ensure_initialized();
-        let data_type = self.dataset.with_exclusive(|dataset| {
+        let data_type = self.dataset.with(|dataset| {
             let band_count = dataset.raster_count();
             if index as usize >= band_count {
                 return Err(bad_argument(format!(
@@ -838,9 +847,7 @@ impl JsDataset {
 
     #[napi]
     pub fn bands(&self) -> Result<Vec<JsRasterBand>> {
-        let band_count = self
-            .dataset
-            .with_exclusive(|dataset| Ok(dataset.raster_count()))?;
+        let band_count = self.dataset.with(|dataset| Ok(dataset.raster_count()))?;
         (0..band_count as u32)
             .map(|index| self.band(index))
             .collect()

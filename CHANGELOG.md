@@ -470,12 +470,29 @@ First working cut — everything here is new.
   thread-safe for one dataset reached from two threads and some drivers are not
   thread-safe at all.
 - `openThreadSafe()` is how a dataset joins in. It wraps GDAL 3.10's
-  `GDALGetThreadSafeDataset`, whose pixel reads take the *shared* side of that lock
-  and therefore really do overlap — a measured 2.6x on four concurrent reads where
-  the serialised path showed no gain at all from issuing them together. Such a
-  dataset is read-only and raster-only: writes and layer access throw
-  `GDAL_BAD_ARGUMENT`. Most drivers reopen the file per thread, so concurrency costs
-  file descriptors; GTiff/COG do not.
+  `GDALGetThreadSafeDataset`, whose reads take the *shared* side of that lock and
+  therefore really do overlap — a measured 2.6x on four concurrent reads where the
+  serialised path showed no gain at all from issuing them together. Such a dataset is
+  read-only and raster-only: writes and layer access throw `GDAL_BAD_ARGUMENT`. Most
+  drivers reopen the file per thread, so concurrency costs file descriptors; GTiff/COG
+  do not.
+- On such a dataset the shared side is no longer **only** the pixel read: so is every
+  accessor that just looks at what the dataset already knows — the dataset's sizes,
+  geotransform, projection, `spatialRef`, description, driver, metadata, file list and
+  band lookup, and on a band `size`, `blockSize`, `id`, `noDataValue`, `scale`,
+  `offset`, `unitType`, `colorInterpretation`, `minimum`, `maximum`,
+  `categoryNames`, `overviewCount`, `overviews` and `metadata`, plus `checksum` and a
+  whole overview level, which walk the samples without keeping them. The line is what a
+  plain read is not: writes, the vector side, the programs (they build datasets of their
+  own), and the three calls that make GDAL **store** what it computes — `statistics`,
+  `histogram` and `defaultHistogram` — keep the exclusive side. `open()` is unchanged,
+  since a serialised handle takes the write lock either way; this only shows on a
+  thread-safe one. Measured by `scripts/bench-parallel.mjs`, which now asks a calibrated
+  number of accessor rounds *while* a batch of reads is in flight: 39 rounds of 15
+  getters on four concurrent reads of a 2048² DEFLATE GTiff came to **22.2 ms
+  serialised vs 8.1 ms thread-safe (2.75x)**, and the accessor loop itself took 22.0 ms
+  against 7.9 ms — the same calls, and the difference is how long each one waited for
+  the read holding the lock.
 - Work with **no dataset in it** takes the shared side too, so it overlaps as well:
   the CRS and `CoordinateTransform` methods, geometry/GEOS, and `gdal.fs`. The one
   exclusive lock's original justification — GDAL keeping its last error in
@@ -574,9 +591,12 @@ First working cut — everything here is new.
 
 - `scripts/bench-parallel.mjs` measures the thread-safe path against the serialised
   one: the same concurrent workload, on real data, with the numbers and their
-  spread printed. It also measures a workload with **no dataset in it** — concurrent
-  `transformPoints`, which is lock contention and nothing else, and the sharpest
-  reading of the split above. It is a benchmark, not a test, and asserts nothing.
+  spread printed. It measures a batch of reads with the read-only accessors asked
+  *during* it — the round count is calibrated against the read time so the two
+  workloads stay comparable on any machine — and a workload with **no dataset in it**,
+  concurrent `transformPoints`, which is lock contention and nothing else and the
+  sharpest reading of the split above. It is a benchmark, not a test, and asserts
+  nothing beyond the two paths answering the same.
 - `npm run smoke` installs the packed tarball into an **empty directory** and then
   uses it: the packaged CRS database resolves, the driver count is right, a GEOS
   predicate runs (so the statically linked GEOS works with nothing installed), and

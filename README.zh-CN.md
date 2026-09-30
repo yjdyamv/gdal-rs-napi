@@ -1024,14 +1024,31 @@ const band = dataset.band(0)
 
 // 这些是真正重叠执行的，不会在锁上排队
 const tiles = await Promise.all(windows.map((window) => band.readPixels(window)))
+
+// 同样不会的，还有那些不去读新东西的查询
+const [size, transform] = [band.size, dataset.geoTransform]
 ```
 
-这类数据集的**像素读取**走锁的**共享**侧而不是独占侧。其余操作仍然走独占侧，所以上面说的
-全局错误状态串扰依然被排除在外。
+这类数据集上凡是**读**都走锁的**共享**侧而不是独占侧，所以多个读可以真正同时跑。除了像素窗口，
+还包括那些只查看数据集**已经知道**什么的访问器：`width`、`height`、`rasterSize`、
+`bandCount`、`geoTransform`、`projection`、`spatialRef`、`description`、`driver`、
+`metadata`、`getFileList`、`band()`；波段一侧是 `size`、`blockSize`、`id`、`noDataValue`、
+`scale`、`offset`、`unitType`、`colorInterpretation`、`minimum`、`maximum`、
+`categoryNames`、`overviewCount`、`overviews`、`metadata`。`checksum` 和读取整个 overview
+层级也在其中：它们只是走过样本而不留下样本，本身就是读。所以问一句波段尺寸不必再排在像素读后面。
+
+剩下的怎么判断：**写**，以及**让 GDAL 算出一个答案并把它存下来**的，都走独占侧。
+`writePixels`、`setProjection`、`setGeoTransform`、`setMetadataItem`、`flush` 以及矢量一侧
+显然属于此列；`statistics()`、`histogram()`、`defaultHistogram()` 也是——它们把算出来的结果
+写在数据集上；programs 同理，它们自建数据集。上面说的全局错误状态串扰在两侧都不会发生。
 
 ```sh
 node scripts/bench-parallel.mjs big.tif --concurrency 4
 ```
+
+它量三组负载：两条路径上的整波段读取、同样这批读取但**中间夹着只读访问器**、以及完全不涉及数据集
+的负载（一次坐标变换）作为对锁本身最锋利的测量。访问器循环的轮数按它所插入的那批读取的耗时校准，
+所以在任何机器、任何栅格上两侧都是可比的。
 
 代价与边界：
 

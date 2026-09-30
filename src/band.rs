@@ -1,9 +1,11 @@
 //! `RasterBand`. Holds only a dataset handle plus this band's index, so it never
 //! owns GDAL memory and cannot outlive the dataset behind its back.
 //!
-//! Pixel reads go through [`DatasetRef::with`], which is the one access path that
-//! runs in parallel for a thread-safe dataset. Everything else uses
-//! [`DatasetRef::with_exclusive`] (or `with_mut` when it writes).
+//! What only *looks* goes through [`DatasetRef::with`] — pixel reads, and the
+//! getters that report what the band already knows — which is the access path that
+//! runs in parallel for a thread-safe dataset. Anything that writes, or that caches
+//! what it computes (`statistics`, `histogram`, `defaultHistogram`), uses
+//! [`DatasetRef::with_exclusive`]; a write uses `with_mut`.
 
 use std::collections::HashMap;
 use std::ffi::{CString, c_char, c_int};
@@ -275,6 +277,7 @@ impl JsRasterBand {
             include_out_of_range,
             approx,
         } = request;
+        // Like `statistics`, this caches what it computes.
         self.dataset.with_exclusive(|dataset| {
             with_band(dataset, self.index, |band| {
                 let histogram = band
@@ -294,7 +297,7 @@ impl JsRasterBand {
     /// resolution as a read and never the resampling path.
     fn compute_checksum(&self, options: &ReadOptions) -> Result<u32> {
         ensure_initialized();
-        self.dataset.with_exclusive(|dataset| {
+        self.dataset.with(|dataset| {
             with_band(dataset, self.index, |band| {
                 let (width, height) = band.size();
                 let window = resolve_window(options, width, height)?;
@@ -393,7 +396,7 @@ impl JsRasterBand {
     /// Band size in pixels: `[width, height]`.
     #[napi(getter)]
     pub fn size(&self) -> Result<Vec<u32>> {
-        self.dataset.with_exclusive(|dataset| {
+        self.dataset.with(|dataset| {
             with_band(dataset, self.index, |band| {
                 let (width, height) = band.size();
                 Ok(vec![width as u32, height as u32])
@@ -404,7 +407,7 @@ impl JsRasterBand {
     /// Native block size: `[width, height]`.
     #[napi(getter)]
     pub fn block_size(&self) -> Result<Vec<u32>> {
-        self.dataset.with_exclusive(|dataset| {
+        self.dataset.with(|dataset| {
             with_band(dataset, self.index, |band| {
                 let (width, height) = band.block_size();
                 Ok(vec![width as u32, height as u32])
@@ -414,9 +417,8 @@ impl JsRasterBand {
 
     #[napi(getter)]
     pub fn no_data_value(&self) -> Result<Option<f64>> {
-        self.dataset.with_exclusive(|dataset| {
-            with_band(dataset, self.index, |band| Ok(band.no_data_value()))
-        })
+        self.dataset
+            .with(|dataset| with_band(dataset, self.index, |band| Ok(band.no_data_value())))
     }
 
     #[napi]
@@ -433,7 +435,7 @@ impl JsRasterBand {
     /// interpretation values.
     #[napi(getter)]
     pub fn color_interpretation(&self) -> Result<String> {
-        self.dataset.with_exclusive(|dataset| {
+        self.dataset.with(|dataset| {
             with_band(dataset, self.index, |band| {
                 Ok(format!("{:?}", band.color_interpretation()))
             })
@@ -446,7 +448,7 @@ impl JsRasterBand {
     /// dataset's band list, such as a mask band.
     #[napi(getter)]
     pub fn id(&self) -> Result<u32> {
-        self.dataset.with_exclusive(|dataset| {
+        self.dataset.with(|dataset| {
             with_band(dataset, self.index, |band| {
                 Ok(unsafe { gdal_sys::GDALGetBandNumber(band.c_rasterband()) } as u32)
             })
@@ -457,7 +459,7 @@ impl JsRasterBand {
     /// has none.
     #[napi(getter)]
     pub fn description(&self) -> Result<Option<String>> {
-        self.dataset.with_exclusive(|dataset| {
+        self.dataset.with(|dataset| {
             with_band(dataset, self.index, |band| {
                 let text = crate::runtime::c_string(unsafe {
                     gdal_sys::GDALGetDescription(band.c_rasterband())
@@ -497,7 +499,7 @@ impl JsRasterBand {
     /// opened: `open()` is read-only, `{ update: true }` and `create` are not.
     #[napi(getter)]
     pub fn read_only(&self) -> Result<bool> {
-        self.dataset.with_exclusive(|dataset| {
+        self.dataset.with(|dataset| {
             let access = unsafe { gdal_sys::GDALGetAccess(dataset.c_dataset()) } as u32;
             Ok(access == gdal_sys::GDALAccess::GA_ReadOnly)
         })
@@ -509,7 +511,7 @@ impl JsRasterBand {
     #[napi(getter)]
     pub fn scale(&self) -> Result<Option<f64>> {
         self.dataset
-            .with_exclusive(|dataset| with_band(dataset, self.index, |band| Ok(band.scale())))
+            .with(|dataset| with_band(dataset, self.index, |band| Ok(band.scale())))
     }
 
     /// Offset, or `null` when the band has none — the other half of
@@ -517,7 +519,7 @@ impl JsRasterBand {
     #[napi(getter)]
     pub fn offset(&self) -> Result<Option<f64>> {
         self.dataset
-            .with_exclusive(|dataset| with_band(dataset, self.index, |band| Ok(band.offset())))
+            .with(|dataset| with_band(dataset, self.index, |band| Ok(band.offset())))
     }
 
     /// Write the band's scale: the multiplier in `raw * scale + offset`.
@@ -548,9 +550,8 @@ impl JsRasterBand {
     /// The band's unit, e.g. `metre` or `DN`, or `null` when it has none.
     #[napi(getter)]
     pub fn unit_type(&self) -> Result<Option<String>> {
-        self.dataset.with_exclusive(|dataset| {
-            with_band(dataset, self.index, |band| Ok(non_empty(band.unit())))
-        })
+        self.dataset
+            .with(|dataset| with_band(dataset, self.index, |band| Ok(non_empty(band.unit()))))
     }
 
     /// Write the band's unit — `metre`, `DN`, anything the format will carry.
@@ -583,7 +584,7 @@ impl JsRasterBand {
     /// you need the number itself.
     #[napi(getter)]
     pub fn minimum(&self) -> Result<Option<f64>> {
-        self.dataset.with_exclusive(|dataset| {
+        self.dataset.with(|dataset| {
             with_band(dataset, self.index, |band| {
                 let mut success = 0;
                 let value =
@@ -598,7 +599,7 @@ impl JsRasterBand {
     /// to read it without a full pass.
     #[napi(getter)]
     pub fn maximum(&self) -> Result<Option<f64>> {
-        self.dataset.with_exclusive(|dataset| {
+        self.dataset.with(|dataset| {
             with_band(dataset, self.index, |band| {
                 let mut success = 0;
                 let value =
@@ -612,7 +613,7 @@ impl JsRasterBand {
     /// `categoryNames[3]` is the label for value 3. Empty when the band has none.
     #[napi(getter)]
     pub fn category_names(&self) -> Result<Vec<String>> {
-        self.dataset.with_exclusive(|dataset| {
+        self.dataset.with(|dataset| {
             with_band(dataset, self.index, |band| {
                 Ok(category_names(unsafe {
                     gdal_sys::GDALGetRasterCategoryNames(band.c_rasterband())
@@ -645,7 +646,7 @@ impl JsRasterBand {
     #[napi]
     pub fn metadata(&self, domain: Option<String>) -> Result<HashMap<String, String>> {
         let domain = domain.unwrap_or_default();
-        self.dataset.with_exclusive(|dataset| {
+        self.dataset.with(|dataset| {
             with_band(dataset, self.index, |band| {
                 let mut out = HashMap::new();
                 for entry in band.metadata() {
@@ -660,9 +661,8 @@ impl JsRasterBand {
 
     #[napi]
     pub fn metadata_domains(&self) -> Result<Vec<String>> {
-        self.dataset.with_exclusive(|dataset| {
-            with_band(dataset, self.index, |band| Ok(band.metadata_domains()))
-        })
+        self.dataset
+            .with(|dataset| with_band(dataset, self.index, |band| Ok(band.metadata_domains())))
     }
 
     /// How many overview levels this band already has. Cheap: a query, not a
@@ -670,9 +670,8 @@ impl JsRasterBand {
     /// over, and it is what `buildOverviews` is for.
     #[napi(getter)]
     pub fn overview_count(&self) -> Result<i32> {
-        self.dataset.with_exclusive(|dataset| {
-            with_band(dataset, self.index, |band| band.overview_count().gdal())
-        })
+        self.dataset
+            .with(|dataset| with_band(dataset, self.index, |band| band.overview_count().gdal()))
     }
 
     /// Min, max, mean and standard deviation.
@@ -735,6 +734,7 @@ impl JsRasterBand {
     pub fn default_histogram(&self, force: Option<bool>) -> Result<Option<BandHistogram>> {
         ensure_initialized();
         let force = force.unwrap_or(false);
+        // `force` computes and caches one, so this is on the exclusive side too.
         self.dataset.with_exclusive(|dataset| {
             with_band(dataset, self.index, |band| {
                 let Some(histogram) = band.default_histogram(force).gdal()? else {
@@ -1214,7 +1214,7 @@ impl JsRasterBand {
     /// and resample through it instead.
     #[napi(getter)]
     pub fn overviews(&self) -> Result<Vec<JsBandOverview>> {
-        self.dataset.with_exclusive(|dataset| {
+        self.dataset.with(|dataset| {
             with_band(dataset, self.index, |band| {
                 let count = band.overview_count().gdal()?;
                 (0..count as usize)
@@ -1228,13 +1228,13 @@ impl JsRasterBand {
 /// The rectangle of the block that holds `(x, y)`, clipped to the band.
 impl JsRasterBand {
     fn block_window(&self, x: u32, y: u32) -> Result<ReadOptions> {
-        let (block_width, block_height) = self.dataset.with_exclusive(|dataset| {
+        let (block_width, block_height) = self.dataset.with(|dataset| {
             with_band(dataset, self.index, |band| {
                 let (width, height) = band.block_size();
                 Ok((width as u32, height as u32))
             })
         })?;
-        let (band_width, band_height) = self.dataset.with_exclusive(|dataset| {
+        let (band_width, band_height) = self.dataset.with(|dataset| {
             with_band(dataset, self.index, |band| {
                 let (width, height) = band.size();
                 Ok((width as u32, height as u32))
@@ -1303,7 +1303,7 @@ impl JsBandOverview {
     /// Read the whole level, in its own sample type, as raw bytes.
     #[napi]
     pub fn read_sync(&self) -> Result<Buffer> {
-        let bytes = self.dataset.with_exclusive(|dataset| {
+        let bytes = self.dataset.with(|dataset| {
             with_band(dataset, self.index, |band| {
                 read_overview_bytes(band, self.level)
             })
@@ -1339,7 +1339,7 @@ impl Task for ReadOverviewTask {
             index,
             level,
         } = self;
-        Ok(op(dataset.with_exclusive(|dataset| {
+        Ok(op(dataset.with(|dataset| {
             with_band(dataset, *index, |band| read_overview_bytes(band, *level))
         })))
     }
@@ -1463,7 +1463,7 @@ struct ChunkPlan {
 
 impl JsRasterBand {
     fn chunk_plan(&self, options: &ChunkOptions) -> Result<ChunkPlan> {
-        let (band_width, band_height, block_rows) = self.dataset.with_exclusive(|dataset| {
+        let (band_width, band_height, block_rows) = self.dataset.with(|dataset| {
             with_band(dataset, self.index, |band| {
                 let (width, height) = band.size();
                 Ok((width, height, band.block_size().1))

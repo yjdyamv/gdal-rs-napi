@@ -18,7 +18,7 @@
 | 矢量 | 图层/字段/要素 CRUD、属性与空间过滤、游标、SQL、事务、fid/geom 列、capability |
 | 程序 | `translate` / `warp` / `vectorTranslate` / `demProcess`，带 `onProgress` 与取消 |
 | CRS | SpatialRef 全套读写、CoordinateTransform（点/数组/bounds/geometry）、identifyEpsg |
-| 并发 | 进程级 `RwLock` 串行化 GDAL；`openThreadSafe()` 走共享锁，栅格读真并行 |
+| 并发 | 进程级 `RwLock` 串行化 GDAL；`openThreadSafe()` 走共享锁，栅格读与只读访问器真并行 |
 | 测试 | `node --test` 103 项，2.9k 行；Rust 侧纯函数单测；CI 六平台 + fmt/clippy |
 | 发布 | tag → GitHub Release 挂 6 个自包含 tarball（含 os/cpu/libc 约束） |
 
@@ -112,7 +112,7 @@ MDArray、Node Streams、`calcAsync` 明确不做，记为设计取舍。
 > 目标：把"异步只解放事件循环"升级为"可预测的并行"。
 
 - [x] **削弱全局锁**：PoC 的结论是**前提已经过时** —— GDAL ≥3.10 的 last-error 是线程局部的（每线程一个 `CPLErrorContext`），`OGRSpatialReference` 的 PROJ context 来自 `OSRGetProjTLSContext()`，GEOS 则是每次调用一个 context。于是**无数据集**的调用（CRS / `CoordinateTransform`、几何 / GEOS、`gdal.fs`）改走共享锁、真正并发；数据集与进程级配置仍走独占（同一个 dataset 跨线程不安全，部分驱动本身也不安全）。实测 4 个并发 40 万点变换：**1.03x → 2.93x**。证据写进 `src/runtime.rs`，前提由 Rust 测试 `gdals_last_error_is_thread_local` 钉住，收益由 `scripts/bench-parallel.mjs` 量出。
-- [ ] **扩大 `openThreadSafe` 覆盖面**：现状限只读栅格；评估更多驱动与读路径。矢量的线程安全如实测不可行，就在文档里写死。（上一项 PoC 的补充结论：把**普通**数据集也放成并发，不能只靠"错误状态已解耦"就放开，得经 GDAL 的 `GDALGetThreadSafeDataset` 或逐驱动判断。）
+- [ ] **扩大 `openThreadSafe` 覆盖面**：现状限只读栅格；评估更多驱动与读路径。矢量的线程安全如实测不可行，就在文档里写死。（上一项 PoC 的补充结论：把**普通**数据集也放成并发，不能只靠"错误状态已解耦"就放开，得经 GDAL 的 `GDALGetThreadSafeDataset` 或逐驱动判断。）读路径本身已放宽一格：只读访问器（尺寸、geotransform、projection、元数据、band/overview 查询）与 `checksum` 都走共享锁，判据是"是否只查看已有状态、是否会让 GDAL 把算出来的结果存下"；实测 4 并发读中夹 39 轮访问器：**22.2 ms 串行 vs 8.1 ms 并发（2.75x）**。剩下的仍是写、矢量侧与 programs。
 - [x] **零拷贝**：`readPixels` / `readAs` 的 options 增加 `into: Buffer`，GDAL 直接写进调用方内存（`GDALRasterIOEx`，传裸指针而不是 `&mut [T]`——JS 的 `Buffer` 不保证对齐），**不分配、不拷贝**；长度必须精确匹配，返回值就是传入的那个对象（同步与异步都是）。写路径拒绝 `into` 而不是忽略。跨距/子区域填充（gdal-async 的 `buffer_width`/`line_space`）**不做**：那要自己铺开 RasterIO 的行跨距，等真有需求再说。
 - [ ] **基准进 CI**：`scripts/bench-parallel.mjs` 加回归阈值（或至少存档趋势），防止性能回退。
 - [ ] **资源语义**：句柄/文件描述符/内存的上限与释放路径文档化；大栅格的流式读取模式统一。

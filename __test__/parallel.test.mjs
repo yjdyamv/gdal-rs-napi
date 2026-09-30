@@ -185,6 +185,48 @@ test('dataset-free work runs together and still answers the same', async () => {
   for (const authority of found) assert.equal(authority, 'EPSG:4326')
 })
 
+test('the read-only accessors answer the same on a thread-safe dataset', async () => {
+  const path = tmp('threadsafe-accessors.tif')
+  fixture(path, 32, 32)
+
+  const serial = gdal.openSync(path)
+  const dataset = gdal.openThreadSafeSync(path)
+  const serialBand = serial.band(0)
+  const band = dataset.band(0)
+
+  // Each of these only looks at what the dataset already knows, so on a thread-safe
+  // dataset it takes the shared side of the lock and runs *alongside* pixel reads
+  // rather than behind them. What a test can pin is that the answers still agree —
+  // the concurrency itself is what scripts/bench-parallel.mjs measures.
+  assert.equal(dataset.width, serial.width)
+  assert.equal(dataset.height, serial.height)
+  assert.deepEqual(dataset.rasterSize, serial.rasterSize)
+  assert.equal(dataset.bandCount, serial.bandCount)
+  assert.equal(dataset.description, serial.description)
+  assert.equal(dataset.driver.name, serial.driver.name)
+  assert.deepEqual(dataset.geoTransform, serial.geoTransform)
+  assert.equal(dataset.projection, serial.projection)
+  assert.deepEqual(dataset.getFileList(), serial.getFileList())
+
+  assert.deepEqual(band.size, serialBand.size)
+  assert.deepEqual(band.blockSize, serialBand.blockSize)
+  assert.equal(band.id, serialBand.id)
+  assert.equal(band.colorInterpretation, serialBand.colorInterpretation)
+  assert.equal(band.readOnly, true)
+  assert.equal(band.noDataValue, serialBand.noDataValue)
+  assert.equal(band.overviewCount, serialBand.overviewCount)
+
+  // A checksum walks the samples without keeping them, so it moved to the same side
+  // as the reads it is made of — and the two forms agree.
+  assert.equal(await band.checksum(), band.checksumSync())
+
+  // A pixel read still behaves with all of the above going on.
+  assert.deepEqual(Array.from(band.readPixelsSync()), Array.from(ramp(32, 32)))
+
+  serial.close()
+  dataset.close()
+})
+
 test('openThreadSafe rejects something that is not a read-only raster', () => {
   // A vector file cannot be opened with the raster-only flags openThreadSafe
   // needs, so it fails rather than quietly handing back a serialised dataset.

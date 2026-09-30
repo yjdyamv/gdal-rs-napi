@@ -3,9 +3,13 @@
 //
 // `open()` serialises every GDAL call behind one process-wide lock: the async
 // methods free the event loop, but concurrent reads still queue. `openThreadSafe()`
-// opens a dataset whose pixel reads take the shared side of that lock instead, so
-// they genuinely overlap. This script runs the *same* concurrent workload through
+// opens a dataset whose reads take the shared side of that lock instead, so they
+// genuinely overlap. This script runs the *same* concurrent workload through
 // both and compares the wall times.
+//
+// Three workloads are measured, because the shared side covers more than pixels:
+// whole-band reads, a batch of reads with the read-only accessors asked in the
+// middle of them, and a workload with no dataset in it at all.
 //
 //   node scripts/bench-parallel.mjs [raster.tif] [--concurrency 4] [--rounds 5]
 //
@@ -118,7 +122,13 @@ const oneAtATime = async (band) => {
   return buffers
 }
 
-const sameValues = (a, b) => a.length === b.length && a.every((value, index) => value === b[index])
+/**
+ * `NaN` is a legitimate answer here — a band with no no-data value reports one — and
+ * `NaN !== NaN` would report a disagreement between two datasets that agree exactly.
+ */
+const sameValue = (a, b) => a === b || (Number.isNaN(a) && Number.isNaN(b))
+
+const sameValues = (a, b) => a.length === b.length && a.every((value, index) => sameValue(value, b[index]))
 
 /** The same comparison for a workload that answers with numbers instead of bytes. */
 async function measureValues(label, run) {
@@ -144,6 +154,111 @@ async function measureValues(label, run) {
       `| ${times.map((t) => t.toFixed(1)).join(', ')}`,
   )
   return best
+}
+
+/**
+ * One round of the read-only accessors — the getters that only look at what the
+ * dataset already knows, so on a thread-safe dataset they take the shared side of the
+ * lock. The values are returned so they can be compared rather than discarded.
+ *
+ * The expensive ones are deliberately absent: `projection` re-exports the whole WKT,
+ * and a benchmark of GDAL's lock has no business measuring the cost of that.
+ */
+const askAccessors = (dataset, band) => [
+  dataset.width,
+  dataset.height,
+  dataset.bandCount,
+  dataset.rasterSize.width,
+  dataset.description.length,
+  dataset.driver.name.length,
+  dataset.getFileList().length,
+  band.size[0],
+  band.blockSize[0],
+  band.id,
+  band.colorInterpretation.length,
+  band.noDataValue,
+  band.overviewCount,
+  band.readOnly,
+  band.metadata().size,
+]
+
+/**
+ * How many rounds of getters to ask while the reads are in flight.
+ *
+ * The number has to be about the same as the read time they are asked during, and
+ * neither machine nor raster holds still for a hard-coded one: a shorter loop is
+ * hidden behind the reads and a longer one outlasts them, and then both paths are
+ * simply as slow as the getters. So it is calibrated against `batchMs`.
+ */
+const accessorRoundsFor = (dataset, band, batchMs) => {
+  // Warmed, then the best of three: the first call pays for GDAL's own one-time
+  // lookups, and a single sample of a sub-millisecond loop is mostly noise. Understating
+  // the per-round cost is safe — the loop stays comparable to the reads, which is all
+  // the calibration is for.
+  askAccessors(dataset, band)
+  const samples = []
+  for (let index = 0; index < 3; index += 1) {
+    const start = performance.now()
+    askAccessors(dataset, band)
+    samples.push(performance.now() - start)
+  }
+  const perRound = Math.min(...samples)
+  return { rounds: Math.max(1, Math.round(batchMs / perRound)), perRound }
+}
+
+/**
+ * The same batch of reads, with a round of getters asked while they are in flight. Both
+ * paths get an identical workload, so the wall times are comparable.
+ *
+ * A getter is synchronous and there is one JS thread, so it cannot overlap another
+ * getter; what the shared lock changes is that it can run *beside* the reads. The
+ * getter loop is timed on its own as well, because that is the number the wall time
+ * has to be read against: a serialised round cannot be shorter than the reads plus the
+ * getters, a thread-safe one can be as short as the larger of the two.
+ */
+async function measureMixed(label, dataset, band, accessorRounds) {
+  const times = []
+  const getterTimes = []
+  let reference = null
+  let answers = null
+
+  for (let round = 0; round < rounds; round += 1) {
+    const start = performance.now()
+    // Dispatched first, then never awaited until the getters are done: they are what
+    // runs *during* the reads, which is the only interesting ordering.
+    const reads = Promise.all(Array.from({ length: concurrency }, () => band.readPixels()))
+    const gettersStart = performance.now()
+    let served = 0
+    while (served < accessorRounds) {
+      const values = askAccessors(dataset, band)
+      // Checked every round rather than summed: two datasets answering the same is
+      // the claim, and a sum would hide which accessor disagreed.
+      if (!answers) answers = values
+      else if (!sameValues(answers, values)) {
+        console.error(`[bench] ${label} — the accessors disagree with themselves`)
+        process.exitCode = 1
+      }
+      served += 1
+    }
+    getterTimes.push(performance.now() - gettersStart)
+    const [pixels] = await reads
+    times.push(performance.now() - start)
+
+    if (!reference) reference = pixels
+    else if (!pixels.equals(reference)) {
+      console.error(`[bench] ${label} read disagreeing bytes — that is a bug, not a benchmark`)
+      process.exitCode = 1
+    }
+  }
+
+  const steady = times.slice(1)
+  const best = Math.min(...(steady.length > 0 ? steady : times))
+  const getters = Math.min(...(getterTimes.length > 1 ? getterTimes.slice(1) : getterTimes))
+  console.log(
+    `[bench] ${label.padEnd(34)} best ${best.toFixed(1).padStart(7)} ms ` +
+      `| ${times.map((t) => t.toFixed(1)).join(', ')} | getters alone ${getters.toFixed(1)} ms`,
+  )
+  return { best, getters, answers }
 }
 
 /**
@@ -217,6 +332,41 @@ try {
       '[bench] no gain here — these reads are cheap enough that the lock was never the bottleneck',
     )
   }
+
+  console.log('')
+  const { rounds: accessorRounds, perRound } = accessorRoundsFor(
+    serial,
+    serialBand,
+    perRead * concurrency,
+  )
+  console.log(
+    `[bench] now the same ${concurrency} reads with ${accessorRounds} round(s) of read-only ` +
+      `accessors asked while they are in flight (calibrated: one round is ` +
+      `${perRound.toFixed(2)} ms, the batch of reads about ${(perRead * concurrency).toFixed(1)} ms)`,
+  )
+  const mixedSerial = await measureMixed('open(), reads + accessors', serial, serialBand, accessorRounds)
+  const mixedThreadSafe = await measureMixed(
+    'openThreadSafe(), reads + accessors',
+    threadSafe,
+    threadSafeBand,
+    accessorRounds,
+  )
+  if (!sameValues(mixedSerial.answers, mixedThreadSafe.answers)) {
+    console.error(
+      '[bench] the accessors answered differently on the two datasets — that is a bug, not a benchmark',
+    )
+    process.exitCode = 1
+  }
+  console.log(
+    `[bench] the same ${accessorRounds} rounds of getters on both paths, and the loop itself ` +
+      `took ${mixedSerial.getters.toFixed(1)} ms serialised vs ` +
+      `${mixedThreadSafe.getters.toFixed(1)} ms thread-safe: identical calls, and the ` +
+      `difference is how long each one waited for the read holding the lock. The whole ` +
+      `round came to ${mixedSerial.best.toFixed(1)} ms vs ${mixedThreadSafe.best.toFixed(1)} ms ` +
+      `-> ${(mixedSerial.best / mixedThreadSafe.best).toFixed(2)}x — on the serialised path the ` +
+      `reads and the getters are in one line, on the thread-safe one only the larger of ` +
+      `the two is.`,
+  )
 
   console.log('')
   const sequenceTransforms = await measureValues('transforms, one at a time', transformed)

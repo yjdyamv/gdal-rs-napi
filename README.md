@@ -1212,15 +1212,37 @@ const band = dataset.band(0)
 
 // These genuinely overlap instead of queueing on the lock.
 const tiles = await Promise.all(windows.map((window) => band.readPixels(window)))
+
+// So does a question about the dataset that reads nothing new.
+const [size, transform] = [band.size, dataset.geoTransform]
 ```
 
-A pixel read of such a dataset takes the **shared** side of the lock rather than
-the exclusive side. Everything else still takes the exclusive side, so the global
-error-state race described above stays out of the picture.
+A **read** of such a dataset takes the **shared** side of the lock rather than the
+exclusive side, so several of them really do run at once. That is a pixel window, and
+the accessors that only look at what the dataset already knows — `width`, `height`,
+`rasterSize`, `bandCount`, `geoTransform`, `projection`, `spatialRef`, `description`,
+`driver`, `metadata`, `getFileList`, `band()`, and on a band `size`, `blockSize`, `id`,
+`noDataValue`, `scale`, `offset`, `unitType`, `colorInterpretation`, `minimum`,
+`maximum`, `categoryNames`, `overviewCount`, `overviews`, `metadata`. `checksum` and a
+whole overview level are in it too: they walk the samples without keeping them, which is
+a read. So asking for the size of a band no longer queues behind the pixel reads.
+
+The rule for what is left: anything that writes, and anything that makes GDAL *compute
+and keep* an answer, takes the exclusive side. `writePixels`, `setProjection`,
+`setGeoTransform`, `setMetadataItem`, `flush` and the vector side obviously; so do
+`statistics()`, `histogram()` and `defaultHistogram()`, which store what they compute on
+the dataset, and the programs, which build datasets of their own. The global error-state
+race described above stays out of the picture on both sides.
 
 ```sh
 node scripts/bench-parallel.mjs big.tif --concurrency 4
 ```
+
+It measures three workloads: whole-band reads on both paths, the same batch of reads
+with the read-only accessors asked in the middle of them, and a dataset-free workload
+(a coordinate transform) as the sharpest measurement of the lock itself. The accessor
+loop is calibrated against the read time it runs during, so the two are comparable on
+any machine and any raster.
 
 What it costs, and what it does not do:
 
