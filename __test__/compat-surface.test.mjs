@@ -198,6 +198,46 @@ test('deleteDataset removes the file through its own driver', () => {
   assert.throws(() => gdal.open(path))
 })
 
+test('vsimem is the memory file system under the reference\'s names', () => {
+  const path = gdal.vsimem.set(Buffer.from('hello'), 'compat-surface.bin')
+  assert.equal(path, '/vsimem/compat-surface.bin')
+  assert.deepEqual(native.fs.readFile(path), Buffer.from('hello'))
+
+  // A bare name works as well as the whole path, in both directions.
+  gdal.vsimem.copy('compat-surface.bin', '/vsimem/compat-surface-copy.bin')
+  assert.deepEqual(native.fs.readFile('/vsimem/compat-surface-copy.bin'), Buffer.from('hello'))
+  gdal.vsimem.release('/vsimem/compat-surface-copy.bin')
+  assert.equal(native.fs.stat('/vsimem/compat-surface-copy.bin'), null)
+
+  // Releasing what is not there is not an error — the reference calls it from a
+  // `finally`, so a second call has to be harmless.
+  gdal.vsimem.release('compat-surface.bin')
+  gdal.vsimem.release('compat-surface.bin')
+  assert.equal(native.fs.stat(path), null)
+
+  // What the object is for: bytes out of a dataset, and back into one.
+  const source = native.createSync('/vsimem/compat-surface-raster.tif', {
+    driver: 'GTiff',
+    width: 4,
+    height: 2,
+    bandCount: 1,
+    dataType: 'Uint8',
+  })
+  source.band(0).fill(7)
+  source.close()
+
+  const bytes = native.fs.readFile('/vsimem/compat-surface-raster.tif')
+  const reopenedPath = gdal.vsimem.set(bytes, 'compat-surface-reopened.tif')
+  const dataset = gdal.open(reopenedPath)
+  assert.equal(dataset.bands.get(1).pixels.read(0, 0, 4, 2).length, 4 * 2)
+  dataset.close()
+
+  // A name with nothing behind it still gets one, so `set` without a name is usable.
+  const anonymous = gdal.vsimem.set(Buffer.from('bytes'))
+  assert.match(anonymous, /^\/vsimem\/gdal-rs-napi-\d+-\d+\.bin$/)
+  gdal.vsimem.release(anonymous)
+})
+
 test('the re-exports answer what the main entry point answers', () => {
   // Same objects where the main entry point already has one, so there is nothing to
   // keep in step.

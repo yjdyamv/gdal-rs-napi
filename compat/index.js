@@ -1262,6 +1262,46 @@ for (const name of [
   })
 }
 
+/** `/vsimem/name`, whether the caller passed a bare name or the whole path. */
+function vsimemPath(name) {
+  const path = String(name)
+  return path.startsWith('/vsimem/') ? path : `/vsimem/${path}`
+}
+
+/**
+ * gdal-async's `vsimem`: GDAL's memory file system, which the reference's own tests use
+ * as the dumping ground for fixture bytes — 76 of the calls in that suite are
+ * `release()`, with a `set()` before them.
+ *
+ * This binding spells the same thing as `fs` calls on `/vsimem/` paths, so this is the
+ * reference's name over those rather than a second implementation.
+ */
+const vsimem = {
+  /** `set(buffer, filename?)` — copies the bytes in, and answers the path. */
+  set(data, filename) {
+    const path = vsimemPath(filename ?? `gdal-rs-napi-${Date.now()}-${vsimemCounter++}.bin`)
+    native.fs.writeFile(path, Buffer.isBuffer(data) ? data : Buffer.from(data))
+    return path
+  },
+
+  /**
+   * `release(filename)` — frees the memory file. Idempotent: the reference's tests call
+   * it from a `finally`, and freeing something already freed is not worth an exception
+   * here for the same reason a second `close()` is not.
+   */
+  release(filename) {
+    const path = vsimemPath(filename)
+    if (native.fs.stat(path)) native.fs.unlink(path)
+  },
+
+  /** `copy(from, to)` — GDAL's own copy inside the memory file system. */
+  copy(from, to) {
+    native.fs.copyFile(vsimemPath(from), vsimemPath(to))
+  },
+}
+
+let vsimemCounter = 0
+
 let driversCollection = null
 
 const Gdal = {
@@ -1358,6 +1398,7 @@ const Gdal = {
   // same one. Nothing is reimplemented here.
   config: native.config,
   fs: native.fs,
+  vsimem,
   info: () => native.info(),
   infoAsync: () => native.infoAsync(),
   toDataType: (value) => native.toDataType(value),
