@@ -482,6 +482,23 @@ out.setGeoTransform([500000, 30, 0, 4600000, 0, -30])
 out.setProjection(gdal.epsgToWkt(32633))
 ```
 
+Georeferencing does not have to be affine. A raster registered from known points
+carries **ground control points** instead:
+
+```js
+out.setGCPs(
+  [{ id: '1', info: 'SW', pixel: 0, line: 0, x: 500000, y: 4600000, z: 0 } /* … */],
+  gdal.epsgToWkt(32633),
+)
+out.gcpCount      // 3
+out.getGCPs()[0]  // { id: '1', info: 'SW', pixel: 0, line: 0, x: 500000, y: 4600000, z: 0 }
+out.gcpProjection // the WKT above — the CRS the points are in, not the raster's own
+```
+
+That is the path `gdalwarp -tps` uses, and the one a source with GCPs and no
+`geoTransform` offers. What a format keeps is the format's answer: GTiff stores a
+point's id and coordinates but not its `info`.
+
 Option names are GDAL's own and differ per driver — GTiff tiles want
 `BLOCKXSIZE` / `BLOCKYSIZE`, while COG takes `BLOCKSIZE`. GDAL logs a warning and
 ignores anything it does not recognise.
@@ -635,6 +652,10 @@ dataset.band(0).overviewCount // 0
 await dataset.buildOverviews()
 dataset.band(0).overviewCount // 3, for a 1024x1024 raster
 ```
+
+`band.hasArbitraryOverviews` is what a source with no `overviews` answers `true` to:
+it can compute a reduced resolution on demand — a network dataset, typically —
+where a file has fixed levels or none.
 
 Worth knowing:
 
@@ -791,6 +812,7 @@ layer.feature(3)                        // one by feature id, or null
 layer.setAttributeFilter('population > 1000')   // OGR SQL WHERE; null clears it
 layer.setSpatialFilterRect(minX, minY, maxX, maxY)
 layer.setSpatialFilter({ type: 'Polygon', coordinates: [ring] })  // any geometry
+layer.getSpatialFilter()                // the filter as a Geometry, or null
 layer.clearSpatialFilter()
 ```
 
@@ -900,16 +922,21 @@ raster.rasterizeSync([Geometry.fromWkt(box), geojsonBox], { burnValues: [1, 2] }
 `Geometry` also carries the operations GDAL implements through GEOS — the
 predicates (`intersects`, `contains`, `within`, `crosses`, `touches`, `overlaps`,
 `disjoint`, `equals`), `distance`, `isValid` / `isSimple`, and the set algebra
-`buffer`, `centroid`, `convexHull`, `simplify`, `union`, `intersection`,
-`difference` and `symDifference`:
+`buffer`, `centroid`, `convexHull`, `simplify`, `simplifyPreserveTopology`,
+`union`, `intersection`, `difference` and `symDifference`, plus `makeValid` and
+`boundary`:
 
 ```js
 if (gdal.features().geos) {
   const hits = plot.intersects(roads)
   const ring = plot.buffer(100, 16)     // 100 units out, 16 segments per quadrant
   const merged = plot.union(neighbour)  // a new Geometry
+  const fixed = broken.makeValid()      // GEOS's repair for a bad polygon
 }
 ```
+
+`isRing()`, `toGML()` and `toKML()` round out the geometry surface and need no GEOS
+— they are plain OGR.
 
 GEOS is fetched, compiled and statically linked by the build, the way GDAL and
 PROJ are, so this all works out of the box and the package stays one
@@ -1614,7 +1641,11 @@ artifact.
 ## Coming from `gdal-async`
 
 The main entry point is **not** a drop-in replacement — it is 0-based, spells the
-blocking form `xxxSync()`, and sets through `setX()`. A second entry point is:
+blocking form `xxxSync()`, and sets through `setX()`. [`docs/PARITY.md`](./docs/PARITY.md)
+is the full accounting of where the two stand: what is at parity, the additive gaps
+still open, and the capabilities deliberately left out (the multidimensional model,
+Streams, band algebra, async getters, the native collection classes and the geometry
+subclass family), with the conventions map. A second entry point is:
 
 ```js
 const gdal = require('gdal-rs-napi/compat')

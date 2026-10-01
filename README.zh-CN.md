@@ -402,6 +402,22 @@ out.band(0).writePixelsSync(Buffer.from(new Float32Array(64 * 64).buffer))
 out.close()
 ```
 
+地理参考不一定是仿射的。用已知点配准出来的栅格带的是**地面控制点**（GCP）：
+
+```js
+out.setGCPs(
+  [{ id: '1', info: 'SW', pixel: 0, line: 0, x: 500000, y: 4600000, z: 0 } /* … */],
+  gdal.epsgToWkt(32633),
+)
+out.gcpCount      // 3
+out.getGCPs()[0]  // { id: '1', info: 'SW', pixel: 0, line: 0, x: 500000, y: 4600000, z: 0 }
+out.gcpProjection // 上面那段 WKT —— 点所在的 CRS，不是栅格自身的
+```
+
+`gcpProjection` 是这些点所在的 CRS，与 `projection`（栅格自身的地理参考）是两回事。这就是
+`gdalwarp -tps` 走的那条路，也是只有 GCP、没有 `geoTransform` 的源能提供的东西。格式能存什么
+是格式自己的回答：GTiff 会存点的 id 和坐标，但不存 `info`。
+
 创建选项的名字是 **GDAL 自己的**，各驱动不同：GTiff 分块用 `BLOCKXSIZE`/`BLOCKYSIZE`，
 而 COG 用 `BLOCKSIZE`。GDAL 对不认识的选项只会打一条 warning 然后忽略。
 
@@ -531,6 +547,9 @@ await dataset.buildOverviews()
 dataset.band(0).overviewCount // 1024x1024 的栅格会建 3 层
 ```
 
+`band.hasArbitraryOverviews` 就是「`overviews` 为空却仍能降分辨率」的那种源回答 `true` 的问题
+—— 通常是网络数据集，而文件要么有固定层级、要么一层都没有。
+
 几点值得知道：
 
 - **`statistics()` 默认会真算**。大栅格上这等于把该波段完整读一遍 —— 所以有异步版本，也有
@@ -654,6 +673,7 @@ layer.feature(3)                        // 按 fid 取一个，或 null
 layer.setAttributeFilter('population > 1000')   // OGR SQL 的 WHERE；传 null 清除
 layer.setSpatialFilterRect(minX, minY, maxX, maxY)
 layer.setSpatialFilter({ type: 'Polygon', coordinates: [ring] })  // 任意几何
+layer.getSpatialFilter()                // 过滤器本身，Geometry 或 null
 layer.clearSpatialFilter()
 ```
 
@@ -756,15 +776,19 @@ raster.rasterizeSync([Geometry.fromWkt(box), geojsonBox], { burnValues: [1, 2] }
 `Geometry` 也带上了 GDAL 通过 GEOS 实现的那些操作 —— 谓词（`intersects`、`contains`、
 `within`、`crosses`、`touches`、`overlaps`、`disjoint`、`equals`）、`distance`、
 `isValid` / `isSimple`，以及集合运算 `buffer`、`centroid`、`convexHull`、`simplify`、
-`union`、`intersection`、`difference`、`symDifference`：
+`simplifyPreserveTopology`、`union`、`intersection`、`difference`、`symDifference`，
+再加上 `makeValid` 与 `boundary`：
 
 ```js
 if (gdal.features().geos) {
   const hits = plot.intersects(roads)
   const ring = plot.buffer(100, 16)     // 外扩 100 个单位，每象限 16 段
   const merged = plot.union(neighbour)  // 返回新的 Geometry
+  const fixed = broken.makeValid()      // GEOS 对坏多边形的修复
 }
 ```
+
+`isRing()`、`toGML()`、`toKML()` 补齐了几何面，且**不需要 GEOS** —— 它们是纯 OGR。
 
 GEOS 由构建过程获取、编译并**静态链接**，和 GDAL、PROJ 一样，所以这些开箱即用，包依然是单个
 自包含产物。`docs/GEOS.md` 记录了这个决定（以及为什么共享库在这里更糟），还有发布时欠下的
@@ -1365,7 +1389,9 @@ Intel macOS 与 32 位目标未构建。
 ## 从 `gdal-async` 迁移
 
 主入口**不是**直接替代品 —— 它是 0-based、阻塞形式叫 `xxxSync()`、赋值靠 `setX()`。
-另一个入口是：
+[`docs/PARITY.md`](./docs/PARITY.md) 是两者差距的完整清单：哪些已对齐、还有哪些**加性缺口**、
+以及**明确不做**的能力（多维模型、Streams、波段代数、异步 getter、原生集合类、几何子类族），
+并附约定对照表。`gdal.bundled` 是「这个包是否自包含」的一行答案。另一个入口是：
 
 ```js
 const gdal = require('gdal-rs-napi/compat')

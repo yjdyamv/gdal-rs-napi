@@ -6,6 +6,28 @@ First working cut — everything here is new.
 
 ### Binding
 
+- `Dataset` gains the **ground-control-point** path — the other way to georeference a
+  raster, beside the affine `geoTransform`. `dataset.getGCPs()` returns
+  `[{ id, info, pixel, line, x, y, z }]`, `setGCPs(gcps, projection?)` writes them
+  back, and `gcpCount` / `gcpProjection` report how many there are and the CRS they
+  are in. This is the georeferencing a warp falls back to for `-tps`, or when the
+  source carries a GCP list and no transform. `setGCPs` is a write, so a read-only or
+  thread-safe handle refuses it like any other.
+- `Layer.getSpatialFilter()` is the read side of `setSpatialFilter`: the filter
+  currently in force as a `Geometry`, or `null` when there is none. A rectangle set
+  with `setSpatialFilterRect` comes back as a polygon, which is what GDAL stores.
+- `RasterBand.hasArbitraryOverviews` says whether GDAL can compute overviews on
+  demand for the band — some network sources can, and they generally have no fixed
+  `overviews` at all. A read: nothing is built.
+- `Geometry` gains the operations that round out the `gdal-async` set:
+  `makeValid()` (GEOS's repair for a self-intersecting polygon), `boundary()`,
+  `simplifyPreserveTopology(tolerance)` — `simplify`'s shape-preserving cousin —
+  `isRing`, and the two XML encodings `toGML()` and `toKML(altitudeMode?)`. The
+  first three are GEOS-gated and answer "this build has no GEOS" without it, as the
+  rest do; `isRing`, `toGML` and `toKML` need no GEOS.
+- `gdal.bundled` is the one-line answer to "is this self-contained": `true` for the
+  bundled build that compiled GDAL and PROJ from source and linked them statically,
+  `false` for one that linked a system GDAL. It is `gdal-async`'s `bundled`.
 - `RasterBand.readChunks(options, onChunk)` is the async twin of `readChunksSync`:
   the same strip walk, run on the thread pool so a raster larger than memory does
   not hold the event loop either. Each strip is handed to `onChunk` from the JS
@@ -723,6 +745,11 @@ First working cut — everything here is new.
 
 ### Known gaps
 
+- The capabilities deliberately left out — the multidimensional model, Node
+  `Stream`s, band algebra and pixel functions, async getters, the native collection
+  classes and the geometry subclass family — are listed with their reasons in
+  [`docs/PARITY.md`](./docs/PARITY.md), the full boundary against `gdal-async`; the
+  additive gaps that remain are tiered there too.
 - Transformations are 2D, and a *geometry* transform is synchronous. A coordinate
   array has a threaded form (`transformPointsSync` / `transformPoints`), which is the
   bulk entry; `Geometry.transform` and `transformGeometry` stay synchronous because a
