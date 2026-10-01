@@ -370,6 +370,9 @@ const raw = band.readPixelsSync({ x: 0, y: 0, width: 256, height: 256 })
 // Or ask GDAL to convert while reading.
 band.readAsSync('Uint8')
 
+// A different thing: a *band* of another type, converted once into memory.
+const asFloat = band.asType('Float32')
+
 // Downsample. `resampling` is one of: nearest, bilinear, cubic, cubicspline,
 // lanczos, average, mode, gauss.
 band.readPixelsSync({ outWidth: 128, outHeight: 128, resampling: 'average' })
@@ -380,6 +383,9 @@ await band.readAs('Uint8')
 
 dataset.close()
 ```
+
+`readAs` converts on the way out; `asType` converts once and hands back a band — an
+in-memory copy, so it stands on its own after the source is closed.
 
 The readers hand back raw bytes, because one return type cannot be a
 `Float32Array` for one band and a `Uint16Array` for the next. To view them:

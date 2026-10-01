@@ -67,13 +67,22 @@ than filled with a second door:
 One caveat GDAL hands down rather than us: `rename` / `copyFiles` open the source as a
 **raster**, so a vector-only dataset (a bare `.gpkg`) is not recognized.
 
-### Tier 3 — needs a decision first (shape forks)
+### Tier 3 — `asType` shipped; the rest still needs a decision
+
+`band.asType(type)` is in: it converts a band to another sample type by translating it
+into a **new in-memory dataset** (`gdal_translate -of MEM -ot <type>`) and returns that
+band. It is *eager*, unlike the reference's VRT-backed band, and deliberately so: a VRT
+keeps a shared handle on the source, so reading it after `close()` is a use-after-free
+— measured, not assumed — and this binding's contract is that a closed dataset gives a
+clear error, never a crash.
+
+Still needing a decision:
 
 | `gdal-async` | why it is not a straight port |
 |---|---|
-| band algebra (`RasterBand.add`/`sub`/`mul`/… and `gdal.algebra`) and `band.asType()` | two possible implementations — VRT pixel functions, or `GDALRasterIO`'s type conversion — with different shapes. Write a short design before committing. |
-| Node `Stream`s (`pixels.createReadStream` / `createWriteStream`, `RasterReadStream`…) | overlaps `readChunks` / `readChunksSync`; the value is ecosystem compatibility, the cost is a second streaming model. |
-| the multidimensional model (`Group` / `MDArray` / `Attribute` / `Dimension`) | a whole subsystem; nothing in the current use surface needs it. |
+| band algebra (`RasterBand.add` / `sub` / `mul` / … and `gdal.algebra`) | needs VRT *pixel functions* — a C callback GDAL invokes from inside its raster loop — which is real machinery to get right under this binding's lock; the alternative, eager arithmetic into a MEM band, is a different shape again |
+| Node `Stream`s (`pixels.createReadStream` / `createWriteStream`, `RasterReadStream`…) | overlaps `readChunks` / `readChunksSync`; the value is ecosystem compatibility, the cost is a second streaming model |
+| the multidimensional model (`Group` / `MDArray` / `Attribute` / `Dimension`) | a whole subsystem; nothing in the current use surface needs it |
 
 ---
 

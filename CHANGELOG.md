@@ -6,6 +6,14 @@ First working cut — everything here is new.
 
 ### Binding
 
+- `RasterBand.asType(type)` converts a band to another sample type as a band of a new
+  **in-memory dataset** — `gdal_translate -of MEM -ot <type>`. The conversion is
+  materialised, so the result is independent of the source and stays readable after the
+  source is closed. It is eager where `gdal-async`'s is a lazy VRT, and that is a
+  deliberate trade: the VRT route was tried first and rejected, because a VRT keeps a
+  shared handle on the source and reading it after `close()` is a use-after-free — our
+  contract is a clear error from a closed dataset, never a crash. A mask band has no
+  translated counterpart, so it is refused.
 - `SpatialRef` gains the last of the parity checks and helpers: `isGeocentric`,
   `isLocal`, `isSameGeogCS(other)` / `isSameVertCS(other)`, `getAttrValue(name,
   child?)` and `autoIdentifyEPSG()`. The last is GDAL's own identification: it sets the

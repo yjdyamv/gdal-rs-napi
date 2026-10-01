@@ -322,6 +322,8 @@ band.fill(0)            // 整条波段写同一个值
 band.readPixelsSync({ x: 0, y: 0, width: 256, height: 256 })
 // 或让 GDAL 在读的时候转换
 band.readAsSync('Uint8')
+// 另一件事：得到一条**另一种类型的波段**，一次性转换进内存
+const asFloat = band.asType('Float32')
 // 降采样：resampling 取 nearest/bilinear/cubic/cubicspline/lanczos/average/mode/gauss
 band.readPixelsSync({ outWidth: 128, outHeight: 128, resampling: 'average' })
 
@@ -330,6 +332,9 @@ await band.readPixels()
 
 dataset.close()
 ```
+
+`readAs` 是在读出去的时候转换；`asType` 是转换一次、交给你一条波段 —— 一份内存里的拷贝，
+所以源关掉之后它依然可用。
 
 读取返回的是**原始字节**，因为一个返回类型不可能同时是 `Float32Array` 和
 `Uint16Array`。要看成分类型数组：
