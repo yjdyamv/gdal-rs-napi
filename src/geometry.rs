@@ -747,6 +747,75 @@ impl JsGeometry {
         }
     }
 
+    /// A point guaranteed to lie on the geometry, as a new `Point` — the
+    /// representative point `centroid` is not: a centroid can fall outside a
+    /// concave shape. Needs GEOS.
+    #[napi]
+    pub fn point_on_surface(&self) -> Result<JsGeometry> {
+        require_geos()?;
+        ensure_initialized();
+        let _guard = lock_gdal_shared();
+        unsafe { adopt(gdal_sys::OGR_G_PointOnSurface(self.handle())) }
+    }
+
+    /// The union of the parts of a collection, as one geometry, without a second
+    /// operand — `union` for a geometry that is already many. Needs GEOS.
+    #[napi]
+    pub fn unary_union(&self) -> Result<JsGeometry> {
+        require_geos()?;
+        ensure_initialized();
+        let _guard = lock_gdal_shared();
+        unsafe { adopt(gdal_sys::OGR_G_UnaryUnion(self.handle())) }
+    }
+
+    /// A concave hull around the geometry: the tight shape `convexHull` is too
+    /// generous to be. `ratio` runs from 0 (tightest) to 1 (the convex hull);
+    /// `allowHoles` defaults to false. Needs GEOS.
+    #[napi]
+    pub fn concave_hull(&self, ratio: f64, allow_holes: Option<bool>) -> Result<JsGeometry> {
+        require_geos()?;
+        if !(ratio.is_finite() && (0.0..=1.0).contains(&ratio)) {
+            return Err(bad_argument(format!(
+                "a concave hull ratio is between 0 and 1, got {ratio}"
+            )));
+        }
+        ensure_initialized();
+        let _guard = lock_gdal_shared();
+        unsafe {
+            adopt(gdal_sys::OGR_G_ConcaveHull(
+                self.handle(),
+                ratio,
+                allow_holes.unwrap_or(false),
+            ))
+        }
+    }
+
+    /// The geometry put into a canonical form — rings wound the same way, points
+    /// where GEOS would put them — as a new object. Same shape, standard spelling;
+    /// needed when two geometries are to be compared byte for byte. Requires GEOS.
+    #[napi]
+    pub fn normalize(&self) -> Result<JsGeometry> {
+        require_geos()?;
+        ensure_initialized();
+        let _guard = lock_gdal_shared();
+        unsafe { adopt(gdal_sys::OGR_G_Normalize(self.handle())) }
+    }
+
+    /// The geometry snapped to a `grid_size` precision grid, as a new object — how
+    /// points an epsilon apart are made to be the same point. Needs GEOS.
+    #[napi]
+    pub fn set_precision(&self, grid_size: f64) -> Result<JsGeometry> {
+        require_geos()?;
+        if !(grid_size.is_finite() && grid_size >= 0.0) {
+            return Err(bad_argument(format!(
+                "a precision grid size has to be a finite number and not negative, got {grid_size}"
+            )));
+        }
+        ensure_initialized();
+        let _guard = lock_gdal_shared();
+        unsafe { adopt(gdal_sys::OGR_G_SetPrecision(self.handle(), grid_size, 0)) }
+    }
+
     /// The geometry as GML — the XML encoding OGR can also read. No GEOS needed.
     #[napi(js_name = "toGML")]
     pub fn to_gml(&self) -> Result<String> {

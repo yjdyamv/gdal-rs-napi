@@ -273,6 +273,11 @@ test('the GEOS operations answer, or say why they cannot', () => {
       () => a.makeValid(),
       () => a.boundary(),
       () => a.simplifyPreserveTopology(0.1),
+      () => a.pointOnSurface(),
+      () => a.unaryUnion(),
+      () => a.concaveHull(0.5),
+      () => a.normalize(),
+      () => a.setPrecision(1),
     ]) {
       assert.throws(call, /no GEOS/)
     }
@@ -302,6 +307,13 @@ test('the GEOS operations answer, or say why they cannot', () => {
   assert.equal(a.makeValid().isValid(), true)
   assert.equal(typeof a.boundary().type, 'string')
   assert.equal(a.simplifyPreserveTopology(0.1).type, 'Polygon')
+
+  // The operations that reshape a geometry into a new one.
+  assert.equal(a.pointOnSurface().type, 'Point')
+  assert.ok(a.unaryUnion().area() > 0)
+  assert.equal(a.concaveHull(0.5).type, 'Polygon')
+  assert.ok(Math.abs(a.normalize().area() - a.area()) < 1e-9)
+  assert.equal(a.setPrecision(1).type, 'Polygon')
 })
 
 test('rings, GML and KML are the questions and encodings that need no GEOS', () => {
