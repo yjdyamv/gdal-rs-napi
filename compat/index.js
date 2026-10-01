@@ -1307,6 +1307,11 @@ let driversCollection = null
 const Gdal = {
   ...geometryFactories,
   ...GDT,
+  // ... and then the same names again, from `gdal_sys` on the Rust side. The hand-
+  // written `GDT` table above predates that door and is kept only because the pixel
+  // code maps names through it; where the two disagree, the one read out of the
+  // headers this build links is the one that wins.
+  ...native.numericConstants(),
 
   open,
   openAsync,

@@ -26,6 +26,7 @@
 mod async_getter;
 mod band;
 mod config;
+mod constants;
 mod dataset;
 mod driver;
 mod dtype;

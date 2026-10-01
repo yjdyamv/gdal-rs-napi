@@ -238,6 +238,34 @@ test('vsimem is the memory file system under the reference\'s names', () => {
   gdal.vsimem.release(anonymous)
 })
 
+test('the numeric vocabularies come from the headers this build links', () => {
+  // The values are read out of `gdal_sys` in `src/constants.rs`, never written out by
+  // hand. What is pinned here are GDAL's own ABI values, so a table wired to the wrong
+  // enum shows up as a failing test rather than as a silently mis-typed field.
+  assert.equal(gdal.wkbPoint, 1)
+  assert.equal(gdal.OFTInteger, 0)
+  assert.equal(gdal.OFTReal, 2)
+  assert.equal(gdal.OFTString, 4)
+  assert.equal(gdal.OFTInteger64, 12)
+  assert.equal(gdal.GCI_RedBand, 3)
+  assert.equal(gdal.GRA_Bilinear, 1)
+  assert.equal(gdal.GRA_Lanczos, 4)
+  assert.equal(gdal.GPI_RGB, 1)
+  assert.equal(gdal.OJLeft, 1)
+  assert.equal(gdal.CE_Failure, 3)
+
+  // ... and where this binding has a *derived* answer for the same code, the two have
+  // to agree: `toDataType` reads the code out of the linked GDAL as well.
+  assert.equal(gdal.GDT_Byte, native.toDataType('Uint8'))
+  assert.equal(gdal.GDT_Float32, native.toDataType('Float32'))
+  assert.equal(gdal.GDT_Float64, native.toDataType('Float64'))
+
+  // The families `gdal-sys` does not bind are absent rather than guessed — see the
+  // note on `numericConstants()` in `src/constants.rs`.
+  assert.equal(gdal.OLCRandomRead, undefined)
+  assert.equal(gdal.CPLE_AppDefined, undefined)
+})
+
 test('the re-exports answer what the main entry point answers', () => {
   // Same objects where the main entry point already has one, so there is nothing to
   // keep in step.
