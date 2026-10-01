@@ -6,6 +6,34 @@ First working cut — everything here is new.
 
 ### Binding
 
+- **VRT pixel functions** — a derived VRT band whose pixels a JavaScript function
+  computes. `gdal.addPixelFunc(name, fn)` registers one with GDAL, `wrapVRT` writes the
+  VRT that uses it, and `toPixelFunc` / `createPixelFunc` / `createPixelFuncWithArgs`
+  build one from a function of a single pixel:
+  ```js
+  gdal.addPixelFunc('espy', gdal.createPixelFunc((t, td) => 125 * (t - td)))
+  const vrt = gdal.wrapVRT({ bands: [{ sources: [temperature, dewpoint], pixelFunc: 'espy' }] })
+  gdal.openSync(vrt).band(0).readPixelsSync()
+  ```
+  The function has GDAL's own shape — `(sources, buffer, args)`, typed arrays in and
+  the output array to fill — and runs on the JS thread, because that is the only thread
+  that can call back into JavaScript. A **thread-pool read is refused with an error
+  rather than risking a deadlock**: it would have to hand the call to an event loop that
+  may be blocked on the lock the worker is holding. Not calling back into this binding
+  from inside one is the rule `onProgress` already carries, for the same reason. GDAL
+  cannot unregister a pixel function, so a name and its slot last for the life of the
+  process, and there are 32 of them.
+- `gdal.wrapVRT(descriptor)` builds a VRT dataset from bands — the `gdalbuildvrt` idea,
+  with a pixel function per band — and answers it as **XML text**, which is a dataset
+  name `gdal.open` takes directly, so nothing is written to disk. The descriptor is
+  gdal-async's: `{ bands: [{ sources, pixelFunc?, pixelFuncArgs?, dataType?,
+  sourceTransferType?, description? }] }`. A band with no `pixelFunc` is a plain copy of
+  its source; one with more than one source needs a `pixelFunc` to combine them. A
+  source band has to be readable **by path**, and GDAL spells the sample types
+  differently inside a VRT (`Uint8` is `Byte` there) — which is translated for you.
+- `RasterBand.dataset` is the dataset a band belongs to — gdal-async's `band.ds`. The
+  same dataset rather than a copy, which is what `wrapVRT` needs to point a VRT back at
+  its sources.
 - The **multidimensional model** is in — GDAL's second data model, which is what NetCDF,
   HDF5 and Zarr look like through it. `Dataset.root` is a `Group`, reached with
   `open(path, { multidimensional: true })`; `Group` / `MDArray` / `Attribute` /

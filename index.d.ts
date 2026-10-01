@@ -246,3 +246,70 @@ export declare function calcAsync(
   fn: (...pixels: number[]) => number,
   options?: CalcOptions,
 ): Promise<void>
+
+/**
+ * A pixel function in GDAL's own shape. `sources` holds one typed array per source
+ * band — read as the source's own sample type unless the VRT asks for another — and
+ * `buffer` is the output band's array, which the function fills. `args` is the VRT's
+ * `<PixelFunctionArguments>`, as strings, or `undefined` when there are none.
+ *
+ * It runs on the JS thread while GDAL reads, so it must not call back into this
+ * binding: the read holds the process-wide lock while it waits.
+ */
+export type PixelFunction = (
+  sources: ArrayBufferView[],
+  buffer: ArrayBufferView,
+  args: Record<string, string> | undefined,
+) => void
+
+/**
+ * Register `fn` with GDAL under `name`, so that a VRT whose `<PixelFunctionType>` is
+ * `name` computes its pixels with it. Returns the name.
+ *
+ * GDAL cannot unregister a pixel function, so a name and its slot last for the life of
+ * the process and there are 32 of them; registering the same name twice throws.
+ */
+export declare function addPixelFunc(name: string, fn: PixelFunction): string
+
+/** `fn` in the shape `addPixelFunc` takes, checked. A JS function already is one. */
+export declare function toPixelFunc(fn: PixelFunction): PixelFunction
+
+/**
+ * A pixel function from a function of one pixel: `fn` gets one argument per source
+ * band, in order, and what it returns is written into the output.
+ */
+export declare function createPixelFunc(fn: (...pixels: number[]) => number): PixelFunction
+
+/** The same, with the VRT's `<PixelFunctionArguments>` passed first. */
+export declare function createPixelFuncWithArgs(
+  fn: (args: Record<string, string>, ...pixels: number[]) => number,
+): PixelFunction
+
+/** One band of a `wrapVRT` descriptor. */
+export interface VRTBandDescriptor {
+  /** The bands this band is computed from, in the order the function will see them. */
+  sources: import('./binding').RasterBand[]
+  /** The name of a registered or GDAL built-in pixel function, e.g. `'inv'`. */
+  pixelFunc?: string
+  /** Its `<PixelFunctionArguments>`. */
+  pixelFuncArgs?: Record<string, string | number>
+  /** The derived band's sample type. Default: the first source's. */
+  dataType?: string
+  /** What the sources are read as before the function sees them. */
+  sourceTransferType?: string
+  /** The derived band's description. Default: the first source's. */
+  description?: string
+}
+
+/** What `wrapVRT` is given. */
+export interface VRTDescriptor {
+  bands: VRTBandDescriptor[]
+}
+
+/**
+ * The VRT that reads `desc.bands` from their sources, as XML text — which is a dataset
+ * name GDAL understands, so nothing is written to disk and `gdal.openSync` takes it
+ * directly. A band with a `pixelFunc` becomes a derived band; one without is a copy of
+ * its source.
+ */
+export declare function wrapVRT(descriptor: VRTDescriptor): string

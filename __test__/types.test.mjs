@@ -15,7 +15,17 @@ import asyncMethods from '../async-methods.js'
 const gdal = createRequire(import.meta.url)('..')
 
 /** Names the JavaScript shell adds that `binding.d.ts` does not declare. */
-const SHELL_ADDITIONS = new Set(['const', 'RasterMuxStream', 'RasterTransform', 'calcAsync'])
+const SHELL_ADDITIONS = new Set([
+  'const',
+  'RasterMuxStream',
+  'RasterTransform',
+  'calcAsync',
+  'addPixelFunc',
+  'toPixelFunc',
+  'createPixelFunc',
+  'createPixelFuncWithArgs',
+  'wrapVRT',
+])
 
 /** `Function`'s own properties, which are not members anyone declares. */
 const FUNCTION_BUILTINS = new Set(['length', 'name', 'arguments', 'caller', 'prototype'])

@@ -33,7 +33,7 @@
 | WS-2 Driver/Dataset 对象模型 | ✅ 已完成 | `Driver` 对象（+`createCopy`）、`dataset.driver` 对象化、`open({drivers})`、`Dataset.description`/`rasterSize`/`getFileList`、`setProjection` 收 `SpatialRef`。集合类**不做**，见下 |
 | WS-3 Feature/Field 对象模型 | ✅ 已完成 | `layer.field(name)`/`addField`/`deleteField`/`reorderFields`、`FieldInfo` 全量定义、`layer.features()`（异步）、`layer.setSpatialFilter(geom)`、`layer.defn`（`FeatureDefn`）、`layer.getFeature(fid)` → `Feature`（`fields` 直写穿、`geometry`、`defn`、`toObject`） |
 | WS-4 异步人体工学 | ✅ 已完成 | `FeatureCursor` 已可用 `for await`（外壳加的，读的仍是同一个 `read()`）；异步错误已带 `err.code`（外壳从消息前缀提取）；`CoordinateTransform.transformPoints` 已跑在线程池上（点数组，百万点不必调用方分块，同步版更名 `transformPointsSync`）；`band.readChunks` 是 `readChunksSync` 的异步孪生。**不做**（非目标，理由见下）：`Dataset.bands/layers` 的异步迭代、异步 getter、`eventLoopWarning` |
-| WS-7 兼容层 | ✅ 已完成 | `gdal-rs-napi/compat` 已落地：1-based 索引、`xxx()`/`xxxAsync()`（含 node 回调形态）、setter 赋值（`noDataValue`/`geoTransform`/`srs`）、`Driver` 与各集合、`Feature`（`fields.toObject`/`toArray`、可赋值 `geometry`）、`SpatialReference`、几何类族（含 `instanceof`、`toWKT`/`toJSON`/`get*`）。**不做**：像素函数，以及本绑定自己定形状的波段附加物——`colorTable`/`mask`/流（形状在主入口上，不在兼容层包装里）。多维模型与 `calcAsync` 也已在主入口落地，但 compat **没有**给它们做重包装。 |
+| WS-7 兼容层 | ✅ 已完成 | `gdal-rs-napi/compat` 已落地：1-based 索引、`xxx()`/`xxxAsync()`（含 node 回调形态）、setter 赋值（`noDataValue`/`geoTransform`/`srs`）、`Driver` 与各集合、`Feature`（`fields.toObject`/`toArray`、可赋值 `geometry`）、`SpatialReference`、几何类族（含 `instanceof`、`toWKT`/`toJSON`/`get*`）。**不做**：本绑定自己定形状的波段附加物——`colorTable`/`mask`/流（形状在主入口上，不在兼容层包装里）。多维模型、`calcAsync` 与 VRT 像素函数也已在主入口落地，但 compat **没有**给它们做重包装。 |
 
 ### 一个修正：`gdal.const` 应该是字符串词汇，不是 GDAL 数字码
 
@@ -106,9 +106,8 @@ GDAL 的数字码属于兼容层（WS-7），那里 `gdal-async` 的形状才是
 ## A. 差距矩阵
 
 > **本矩阵已按当前状态刷新**。仍标 ❌ 的只剩两类，且逐条给了理由：**做不到**（GDAL 的 C API
-> 没有那个函数）与**已定案的取舍/非目标**（异步 getter、原生集合对象形态、VRT 像素
-> 函数、`eventLoopWarning`）。🟡 表示能力齐、只是形状或拼法与 `gdal-async` 不同（那层形状归
-> `compat`）。
+> 没有那个函数）与**已定案的取舍/非目标**（异步 getter、原生集合对象形态、`eventLoopWarning`）。
+> 🟡 表示能力齐、只是形状或拼法与 `gdal-async` 不同（那层形状归 `compat`）。
 
 图例：✅ 有；🟡 有但形状不同；❌ 做不到 / 已定案不做。
 
@@ -227,7 +226,7 @@ GDAL 的数字码属于兼容层（WS-7），那里 `gdal-async` 的形状才是
 | `sieveFilter` / `fillNodata` / `checksumImage` | ✅ |
 | `suggestedWarpOutput` | ✅ |
 | `calcAsync`（`gdal_calc.py` 替代） | ✅ `calcAsync(inputs, output, fn, options?)`，另加它底下的 `RasterMuxStream` / `RasterTransform`；回调名用本绑定的 `onProgress` |
-| `addPixelFunc` / `createPixelFunc` / `toPixelFunc`（VRT 像素函数） | ❌ **非目标**（需要 GDAL 在栅格循环里回调的 C 函数指针；波段代数改为 eager 实现，见 A3） |
+| `addPixelFunc` / `createPixelFunc` / `toPixelFunc`（VRT 像素函数） | ✅ 已落地：Rust 侧 trampoline 池（GDAL 回调只给函数指针、不给名字）+ JS 侧函数表；另有 `createPixelFuncWithArgs` 与 `wrapVRT`。**同步读限定**：线程池读取会明确报错（否则要与 worker 持有的锁死锁） |
 | `toDataType` / `fromDataType` | ✅ 收/发本绑定的字符串词汇（也接受 GDAL 拼写） |
 | `decToDMS` | ✅ |
 
@@ -242,6 +241,10 @@ GDAL 的数字码属于兼容层（WS-7），那里 `gdal-async` 的形状才是
 - `RasterReadStream` / `RasterWriteStream` —— ✅ 后由外壳（`index.js`）在分块读写之上补上：
   `band.createReadStream()` / `createWriteStream()`；`RasterMuxStream` / `RasterTransform`
   与它们之上的 `calcAsync` 也已补齐
+- VRT 像素函数 —— ✅ `addPixelFunc` / `toPixelFunc` / `createPixelFunc` /
+  `createPixelFuncWithArgs` / `wrapVRT`。GDAL 回调只给函数指针、不给名字，所以 Rust 侧用一组
+  trampoline（编译期槽位）+ 一个 JS 分发表；**JS 函数只在同步读时被求值**，线程池读取明确报错
+  （否则会与 worker 持有的锁死锁）。GDAL 自带的像素函数（`inv` / `sum` / …）经 `wrapVRT` 直接可用
 
 ### A8. 异步人体工学（影响服务端可用性的核心差距）
 
@@ -436,8 +439,9 @@ compat 层用测试锁住形状即可。它的价值是——**让 `gdal-async` 
 - 发布 `gdal-rs-napi/compat`；用 `gdal-async` 的真实示例当验收测试。
 
 **WS-8 · 明确不做（记为设计取舍，写进 README）**
-- VRT 像素函数（`addPixelFunc` / `createPixelFunc` / `toPixelFunc`）
-（Node Streams、波段代数、多维模型与 `calcAsync` 后来补上了，见 [`docs/PARITY.md`](./docs/PARITY.md)。）
+- 只剩 A8 那三条：异步 getter、原生集合对象形态、`eventLoopWarning`。
+（Node Streams、波段代数、多维模型、`calcAsync` 与 VRT 像素函数后来都补上了，见
+[`docs/PARITY.md`](./docs/PARITY.md)。）
 
 ### C3. 顺序与依赖
 

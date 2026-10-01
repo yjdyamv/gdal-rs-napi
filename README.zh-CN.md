@@ -488,6 +488,50 @@ mux.pipe(transform).pipe(output.band(0).createWriteStream())
 像素都保持对齐；输入长度不一致时它会以错误摧毁流，而不是给出一个短的答案。`RasterTransform` 是
 逐元素的那一半；要做算术以外的事情，就用 `new Transform({ objectMode: true, transform })`。
 
+### 派生波段 —— VRT 像素函数
+
+`calcAsync` 是**急切的**合并方式：一次算完，写出一个真实数据集。另一条路是 GDAL 自己的：
+*派生* VRT 波段，边读边算，由 GDAL 调用一个函数来完成。
+
+```js
+gdal.addPixelFunc('espy', gdal.createPixelFunc((t, td) => 125 * (t - td)))
+
+const vrt = gdal.wrapVRT({
+  bands: [{ sources: [temperature, dewpoint], pixelFunc: 'espy' }],
+})
+const cloudBase = gdal.openSync(vrt)          // 不落盘
+cloudBase.band(0).readPixelsSync()
+```
+
+`wrapVRT` 返回的是 VRT 的 **XML 文本**，而它本身就是 GDAL 认的数据集名，所以整个过程都在内存里。
+描述符沿用 gdal-async 的形状 —— `{ bands: [{ sources, pixelFunc?, pixelFuncArgs?,
+dataType?, sourceTransferType?, description? }] }`；没有 `pixelFunc` 的波段就是源的直接拷贝，
+所以 `wrapVRT` 同时也是通用的「多波段合成一条 VRT」入口。
+
+给 `addPixelFunc` 传函数有三种写法：
+
+- `gdal.createPixelFunc((a, b) => a + b)` —— 面向**单个像素**，按给出的顺序，每条源波段一个实参。
+- `gdal.createPixelFuncWithArgs((args, a, b) => Number(args.k) + a + b)` —— 同上，但 VRT 的
+  `pixelFuncArgs` 作为第一个参数传入。GDAL 给过来的是字符串，数字要自己转。
+- `gdal.toPixelFunc(fn)` —— GDAL 自己的形状 `(sources, buffer, args)`，适合「逐个像素」粒度不
+  对路的时候。`sources` 是每条源波段一个类型化数组，按该波段自身样本类型读入；往 `buffer` 里写
+  就是这条波段的答案。
+
+`pixelFunc` 也可以直接点名 GDAL 自带的函数 —— `inv`、`sum`、`diff`、`mul`、`mean`、`min`、
+`max` 等 —— 那些完全不需要注册。
+
+代价与边界：
+
+- **函数跑在 JS 线程上**，因为只有那个线程能回调进 JavaScript。GDAL 在自己的栅格循环里按块调用它。
+- **线程池读取会被拒绝**：`readPixelsSync()` 等阻塞面可用，派生波段上的 `readPixels()` 会抛错，
+  并说明原因。另一条路是把调用交给事件循环，而它可能正卡在 worker 持有的那把锁上——那是死锁，
+  不是报错。
+- **不要在回调里回头调用本库**：读取期间**攥着全局锁**在等你的答案，和 `onProgress` 是同一条
+  规矩、同一个理由。
+- **源波段必须能按路径读回**（VRT 里写的是文件名）。本进程里仍以 update 模式打开着的数据集，其
+  波段经 VRT 读回来是全零 —— GDAL 自带像素函数也一样 —— 所以先把写入端关掉再当源用。
+- **GDAL 无法注销像素函数**：名字和槽位随进程存续，一共 32 个。
+
 写入、创建、地理参考：
 
 ```js

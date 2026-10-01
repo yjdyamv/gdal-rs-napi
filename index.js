@@ -635,6 +635,273 @@ async function calcAsync(inputs, output, fn, options = {}) {
   })
 }
 
+// ---- VRT pixel functions -------------------------------------------------
+//
+// A derived VRT band computes its pixels from its sources through a function GDAL
+// calls while it reads. `addPixelFunc` gives it one written in JavaScript.
+//
+// The trampoline is in Rust (`src/pixel_func.rs`) and needs no looking at here,
+// except for one thing: GDAL calls back with a bare function pointer and no name, so
+// each registration owns a *slot* in a fixed pool, and the slot is all the trampoline
+// knows. The function itself lives in this map, and the global below is what the
+// trampoline calls to reach it.
+
+/** slot → the function registered there. */
+const pixelFuncs = new Map()
+/** name → slot, so a name cannot be taken twice. */
+const pixelFuncSlots = new Map()
+
+/**
+ * What the Rust trampoline calls. Not part of the API: it is reached by property name
+ * from C, which is why it is a global rather than a local.
+ */
+globalThis.__gdalRsNapiPixelFunc = function pixelFuncDispatch(slot, sources, buffer, args) {
+  const fn = pixelFuncs.get(slot)
+  if (!fn) throw new Error(`no pixel function is registered in slot ${slot}`)
+  fn(sources, buffer, args)
+}
+
+/**
+ * Register `fn` with GDAL under `name`, so a VRT whose `<PixelFunctionType>` is
+ * `name` computes its pixels with it.
+ *
+ * `fn` has GDAL's own shape — `(sources, buffer, args)`, where `sources` is an array
+ * of typed arrays, one per source band, `buffer` is the output band's array and
+ * `args` is the VRT's `<PixelFunctionArguments>` as strings. Writing into `buffer`
+ * is what the band reads back. `createPixelFunc` is the friendlier way to get one.
+ *
+ * GDAL cannot unregister a pixel function, so a name and its slot last for the life
+ * of the process, and there are 32 of them.
+ */
+function addPixelFunc(name, fn) {
+  if (typeof name !== 'string' || name === '') {
+    throw new TypeError('a pixel function needs a name')
+  }
+  if (typeof fn !== 'function') {
+    throw new TypeError('a pixel function has to be a function')
+  }
+  if (pixelFuncSlots.has(name)) {
+    throw new Error(`a pixel function called ${name} is already registered`)
+  }
+  const slot = binding.registerPixelFunc(name)
+  pixelFuncs.set(slot, fn)
+  pixelFuncSlots.set(name, slot)
+  return name
+}
+
+/**
+ * A function in the shape `addPixelFunc` takes. A JavaScript function already is one
+ * — this validates it, and is the name `createPixelFunc` is built on.
+ */
+function toPixelFunc(fn) {
+  if (typeof fn !== 'function') {
+    throw new TypeError('a pixel function has to be a function')
+  }
+  return fn
+}
+
+/** The JavaScript values of one pixel, one per source, in order. */
+function pixelArguments(sources, index, into) {
+  for (let k = 0; k < sources.length; k++) into[k] = sources[k][index]
+  return into
+}
+
+/**
+ * A pixel function from a function of *one pixel*: `fn` is called with one argument
+ * per source band, in the order they were given to `wrapVRT`, and what it returns is
+ * written into the output band.
+ *
+ * The values are whatever the arrays hold — the sources are read as the band's own
+ * sample type unless the VRT asks for another — so `fn` sees numbers.
+ */
+function createPixelFunc(fn) {
+  if (typeof fn !== 'function') throw new TypeError('createPixelFunc needs a function')
+  return function pixelFunc(sources, buffer) {
+    const args = new Array(sources.length)
+    for (let i = 0; i < buffer.length; i++) {
+      buffer[i] = fn(...pixelArguments(sources, i, args))
+    }
+  }
+}
+
+/**
+ * The same, with the VRT's `<PixelFunctionArguments>` passed first:
+ * `(args, a, b) => args.k * (a + b)`. GDAL hands those over as strings, so a number
+ * has to be converted.
+ */
+function createPixelFuncWithArgs(fn) {
+  if (typeof fn !== 'function') throw new TypeError('createPixelFuncWithArgs needs a function')
+  return function pixelFunc(sources, buffer, args) {
+    const values = new Array(sources.length)
+    const staticArgs = args ?? {}
+    for (let i = 0; i < buffer.length; i++) {
+      buffer[i] = fn(staticArgs, ...pixelArguments(sources, i, values))
+    }
+  }
+}
+
+/**
+ * GDAL's spelling of a sample type for the VRT vocabulary. Its XML predates this
+ * binding's names for the same four types, so `Uint8` has to be written `Byte`, and a
+ * VRT that says `Uint8` is refused outright.
+ */
+const VRT_TYPES = new Map([
+  ['Uint8', 'Byte'],
+  ['Uint16', 'UInt16'],
+  ['Uint32', 'UInt32'],
+  ['Uint64', 'UInt64'],
+])
+
+function vrtType(dataType) {
+  return VRT_TYPES.get(dataType) ?? dataType
+}
+
+/** Text or attribute for XML: the five characters that cannot stand as themselves. */
+function xmlEscape(value, attribute = false) {
+  const text = String(value)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+  return attribute ? text.replace(/"/g, '&quot;') : text
+}
+
+function xmlElement(name, attributes, children) {
+  const written = Object.entries(attributes ?? {})
+    .filter(([, value]) => value !== undefined && value !== null)
+    .map(([key, value]) => ` ${key}="${xmlEscape(value, true)}"`)
+    .join('')
+  if (children === undefined) return `<${name}${written}/>`
+  return `<${name}${written}>${children}</${name}>`
+}
+
+function xmlText(name, value) {
+  return xmlElement(name, undefined, xmlEscape(value))
+}
+
+function xmlMetadata(metadata) {
+  const keys = Object.keys(metadata ?? {})
+  if (keys.length === 0) return ''
+  return xmlElement(
+    'Metadata',
+    undefined,
+    keys.map((key) => xmlElement('MDI', { key }, xmlEscape(metadata[key]))).join(''),
+  )
+}
+
+/** The path a VRT has to name to read a source band back. */
+function sourcePath(dataset) {
+  const files = dataset.getFileList()
+  const path = files.length > 0 ? files[0] : dataset.path
+  // Forward slashes: a VRT is read by GDAL's own XML parser, and a Windows path's
+  // backslashes do not survive it intact.
+  return path.replaceAll('\\', '/')
+}
+
+/**
+ * Writes a VRT dataset that reads `desc.bands` from their sources, applying a pixel
+ * function to each band that names one.
+ *
+ * ```js
+ * gdal.addPixelFunc('espy', gdal.createPixelFunc((t, td) => 125 * (t - td)))
+ * const dataset = gdal.openSync(gdal.wrapVRT({
+ *   bands: [{ sources: [temperature, dewpoint], pixelFunc: 'espy' }],
+ * }))
+ * ```
+ *
+ * Returns the VRT as XML text, which is a dataset name GDAL understands — that is
+ * what gdal-async returns too, and it means nothing is written to disk. The pixel
+ * function may be one of GDAL's own (`inv`, `sum`, `diff`, `mul`, …) or one this
+ * process registered.
+ *
+ * Every source band has to be from a dataset that can be read back by path.
+ */
+function wrapVRT(descriptor) {
+  const bands = descriptor?.bands
+  if (!Array.isArray(bands) || bands.length === 0) {
+    throw new TypeError('a VRT descriptor needs a bands array')
+  }
+  const first = bands[0]?.sources?.[0]
+  if (!first?.dataset) {
+    throw new TypeError('every band needs at least one source RasterBand')
+  }
+
+  const frame = first.dataset
+  // `Dataset.rasterSize` is `{ width, height }`; a band's own `size` is an array.
+  const { width, height } = frame.rasterSize
+  const root = []
+  const srs = frame.spatialRef
+  if (srs) {
+    root.push(xmlText('SRS', srs.authority ?? srs.wkt))
+  }
+  const geoTransform = frame.geoTransform
+  if (geoTransform) {
+    root.push(xmlText('GeoTransform', geoTransform.join(', ')))
+  }
+  const frameMetadata = xmlMetadata(frame.metadata())
+  if (frameMetadata) root.push(frameMetadata)
+
+  let index = 1
+  for (const band of bands) {
+    const sources = band?.sources
+    if (!Array.isArray(sources) || sources.length === 0) {
+      throw new TypeError('every band needs at least one source RasterBand')
+    }
+    if (!band.pixelFunc && sources.length > 1) {
+      throw new TypeError('a band with more than one source needs a pixel function to combine them')
+    }
+    const first = sources[0]
+    const body = []
+    const description = band.description ?? first.description
+    if (description) body.push(xmlText('Description', description))
+    if (band.pixelFunc) body.push(xmlText('PixelFunctionType', band.pixelFunc))
+    if (band.pixelFuncArgs) body.push(xmlElement('PixelFunctionArguments', band.pixelFuncArgs))
+    if (band.sourceTransferType) {
+      body.push(xmlText('SourceTransferType', vrtType(band.sourceTransferType)))
+    }
+    const metadata = xmlMetadata(first.metadata())
+    if (metadata) body.push(metadata)
+    for (const source of sources) {
+      // The source's whole extent onto the band's whole extent. GDAL can work this
+      // out for itself, but saying it is what its own VRT writer does, and an
+      // explicit rectangle leaves no room for a source to be read as covering
+      // nothing.
+      const [sourceWidth, sourceHeight] = source.size
+      body.push(
+        xmlElement('SimpleSource', undefined, [
+          xmlElement('SourceFilename', { relativeToVRT: 0 }, xmlEscape(sourcePath(source.dataset))),
+          xmlText('SourceBand', source.id),
+          xmlElement('SrcRect', { xOff: 0, yOff: 0, xSize: sourceWidth, ySize: sourceHeight }),
+          xmlElement('DstRect', { xOff: 0, yOff: 0, xSize: width, ySize: height }),
+        ].join('')),
+      )
+    }
+    root.push(
+      xmlElement(
+        'VRTRasterBand',
+        {
+          dataType: vrtType(band.dataType ?? first.dataType),
+          band: index,
+          subClass: band.pixelFunc ? 'VRTDerivedRasterBand' : undefined,
+        },
+        body.join(''),
+      ),
+    )
+    index += 1
+  }
+
+  return `<?xml version="1.0"?>\n${xmlElement(
+    'VRTDataset',
+    { rasterXSize: width, rasterYSize: height },
+    root.join(''),
+  )}`
+}
+
+binding.addPixelFunc = addPixelFunc
+binding.toPixelFunc = toPixelFunc
+binding.createPixelFunc = createPixelFunc
+binding.createPixelFuncWithArgs = createPixelFuncWithArgs
+binding.wrapVRT = wrapVRT
+
 binding.RasterMuxStream = RasterMuxStream
 binding.RasterTransform = RasterTransform
 binding.calcAsync = calcAsync

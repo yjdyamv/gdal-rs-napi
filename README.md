@@ -561,6 +561,58 @@ end at different lengths destroy the stream with an error rather than answering 
 A `RasterTransform` is the elementwise half, and `new Transform({ objectMode: true,
 transform })` is the way to do anything beyond arithmetic.
 
+### Derived bands — VRT pixel functions
+
+`calcAsync` is the **eager** way to combine bands: it computes everything once and
+writes a real dataset. The other way is GDAL's own: a *derived* VRT band, which computes
+its pixels as it is read, through a function GDAL calls.
+
+```js
+gdal.addPixelFunc('espy', gdal.createPixelFunc((t, td) => 125 * (t - td)))
+
+const vrt = gdal.wrapVRT({
+  bands: [{ sources: [temperature, dewpoint], pixelFunc: 'espy' }],
+})
+const cloudBase = gdal.openSync(vrt)          // nothing is written to disk
+cloudBase.band(0).readPixelsSync()
+```
+
+`wrapVRT` answers the VRT as **XML text**, which is a dataset name GDAL understands, so
+the whole thing stays in memory. Its descriptor is gdal-async's —
+`{ bands: [{ sources, pixelFunc?, pixelFuncArgs?, dataType?, sourceTransferType?,
+description? }] }` — and a band with no `pixelFunc` is a plain copy of its source, which
+makes `wrapVRT` the general "bands into one VRT" call too.
+
+Three ways to give `addPixelFunc` a function:
+
+- `gdal.createPixelFunc((a, b) => a + b)` — a function of **one pixel**, called with one
+  argument per source band, in the order the bands were given.
+- `gdal.createPixelFuncWithArgs((args, a, b) => Number(args.k) + a + b)` — the same, with
+  the VRT's `pixelFuncArgs` passed first. GDAL hands those over as strings.
+- `gdal.toPixelFunc(fn)` — GDAL's own shape, `(sources, buffer, args)`, for when one pixel
+  at a time is the wrong grain. `sources` is one typed array per source band, read as the
+  band's own sample type; write into `buffer` and that is the band's answer.
+
+`pixelFunc` may also name a function GDAL itself has — `inv`, `sum`, `diff`, `mul`,
+`mean`, `min`, `max` and the rest — which needs no registration at all.
+
+What it costs, and what it will not do:
+
+- **The function runs on the JS thread**, because that is the only thread that can call
+  back into JavaScript. GDAL calls it from inside its own raster loop, once per chunk.
+- **A thread-pool read is refused.** `readPixelsSync()` and the rest of the blocking
+  surface work; `readPixels()` on a derived band throws, naming the reason. The
+  alternative is handing the call to an event loop that may be blocked on the lock the
+  worker holds — a deadlock rather than an error.
+- **Do not call back into this binding from inside one.** The read holds the process-wide
+  lock while it waits for your answer, exactly as it does for `onProgress`.
+- **A source band has to be readable by path**, since the VRT names the file. A band of a
+  dataset that is still open for update in this process reads back as zeros through a
+  VRT — GDAL's own built-in pixel functions included — so close a writer before using it
+  as a source.
+- **GDAL cannot unregister a pixel function.** A name and its slot last for the life of
+  the process, and there are 32 of them.
+
 Writing and creating:
 
 ```js

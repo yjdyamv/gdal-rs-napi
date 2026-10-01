@@ -18,7 +18,7 @@ use napi::bindgen_prelude::*;
 use napi::threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode};
 use napi_derive::napi;
 
-use crate::dataset::{CreateOptions, DatasetRef, with_two};
+use crate::dataset::{CreateOptions, DatasetRef, JsDataset, with_two};
 use crate::dtype::DataType;
 use crate::error::{GdalErrorCode, IntoGdalResult, Result, bad_argument, into_status_error, split};
 use crate::raster_io::{
@@ -1085,6 +1085,20 @@ impl JsRasterBand {
             dataset: self.dataset.clone(),
             kind: self.kind,
         })
+    }
+
+    /// The dataset this band belongs to.
+    ///
+    /// A band is a window onto a dataset, and some things can only be asked of the
+    /// whole: which files it is made of, its size, its CRS. `wrapVRT` is the caller
+    /// that needs it, to point a VRT back at its sources.
+    #[napi(getter)]
+    pub fn dataset(&self) -> Result<JsDataset> {
+        ensure_initialized();
+        let path = self
+            .dataset
+            .with_exclusive(|dataset| dataset.description().gdal())?;
+        Ok(JsDataset::wrap_ref(self.dataset.clone(), path))
     }
 
     /// This band as a multidimensional array — GDAL's `GDALRasterBandAsMDArray`,

@@ -33,6 +33,7 @@ mod fs;
 mod geometry;
 mod json;
 mod multidim;
+mod pixel_func;
 mod programs;
 mod progress;
 mod raster_io;

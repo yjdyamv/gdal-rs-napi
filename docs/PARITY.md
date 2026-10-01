@@ -56,9 +56,10 @@ than filled with a second door:
 
 - **`fromURN` / `fromUserInput`** — `SpatialRef.fromDefinition` already routes through
   `OSRSetFromUserInput`, which takes a URN, an `AUTH:CODE`, WKT and PROJJSON alike.
-- **`wrapVRT`** — `translate(dest, ['-of', 'VRT'])`, or the method form on an open
-  dataset (`dataset.translateSync('', ['-of', 'VRT'])`), already wraps a source as an
-  in-memory VRT. The `translate` program is the general door.
+- **`wrapVRT`** — was `translate(dest, ['-of', 'VRT'])`, and that equivalence held only
+  as long as there was no way to *derive* a band: `gdal_translate` cannot apply a
+  JavaScript pixel function. It is built for real now (see Tier 3), and the `translate`
+  program remains the door for a plain VRT.
 - **`fs.vsimem.set` / `release`** — `fs.writeFile('/vsimem/…', bytes)` and `fs.unlink`
   express both. What the reference's `set` adds is a zero-copy wrap of the caller's
   buffer, which a napi `Buffer` cannot offer — it is not memory GDAL may take
@@ -80,7 +81,10 @@ for a reason measured rather than assumed: a VRT keeps a shared handle on its so
 so reading the derived band after `close()`ing the source is a use-after-free (the
 `asType` probe died with an access violation), and this binding's contract is a clear
 error from a closed dataset, never a crash. Materialising, an explicit result sample
-type, and a size check between the two bands are the price of that choice.
+type, and a size check between the two bands are the price of that choice. The lazy
+route is available now, deliberately rather than by default: `wrapVRT` with a pixel
+function (below) makes a derived band, and its result *does* read through to its
+sources.
 
 Raster **Streams** are in too — `band.createReadStream()` / `band.createWriteStream()`,
 object mode, yielding typed arrays of the band's own sample type a strip at a time.
@@ -91,12 +95,29 @@ that sit on them: `RasterMuxStream` reads several streams in lockstep,
 `RasterTransform` applies a function to every pixel, and `calcAsync` is the
 `gdal_calc.py` shape over the two. `gdal.features().streams` is `true`.
 
-`calcAsync` is the one place where the *mechanism* differs rather than the shape: the
-reference runs it through VRT pixel functions, so that GDAL calls the JS function from
-inside its own raster loop. Here the loop is JavaScript's — the streams feed it — which
-is why the pixel function itself is still absent (see below) while the feature it
-exists for is not. The callback option is spelled `onProgress`, this binding's name for
-it, where the reference says `progress_cb`.
+`calcAsync` is where the *mechanism* differs from the reference rather than the shape:
+theirs runs it through VRT pixel functions, so that GDAL calls the JS function from
+inside its own raster loop; here the loop is JavaScript's — the streams feed it. The
+pixel function itself is here too, so *both* mechanisms now exist, and they answer
+different questions: `calcAsync` is eager and writes a real dataset, a derived VRT is
+lazy. The callback option is spelled `onProgress`, this binding's name for it, where the
+reference says `progress_cb`.
+
+#### VRT pixel functions
+
+`addPixelFunc` / `toPixelFunc` / `createPixelFunc` / `createPixelFuncWithArgs` are all
+in, and so is `wrapVRT`, which is what produces the VRT that uses one. The shape is the
+reference's, with two differences worth knowing:
+
+- **A JavaScript pixel function is evaluated by a synchronous read only.** GDAL calls
+  back from inside its raster loop, and it does so on whichever thread is reading. Only
+  the JS thread can call into JavaScript, and handing the call to the event loop from a
+  worker would deadlock against the lock that worker holds — so the thread-pool path
+  refuses with an error naming the reason. `sync` was already this binding's rule for
+  the blocking form; this is that rule reaching a place it has to.
+- **`wrapVRT` answers XML text**, as the reference does, and GDAL opens a VRT from a
+  string, so nothing touches the disk. The sample types are translated on the way in —
+  GDAL's VRT vocabulary says `Byte` where this binding says `Uint8`.
 
 Every Tier 3 entry is now built, or recorded as a non-goal below.
 
@@ -125,14 +146,8 @@ Windows keeps the file locked — after `close()`.
 
 ## 2. Deliberate non-goals (with the reason)
 
-These are **decisions, not omissions**. `gdal.features()` reports the ones with a
-runtime probe.
+These are **decisions, not omissions**.
 
-- **VRT pixel functions** — `addPixelFunc` / `createPixelFunc` / `toPixelFunc`. They
-  need a C callback that GDAL invokes from inside its raster loop; the elementwise
-  arithmetic that would otherwise use them is implemented **eagerly** instead (see Tier
-  3), and the pixel-wise *calc* they are normally reached through is now here under a
-  different mechanism — `calcAsync`, over the streams rather than inside GDAL's loop.
 - **Async getters** — the `xxxAsync` form of every getter. It conflicts with the
   naming rule (sync is `xxxSync()`, async is `xxx()`; no `Async` suffix), and its
   purpose in the reference — not blocking behind a per-dataset I/O queue — does not

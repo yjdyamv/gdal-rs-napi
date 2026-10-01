@@ -668,7 +668,7 @@ pub struct JsDataset {
 }
 
 impl JsDataset {
-    fn wrap_ref(dataset: DatasetRef, path: String) -> Self {
+    pub(crate) fn wrap_ref(dataset: DatasetRef, path: String) -> Self {
         Self {
             dataset,
             path,
