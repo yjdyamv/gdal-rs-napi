@@ -276,10 +276,10 @@ JS 侧用 `Object.setPrototypeOf` 假装 —— 那样 `instanceof` 有了，但
 | 能力 | gdal-async | 我们 |
 |---|---|---|
 | 方法级异步 | ✅ `xxxAsync` + callback 双形态 | ✅ `xxxSync()` / `xxx(): Promise`（本绑定的命名约定，不引入 `Async` 后缀） |
-| **异步 getter** | ✅ `rasterSizeAsync`、`srsAsync`、`colorTableAsync`… | ✅ 已落地 19 个（Dataset 3 + RasterBand 16），加上函数形态的 `gdal.infoAsync()`。理由与参考不同：我们这边是**等锁** —— 串行数据集上 getter 取独占锁，若此刻有异步读在跑，同步 getter 会把事件循环堵到读完；异步版把这段等待放到线程池。`info()` 取的是共享锁，而共享也是锁，所以函数形态同理。命名照参考保留 `Async` 后缀：getter 没有可改名的零参调用形式（`band.dataType` 是属性），「异步不带 Sync」这条规则在它们身上没有对象可施，`info` 旁边的 `infoAsync` 是同一处例外 |
+| **异步 getter** | ✅ `rasterSizeAsync`、`srsAsync`、`colorTableAsync`… | ✅ 已落地 19 个（Dataset 3 + RasterBand 16），加上函数形态的 `gdal.infoAsync()`。理由与参考不同：我们这边是**等锁** —— getter 要走共享侧，还要拿**该数据集自己的互斥锁**；若此刻正有一个异步读握着它，同步 getter 会把事件循环堵到读完，异步版就把这段等待放到线程池。命名照参考保留 `Async` 后缀：getter 没有可改名的零参调用形式（`band.dataType` 是属性），「异步不带 Sync」这条规则在它们身上没有对象可施，`info` 旁边的 `infoAsync` 是同一处例外 |
 | **异步迭代器** | ✅ `for await (const f of layer.features)` | ✅ `for await (const f of layer.openCursor())`（外壳加的） |
 | 同步迭代器 | ✅ `for (const f of layer.features)` | ✅ `featuresSync()` / `bands()` / `layers()` 返回数组，本来就同步可迭代 |
-| **每数据集 I/O 队列** | 🟡 有 per-dataset mutex（`libuv` 线程池调度） | 🟡 **进程级 `RwLock`**：数据集走独占；`openThreadSafe()` 的读取走共享、真并行；无数据集的调用（CRS / 几何 / `gdal.fs` / 模块自省）也走共享 |
+| **每数据集 I/O 队列** | 🟡 有 per-dataset mutex（`libuv` 线程池调度） | ✅ **每数据集一把锁**：`RwLock` 的独占侧现在只留给**进程级状态**（驱动注册、`config`、`gdal.fs` 的写、programs 与 `create`/`createCopy`），数据集操作一律走共享侧，**同一个句柄**由它自己的互斥锁串行、**不同句柄互不等待**（实测两个句柄上的同批读取 1.70x）。`openThreadSafe()` 比这再进一步：GDAL 的 `GDAL_OF_THREAD_SAFE` 连句柄锁也跳过，让**同一个**句柄的读并发。见 README「异步语义」 |
 | 线程安全数据集 | ✅ 打开时 `'rt'` 标志 | ✅ `openThreadSafe()` |
 | 事件循环阻塞告警 | ✅ `eventLoopWarning` | ✅ `gdal.eventLoopWarning`：`false` 关闭、`true` 用默认阈值（50 ms）、数字即阈值（本绑定扩展）。计时对象是「会碰数据集」的那几个类的**阻塞方法**（Dataset / RasterBand / BandOverview / Layer / FeatureCursor），经 `process.emitWarning` 以 `GdalEventLoopWarning` 发出 |
 

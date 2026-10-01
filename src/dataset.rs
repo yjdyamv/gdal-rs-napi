@@ -137,9 +137,9 @@ impl DatasetRef {
     ///
     /// This is for work that reads the dataset and nothing else: a pixel window, or
     /// one of the accessors that report what the dataset already knows. On a
-    /// `Serialised` handle it takes the write lock like everything else, so widening
-    /// the set of callers here changes nothing for `open()` — the difference only
-    /// ever shows on a thread-safe one.
+    /// `Serialised` handle the exclusion is the handle's own mutex, so this is the same
+    /// as [`Self::with_exclusive`] there — the difference only ever shows on a
+    /// thread-safe one, and neither flavour holds up another dataset.
     ///
     /// # Lock rules
     ///
@@ -151,7 +151,7 @@ impl DatasetRef {
     pub fn with<T>(&self, f: impl FnOnce(&GdalDataset) -> Result<T>) -> Result<T> {
         match self {
             Self::Serialised(shared) => {
-                let _guard = lock_gdal();
+                let _guard = lock_gdal_shared();
                 let handle = lock_handle(shared);
                 f(handle.get()?)
             }
@@ -175,7 +175,10 @@ impl DatasetRef {
     pub fn with_exclusive<T>(&self, f: impl FnOnce(&GdalDataset) -> Result<T>) -> Result<T> {
         match self {
             Self::Serialised(shared) => {
-                let _guard = lock_gdal();
+                // The handle's own mutex *is* the exclusion here: taking the process-wide
+                // lock in write mode as well would serialise this dataset against every
+                // other one, which is exactly what it must not do.
+                let _guard = lock_gdal_shared();
                 let handle = lock_handle(shared);
                 f(handle.get()?)
             }
@@ -193,7 +196,7 @@ impl DatasetRef {
     pub fn with_mut<T>(&self, f: impl FnOnce(&mut GdalDataset) -> Result<T>) -> Result<T> {
         match self {
             Self::Serialised(shared) => {
-                let _guard = lock_gdal();
+                let _guard = lock_gdal_shared();
                 let mut handle = lock_handle(shared);
                 f(handle.get_mut()?)
             }
@@ -261,7 +264,10 @@ impl DatasetRef {
     pub fn close(&self) -> Result<()> {
         match self {
             Self::Serialised(shared) => {
-                let _guard = lock_gdal();
+                // Closing is a write on *this* dataset and nothing else, so it takes the
+                // handle mutex like any other operation — a thread closing another
+                // dataset does not have to wait for it.
+                let _guard = lock_gdal_shared();
                 let mut handle = lock_handle(shared);
                 if let Some(dataset) = handle.dataset.take() {
                     dataset.close().gdal()?;
@@ -409,7 +415,11 @@ fn open_gdal(
     multidimensional: bool,
 ) -> Result<GdalDataset> {
     ensure_initialized();
-    let _guard = lock_gdal();
+    // An open reads the driver registry (frozen after `ensure_initialized`) and one
+    // file; it changes no global state, so it takes the read side and two opens can
+    // overlap. Driver *registration* is behind the `OnceLock` in `ensure_initialized`,
+    // which is what makes this safe even on the very first call.
+    let _guard = lock_gdal_shared();
 
     // `GDAL_OF_VERBOSE_ERROR` is what makes a failed open *say why*. Without it
     // GDAL returns a null handle in silence — no message in its last-error store —
@@ -452,7 +462,9 @@ fn open_gdal(
 #[cfg(gd_thread_safe)]
 fn open_thread_safe_gdal(path: &str) -> Result<DatasetRef> {
     ensure_initialized();
-    let _guard = lock_gdal();
+    // The whole point of this handle is that its reads overlap, so its open does not
+    // hold the write side either.
+    let _guard = lock_gdal_shared();
 
     let dataset = GdalDataset::open_ex(
         path,
@@ -1139,12 +1151,14 @@ impl JsDataset {
                 ));
             }
             (Some(wkt), None) => {
-                // Resolving a CRS reaches into GDAL, so it happens under the lock.
-                let _guard = lock_gdal();
+                // Resolving a CRS reads the CRS database and nothing else, so it runs
+                // on the same side as the rest of the CRS module — this happens before
+                // the dataset closure is entered, which is what keeps it from nesting.
+                let _guard = lock_gdal_shared();
                 Some(SpatialRef::from_wkt(wkt).gdal()?)
             }
             (None, Some(code)) => {
-                let _guard = lock_gdal();
+                let _guard = lock_gdal_shared();
                 Some(SpatialRef::from_epsg(code).gdal()?)
             }
             (None, None) => None,

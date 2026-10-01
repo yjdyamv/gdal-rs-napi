@@ -4,6 +4,9 @@ This is the answer to "how far are we from `gdal-async`, and what are we *not*
 going to build". The reference is **`node-gdal-async` 3.13** (<https://mmomtchev.github.io/node-gdal-async/>),
 read item by item against its own API listing.
 
+[`COMPARISON.md`](./COMPARISON.md) is the synthesis on top of it: the differences that
+remain, the two implementations' strengths and weaknesses, and which one to pick.
+
 Two things frame everything below:
 
 - **Our conventions are not its conventions.** Indexing is 0-based, the blocking

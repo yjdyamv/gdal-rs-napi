@@ -1525,24 +1525,33 @@ according to the attribute's type and how many elements it holds.
 ## Async semantics — read this before relying on it
 
 GDAL work in this binding goes through a **process-wide `RwLock`**, taken on one of two
-sides. An `RwLock` rather than a mutex because the two sides answer different hazards,
-and neither of them is GDAL's last-error state any more: that became *thread-local* in
-GDAL 3.10, which is what makes the split possible at all.
+sides, and underneath it **one dataset is one reader at a time**. An `RwLock` rather than
+a mutex because the two sides answer different hazards, and neither of them is GDAL's
+last-error state any more: that became *thread-local* in GDAL 3.10, which is what makes
+the split possible at all.
 
-- **The exclusive (write) side** is what GDAL is genuinely not safe for: one open
-  dataset reached from two threads, and anything process-global — driver registration,
-  `config.set`, `configureDataPaths()`, and the `programs`, which build datasets of
-  their own.
-- **The shared (read) side** is everything with no dataset and no global configuration
-  in it, and it really does run in parallel: the CRS and `CoordinateTransform` methods,
-  geometry/GEOS, `gdal.fs`, and the module-level introspection — `version()`, `info()`,
-  `diagnostics()`, `lastError()`, `epsgToWkt()`, the `geometry*` helpers, and the
-  registry reads `drivers()` / `driver(name)` (a method on the `Driver` they hand back
-  reads the registry too). `openThreadSafe()` is the one way a *dataset* joins it.
+- **The exclusive (write) side** is process-global state, and only that: driver
+  registration and `configureDataPaths()`, `config.set` — with `config.get`, which
+  reads a pointer into the same map — writes through `gdal.fs`, and the `programs`
+  (`translate`, `warp`, `ogr2ogr`, `gdaldem`, `buildVrt`) with the `create` / `createCopy`
+  paths beside them. They build datasets of their own and write files, so no dataset
+  operation may run while one is rewriting the file it is reading.
+- **The shared (read) side** is everything else, and it really does run in parallel: an
+  open, every operation on an open dataset, the CRS and `CoordinateTransform` methods,
+  geometry/GEOS, `gdal.fs` reads, and the module-level introspection — `version()`,
+  `info()`, `diagnostics()`, `lastError()`, `epsgToWkt()`, the `geometry*` helpers, and
+  the registry reads `drivers()` / `driver(name)` (a method on the `Driver` they hand
+  back reads the registry too).
 
-The async APIs keep the Node **event loop** free either way — by themselves they do
-not make GDAL work run in parallel. Ten concurrent `readPixels()` calls on a
-dataset from `open()` take as long as ten sequential ones.
+What keeps a dataset safe is then **not** this lock but that handle's own mutex: the same
+dataset reached from two threads serialises, and two *different* datasets do not wait for
+each other. That is exactly the pair GDAL's own contract names — it is thread-safe as
+long as no single handle is used from two threads at once.
+
+The async APIs keep the Node **event loop** free either way — the work itself is not made
+parallel by them. Ten concurrent `readPixels()` calls on *one* dataset take as long as ten
+sequential ones (that is the handle mutex, and GDAL's own rule); ten on ten datasets do
+not.
 
 ### Real parallelism: `openThreadSafe()`
 
@@ -1559,9 +1568,12 @@ const tiles = await Promise.all(windows.map((window) => band.readPixels(window))
 const [size, transform] = [band.size, dataset.geoTransform]
 ```
 
-A **read** of such a dataset takes the **shared** side of the lock rather than the
-exclusive side, so several of them really do run at once. That is a pixel window, and
-the accessors that only look at what the dataset already knows — `width`, `height`,
+A **read** of such a dataset goes one step further than a read of an ordinary one: it
+takes the shared side of the lock *and skips the handle's own mutex*, because GDAL has
+been asked to make that one handle safe for concurrent readers. An ordinary read takes
+the same shared side but does take the handle mutex — which is why several reads of one
+ordinary dataset still queue, and one read each of several datasets do not. What is in it
+is a pixel window, and the accessors that only look at what the dataset already knows — `width`, `height`,
 `rasterSize`, `bandCount`, `geoTransform`, `projection`, `spatialRef`, `description`,
 `driver`, `metadata`, `getFileList`, `band()`, and on a band `size`, `blockSize`, `id`,
 `noDataValue`, `scale`, `offset`, `unitType`, `colorInterpretation`, `minimum`,
@@ -1569,12 +1581,13 @@ the accessors that only look at what the dataset already knows — `width`, `hei
 whole overview level are in it too: they walk the samples without keeping them, which is
 a read. So asking for the size of a band no longer queues behind the pixel reads.
 
-The rule for what is left: anything that writes, and anything that makes GDAL *compute
-and keep* an answer, takes the exclusive side. `writePixels`, `setProjection`,
+The rule for what is left on the handle's mutex: anything that writes, and anything that
+makes GDAL *compute and keep* an answer. `writePixels`, `setProjection`,
 `setGeoTransform`, `setMetadataItem`, `flush` and the vector side obviously; so do
 `statistics()`, `histogram()` and `defaultHistogram()`, which store what they compute on
 the dataset, and the programs, which build datasets of their own. `config.get` is the one
-*read* that has to stay there too — not because the store is unguarded, GDAL takes its own
+*read* that has to stay on the exclusive, process-wide side — not because the store is
+unguarded, GDAL takes its own
 mutex around it, but because `CPLGetConfigOption` returns a pointer into it and drops the
 guard, so a concurrent `config.set` could free the string before this binding copies it.
 
@@ -1582,8 +1595,9 @@ guard, so a concurrent `config.set` could free the string before this binding co
 node scripts/bench-parallel.mjs big.tif --concurrency 4 [--min-speedup 1.5]
 ```
 
-It measures four workloads: whole-band reads on both paths, the same batch of reads
-with the read-only accessors asked in the middle of them, a dataset-free workload
+It measures five workloads: whole-band reads on both paths, the same batch of reads split
+across two ordinary handles, the same batch with the read-only accessors asked in the
+middle of them, a dataset-free workload
 (a coordinate transform) as the sharpest measurement of the lock itself, and the
 module-level surface asked during that workload — the same rounds on an idle process and
 then while the transforms are in flight, so the two numbers say whether the
@@ -1592,9 +1606,11 @@ they run during, so they are comparable on any machine and any raster.
 
 It is a benchmark and not a test — nothing fails on the timings by default, because
 they depend on the machine and on the storage. The exception is `--min-speedup`, which
-CI passes: it gates the *ratio* between four dataset-free transforms issued together and
-one at a time, which is lock contention and nothing else (about 3x while that work is on
-the shared side, about 1x if it ever moves back). A ratio between two measurements on
+CI passes, and it gates two ratios: the one between four dataset-free transforms issued
+together and one at a time — lock contention and nothing else (about 3x while that work
+is on the shared side, about 1x if it ever moves back) — and the one between the same
+reads on two handles and on one, which cannot leave 1x at all unless a dataset operation
+stopped taking the process-wide lock in write mode. A ratio between two measurements on
 the same machine survives a slower machine where a wall time would not, and CI
 **archives** the run rather than only asserting on it: the numbers land in the run
 summary and in a `bench.log` artifact.
@@ -1641,13 +1657,14 @@ They are **getters**, not methods — `await band.sizeAsync`, no parentheses. A 
 `hasArbitraryOverviewsAsync`, `categoryNamesAsync` and `colorTableAsync`; a dataset has
 `rasterSizeAsync`, `geoTransformAsync` and `spatialRefAsync`.
 
-What they are for is the *wait*, not the work — a getter takes the process-wide lock,
-and on an ordinary dataset that is the exclusive side. Read one while an async read is
-in flight and the synchronous form stops the event loop until that read finishes; this
-form leaves the waiting to the thread pool. (The reference's `Async` suffix is kept
+What they are for is the *wait*, not the work — a getter takes the process-wide lock on
+the shared side *and* the dataset's own mutex. Read one while an async read of that same
+dataset is in flight and the synchronous form stops the event loop until that read
+finishes; this form leaves the waiting to the thread pool. (The reference's `Async`
+suffix is kept
 here, the one place this binding's "the async form drops the `Sync` suffix" rule has
 nothing to apply to: `band.dataType` is a property, so a `band.dataType()` cannot exist
-beside it.)
+beside it. `gdal.infoAsync()` is the same exception in function form.)
 
 ### A warning when a blocking call stops the loop
 
@@ -1932,7 +1949,9 @@ artifact.
 The main entry point is **not** a drop-in replacement — it is 0-based, spells the
 blocking form `xxxSync()`, and sets through `setX()`. [`docs/PARITY.md`](./docs/PARITY.md)
 is the full accounting of where the two stand: what is at parity, the additive gaps,
-and the conventions map. Two of the reference's shapes are here as well, spelled the same
+and the conventions map — and [`docs/COMPARISON.md`](./docs/COMPARISON.md) is the
+synthesis beside it: the differences that remain, strengths and weaknesses on both
+sides, and how to choose. Two of the reference's shapes are here as well, spelled the same
 way. The **containers answer both spellings**: this binding spells one as a call that
 returns an array, gdal-async as an object with `get` / `count` and iterators, and a
 JavaScript function is an object — so the call carries the collection surface and

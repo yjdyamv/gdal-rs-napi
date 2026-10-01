@@ -18,7 +18,7 @@
 | 矢量 | 图层/字段/要素 CRUD、属性与空间过滤、游标、SQL、事务、fid/geom 列、capability |
 | 程序 | `translate` / `warp` / `vectorTranslate` / `demProcess`，带 `onProgress` 与取消 |
 | CRS | SpatialRef 全套读写、CoordinateTransform（点/数组/bounds/geometry）、identifyEpsg |
-| 并发 | 进程级 `RwLock` 串行化 GDAL；`openThreadSafe()` 走共享锁，栅格读与只读访问器真并行 |
+| 并发 | 全局 `RwLock` 只护**进程级状态**（注册 / `config` / `fs` 写 / programs）；数据集走共享侧，同句柄由该句柄自己的互斥锁串行、不同句柄真并行；`openThreadSafe()` 让**同一个**句柄的读也并发 |
 | 测试 | `node --test` 103 项，2.9k 行；Rust 侧纯函数单测；CI 六平台 + fmt/clippy |
 | 发布 | tag → GitHub Release 挂 6 个自包含 tarball（含 os/cpu/libc 约束） |
 

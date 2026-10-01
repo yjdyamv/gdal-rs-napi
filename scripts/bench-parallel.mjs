@@ -1,17 +1,19 @@
 #!/usr/bin/env node
 // Measures what `openThreadSafe()` actually buys you, on real data.
 //
-// `open()` serialises every GDAL call behind one process-wide lock: the async
-// methods free the event loop, but concurrent reads still queue. `openThreadSafe()`
-// opens a dataset whose reads take the shared side of that lock instead, so they
-// genuinely overlap. This script runs the *same* concurrent workload through
-// both and compares the wall times.
+// One *dataset* is one reader at a time: every operation takes that handle's own
+// mutex, so concurrent reads of one handle still queue — which is what GDAL is not
+// thread-safe for. `openThreadSafe()` is the opt-in for GDAL's `GDAL_OF_THREAD_SAFE`,
+// which lifts even that and lets several threads read one handle at once. Two
+// *different* handles do not queue: they take the read side of the process-wide lock,
+// which is only taken in write mode for global state (registration, `config`, `fs`
+// writes, the programs).
 //
-// Four workloads are measured, because the shared side covers more than pixels:
+// Four workloads are measured, because more than pixels goes through that read side:
 // whole-band reads, a batch of reads with the read-only accessors asked in the
-// middle of them, a workload with no dataset in it at all, and the module-level
-// surface — which is dataset-free in the same way, so it answers *during* that
-// workload rather than behind it.
+// middle of them, the same reads split across two handles, a workload with no dataset
+// in it at all, and the module-level surface — which is dataset-free in the same way,
+// so it answers *during* that workload rather than behind it.
 //
 //   node scripts/bench-parallel.mjs [raster.tif] [--concurrency 4] [--rounds 5]
 //                                   [--min-speedup 1.5]
@@ -361,12 +363,36 @@ try {
   console.log(
     `[bench] issuing them together bought nothing on the serialised path ` +
       `(${single.best.toFixed(1)} ms one at a time vs ${serialised.best.toFixed(1)} ms together) — ` +
-      `that is the lock doing its job`,
+      `that is this one handle's own mutex doing its job: GDAL is not thread-safe for ` +
+      `one dataset reached from two threads`,
   )
   console.log(
     `[bench] one read costs ${perRead.toFixed(1)} ms, so perfect overlap would be ` +
       `${perRead.toFixed(1)} ms (measured: ${parallel.best.toFixed(1)} ms)`,
   )
+
+  // The case the per-dataset lock unlocks, and the one a process-wide write lock made
+  // identical to the line above: the same number of reads, split across *two* handles.
+  const second = gdal.openSync(source)
+  const secondBand = second.band(0)
+  const half = Math.ceil(concurrency / 2)
+  const twoHandles = await measure(
+    'open(), two handles at once',
+    () =>
+      Promise.all([
+        ...Array.from({ length: half }, () => serialBand.readPixels()),
+        ...Array.from({ length: concurrency - half }, () => secondBand.readPixels()),
+      ]),
+    single.reference,
+  )
+  console.log(
+    `[bench] the same ${concurrency} reads split across two handles: ` +
+      `${twoHandles.best.toFixed(1)} ms together vs ${serialised.best.toFixed(1)} ms on one ` +
+      `handle -> ${(serialised.best / twoHandles.best).toFixed(2)}x. There is no speedup ` +
+      `available at all if every dataset operation holds the process-wide lock in write ` +
+      `mode, which is what this used to do.`,
+  )
+  second.close()
   if (parallel.best >= serialised.best) {
     console.log(
       '[bench] no gain here — these reads are cheap enough that the lock was never the bottleneck',
@@ -438,6 +464,22 @@ try {
         `[bench] the ${minSpeedup.toFixed(2)}x floor for dataset-free work is met at ` +
           `${overlap.toFixed(2)}x`,
       )
+    }
+
+    // The per-dataset half of the same question, with its own floor: two handles must
+    // beat one, and by construction they cannot unless a dataset operation stopped
+    // taking the process-wide lock in write mode — under that lock this ratio is
+    // 1.00x on the nose, however fast the machine.
+    const twoHandleSpeedup = serialised.best / twoHandles.best
+    if (twoHandleSpeedup < 1.1) {
+      console.error(
+        `[bench] two handles came to ${twoHandleSpeedup.toFixed(2)}x, under the 1.10x floor: ` +
+          `different datasets are queueing behind each other, so a dataset operation is ` +
+          `holding the process-wide lock in write mode again.`,
+      )
+      process.exitCode = 1
+    } else {
+      console.log(`[bench] two handles overlap at ${twoHandleSpeedup.toFixed(2)}x (floor 1.10x)`)
     }
   }
 

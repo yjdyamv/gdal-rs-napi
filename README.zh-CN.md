@@ -1290,20 +1290,26 @@ raster.band(0).readPixels({ width: 144, height: 73 })
 
 ## 异步语义（用之前请读）
 
-本绑定里碰 GDAL 的工作都走一把**进程级 `RwLock`**，取它的**某一侧**。用读写锁而不是互斥锁，
-是因为两侧面对的危险不同——而这两者现在都**不是** GDAL 的 last-error 状态了：它在 GDAL 3.10
-变成了**线程局部**，这正是这个划分得以成立的前提。
+本绑定里碰 GDAL 的工作都走一把**进程级 `RwLock`**，取它的**某一侧**，而在它下面**一个数据集
+同一时刻只有一个读者**。用读写锁而不是互斥锁，是因为两侧面对的危险不同——而这两者现在都**不是**
+GDAL 的 last-error 状态了：它在 GDAL 3.10 变成了**线程局部**，这正是这个划分得以成立的前提。
 
-- **独占（写）侧**才是 GDAL 真正不安全的部分：同一个打开的数据集被两个线程碰，以及一切进程级
-  配置——驱动注册、`config.set`、`configureDataPaths()`，还有 programs（它们自建数据集）。
-- **共享（读）侧**是"既不含数据集、也不含全局配置"的一切，而且是**真的并行**：CRS 与
-  `CoordinateTransform`、几何 / GEOS、`gdal.fs`，以及模块级自省——`version()`、`info()`、
-  `diagnostics()`、`lastError()`、`epsgToWkt()`、`geometry*` 系列，还有注册表读取
+- **独占（写）侧**是进程级状态，也只管进程级状态：驱动注册与 `configureDataPaths()`、
+  `config.set`（以及 `config.get`，它读的是同一张表里的指针）、`gdal.fs` 的写，还有 programs
+  （`translate` / `warp` / `ogr2ogr` / `gdaldem` / `buildVrt`）连同旁边的 `create` / `createCopy`。
+  它们自建数据集、写文件，所以它们正在重写某个文件时，不许任何数据集操作跑。
+- **共享（读）侧**是其余的一切，而且是**真的并行**：一次 open、已打开数据集上的每一个操作、
+  CRS 与 `CoordinateTransform`、几何 / GEOS、`gdal.fs` 的读，以及模块级自省——`version()`、
+  `info()`、`diagnostics()`、`lastError()`、`epsgToWkt()`、`geometry*` 系列，还有注册表读取
   `drivers()` / `driver(name)`（对它们返回的 `Driver` 调方法同样是读注册表）。
-  数据集里只有 `openThreadSafe()` 能站到这一侧。
 
-无论走哪一侧，异步 API 都只保证 **event loop** 不被阻塞——**仅靠它不会**让 GDAL 工作并行。
-`open()` 出来的数据集上十个并发 `readPixels()` 和顺序执行十个耗时一样。
+于是保证单个数据集安全的**不是**这把锁，而是**那个句柄自己的互斥锁**：同一个数据集被两个线程
+碰会串行，而两个**不同**的数据集互不等待。这恰好就是 GDAL 自己那条契约——只要同一个句柄不被
+两个线程同时用，它就是线程安全的。
+
+异步 API 无论走哪一侧都只保证 **event loop** 不被阻塞——工作本身不会因为它们而并行。**同一个**
+数据集上十个并发 `readPixels()` 和顺序执行十个耗时一样（那是句柄互斥锁，也是 GDAL 自己的规矩）；
+**十个数据集各一个**就不一样了。
 
 ### 真并行：`openThreadSafe()`
 
@@ -1320,7 +1326,9 @@ const tiles = await Promise.all(windows.map((window) => band.readPixels(window))
 const [size, transform] = [band.size, dataset.geoTransform]
 ```
 
-这类数据集上凡是**读**都走锁的**共享**侧而不是独占侧，所以多个读可以真正同时跑。除了像素窗口，
+这类数据集上凡是**读**都比普通数据集多走一步：它取锁的**共享**侧，并且**跳过句柄自己的互斥
+锁**——因为 GDAL 已经被要求让**这个**句柄对并发读安全。普通数据集的读取同样的共享侧，但要拿句柄
+互斥锁，所以同一个普通数据集上的多个读仍会排队，而**不同数据集各一个读**不会。这里包括像素窗口，
 还包括那些只查看数据集**已经知道**什么的访问器：`width`、`height`、`rasterSize`、
 `bandCount`、`geoTransform`、`projection`、`spatialRef`、`description`、`driver`、
 `metadata`、`getFileList`、`band()`；波段一侧是 `size`、`blockSize`、`id`、`noDataValue`、
@@ -1328,20 +1336,21 @@ const [size, transform] = [band.size, dataset.geoTransform]
 `categoryNames`、`overviewCount`、`overviews`、`metadata`。`checksum` 和读取整个 overview
 层级也在其中：它们只是走过样本而不留下样本，本身就是读。所以问一句波段尺寸不必再排在像素读后面。
 
-剩下的怎么判断：**写**，以及**让 GDAL 算出一个答案并把它存下来**的，都走独占侧。
+剩下的怎么判断：**写**，以及**让 GDAL 算出一个答案并把它存下来**的，都仍然要拿**句柄互斥锁**。
 `writePixels`、`setProjection`、`setGeoTransform`、`setMetadataItem`、`flush` 以及矢量一侧
 显然属于此列；`statistics()`、`histogram()`、`defaultHistogram()` 也是——它们把算出来的结果
-写在数据集上；programs 同理，它们自建数据集。`config.get` 是唯一必须留在独占侧的**读**：
-不是因为这个存储没有保护——GDAL 自己拿互斥锁护着它——而是因为 `CPLGetConfigOption` 返回的是
-**指向它内部的指针**并且随即放开锁，并发的 `config.set` 可能在本次拷贝之前就把它 free 掉。
+写在数据集上；programs 同理，它们自建数据集。`config.get` 是唯一必须留在**进程级独占侧**的
+**读**：不是因为这个存储没有保护——GDAL 自己拿互斥锁护着它——而是因为 `CPLGetConfigOption`
+返回的是**指向它内部的指针**并且随即放开锁，并发的 `config.set` 可能在本次拷贝之前就把它 free 掉。
 
 ```sh
 node scripts/bench-parallel.mjs big.tif --concurrency 4 [--min-speedup 1.5]
 ```
 
-它量四组负载：两条路径上的整波段读取、同样这批读取但**中间夹着只读访问器**、完全不涉及数据集
-的负载（一次坐标变换）作为对锁本身最锋利的测量，以及**在那组负载进行期间**去问模块级自省——
-同一批轮数先在空闲进程上量一遍、再在变换进行中量一遍，两个数字就说明了自省有没有排队。
+它量五组负载：两条路径上的整波段读取、同样这批读取**拆到两个普通句柄**上、同样这批读取但
+**中间夹着只读访问器**、完全不涉及数据集的负载（一次坐标变换）作为对锁本身最锋利的测量，以及
+**在那组负载进行期间**去问模块级自省——同一批轮数先在空闲进程上量一遍、再在变换进行中量一遍，
+两个数字就说明了自省有没有排队。
 访问器循环和自省循环的轮数都按它们所插入的那批工作的耗时校准，
 所以在任何机器、任何栅格上都是可比的。
 
@@ -1385,7 +1394,8 @@ await band.dataTypeAsync   // 同一个答案，但不用为此堵住事件循�
 `hasArbitraryOverviewsAsync`、`categoryNamesAsync`、`colorTableAsync`；数据集上是
 `rasterSizeAsync`、`geoTransformAsync`、`spatialRefAsync`。
 
-它们买的是**等待**而不是干活：getter 要取进程级锁，而普通数据集上那是独占侧。当有一个异步读
+它们买的是**等待**而不是干活：getter 要取进程级锁的**共享侧**，还要拿**该数据集自己的互斥锁**。
+当有一个异步读
 在跑时读同步 getter，事件循环会被卡到那个读结束；异步版把这段等待交给线程池。（这里保留了参考
 实现的 `Async` 后缀，也是本绑定「异步形式不带 `Sync` 后缀」这条规则**唯一**没有对象可施的地方：
 `band.dataType` 是属性，旁边不可能存在 `band.dataType()`。）
@@ -1641,7 +1651,8 @@ Intel macOS 与 32 位目标未构建。
 
 主入口**不是**直接替代品 —— 它是 0-based、阻塞形式叫 `xxxSync()`、赋值靠 `setX()`。
 [`docs/PARITY.md`](./docs/PARITY.md) 是两者差距的完整清单：哪些已对齐、还有哪些**加性缺口**、
-并附约定对照表。参考实现的两层形状这里也都有，拼法一致。**容器两种拼法都认**：本绑定把容器拼成
+并附约定对照表；[`docs/COMPARISON.md`](./docs/COMPARISON.md) 是它上面的那份判断：还剩哪些差异、
+两边各自的长处与短处、以及该怎么选。参考实现的两层形状这里也都有，拼法一致。**容器两种拼法都认**：本绑定把容器拼成
 「一次返回数组的调用」，gdal-async 拼成带 `get` / `count` **和**迭代器的对象 —— 而 JS 的函数
 本身就是对象，所以那次调用直接驮着集合表面，老的写法一个字都没变：
 

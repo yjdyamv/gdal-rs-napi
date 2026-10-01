@@ -6,6 +6,28 @@ First working cut — everything here is new.
 
 ### Binding
 
+- **A dataset operation no longer holds up every other dataset.** The process-wide
+  `RwLock` now takes its *write* side for **process-global state only** — driver
+  registration and `configureDataPaths`, `config`, writes through `gdal.fs`, the
+  programs (`translate` / `warp` / `ogr2ogr` / `gdaldem` / `buildVrt`), and
+  `create` / `createCopy` — while an open and every operation on an open dataset take
+  the *read* side. What keeps one dataset safe is then that **handle's own mutex**,
+  which is exactly the pair GDAL's contract names: the same handle reached from two
+  threads serialises, two different handles do not wait for each other.
+  `openThreadSafe()` goes one step further and skips the handle mutex as well, so one
+  handle can be read by several threads at once.
+  Measured on the 2048×2048 DEFLATE GTiff the benchmark generates: the same four
+  whole-band reads cost 7.5 ms on one handle and 4.4 ms split across two (1.70x) —
+  while before this they were the *same number by construction*, because every dataset
+  operation held the write side from the first byte to the last.
+  `scripts/bench-parallel.mjs` measures that case now and gates it (a 1.10x floor,
+  beside the dataset-free one), because the ratio cannot rise above 1.00x again unless
+  a dataset operation goes back onto the write side.
+  One rule comes with it, and it is the rule the thread-safe path already lived by:
+  **a closure that holds the read side must not take the write side**, directly or
+  transitively — `RwLock` is not reentrant. The dataset closures call nothing that
+  writes; the lock's own documentation in `src/runtime.rs` now says so where the
+  opposite used to be true.
 - `gdal.infoAsync()` — `gdal.info()` on the thread pool. Nothing in it is slow; the
   point is the **wait**: `info()` takes the shared side of the lock, the shared side
   still waits for a dataset holding the exclusive one, and that wait was in the event
