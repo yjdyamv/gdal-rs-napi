@@ -1932,8 +1932,22 @@ artifact.
 The main entry point is **not** a drop-in replacement — it is 0-based, spells the
 blocking form `xxxSync()`, and sets through `setX()`. [`docs/PARITY.md`](./docs/PARITY.md)
 is the full accounting of where the two stand: what is at parity, the additive gaps
-still open, and the few things deliberately left out (the native collection classes and
-the geometry subclass family), with the conventions map. A second entry point is:
+still open, and the one thing deliberately left out (the geometry subclass family), with
+the conventions map. The **containers answer both spellings**, though: this binding
+spells one as a call that returns an array, gdal-async as an object with `get` / `count`
+and iterators, and a JavaScript function is an object — so the call carries the
+collection surface and nothing that worked before changed:
+
+```js
+dataset.bands()                            // what it always was: the array
+dataset.bands.get(1)                       // 1-based, as gdal-async counts
+dataset.bands.count()                      //
+for (const band of dataset.bands) { … }    // and `for await`, and `map` / `forEach`
+band.pixels.get(0, 0)                      // the pixel accessors, under its names
+group.arrays.get('temperature')            // the multidimensional model too
+```
+
+A second entry point is:
 
 ```js
 const gdal = require('gdal-rs-napi/compat')
@@ -1966,9 +1980,10 @@ What it does **not** cover, so a port does not find out the hard way: `calcAsync
 VRT pixel functions, the command-line programs and their `translate`/`warp` family, and
 the two band extras this API spells its own way — `colorTable` and `mask` — whose shapes
 are on the main entry point and not on the wrapper. Raster streams are on the main entry
-point too, as `band.createReadStream()` / `createWriteStream()` rather than
-`band.pixels.…`. Everything else the native API can do, the adapter can — including the
-multidimensional model and the GEOS predicates, since they are in the same build.
+point too, as `band.createReadStream()` / `createWriteStream()` — which `band.pixels`
+also carries, now that the collections are there. Everything else the native API can do,
+the adapter can — including the multidimensional model and the GEOS predicates, since
+they are in the same build.
 `PHASE1.md` (WS-7) is the full list.
 
 ## Licence

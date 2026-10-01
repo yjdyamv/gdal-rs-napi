@@ -37,7 +37,8 @@ const FUNCTION_BUILTINS = new Set(['length', 'name', 'arguments', 'caller', 'pro
  * by the shell test below.
  */
 const SHELL_MEMBERS = new Map([
-  ['RasterBand', new Set(['createReadStream', 'createWriteStream'])],
+  ['RasterBand', new Set(['createReadStream', 'createWriteStream', 'pixels'])],
+  ['Group', new Set(['arrays', 'groups'])],
 ])
 
 const sorted = (names) => [...names].sort()
@@ -226,12 +227,18 @@ test('the hand-written shell is reflected at runtime and declared too', () => {
 
   // The shell's own prototype members, checked both ways: present at runtime, and
   // declared here rather than in the generated file.
+  //
+  // By descriptor, not by reading the member: several of these are getters that would
+  // be *called* by a read, and one called on the prototype has no object to work with.
   for (const [className, members] of SHELL_MEMBERS) {
     for (const member of members) {
+      const descriptor = Object.getOwnPropertyDescriptor(gdal[className].prototype, member)
+      assert.ok(descriptor, `${className}.${member} exists at runtime`)
+      const kind = descriptor.get ? 'get' : 'value'
       assert.equal(
-        typeof gdal[className].prototype[member],
+        typeof descriptor[kind],
         'function',
-        `${className}.${member} is a function`,
+        `${className}.${member} is a ${kind === 'get' ? 'getter' : 'method'}`,
       )
       assert.ok(index.includes(member), `${className}.${member} is declared in index.d.ts`)
     }

@@ -1641,8 +1641,21 @@ Intel macOS 与 32 位目标未构建。
 
 主入口**不是**直接替代品 —— 它是 0-based、阻塞形式叫 `xxxSync()`、赋值靠 `setX()`。
 [`docs/PARITY.md`](./docs/PARITY.md) 是两者差距的完整清单：哪些已对齐、还有哪些**加性缺口**、
-以及**明确不做**的少数几项（原生集合类、几何子类族），
-并附约定对照表。`gdal.bundled` 是「这个包是否自包含」的一行答案。另一个入口是：
+以及**明确不做**的那一项（几何子类族），并附约定对照表。`gdal.bundled` 是「这个包是否自包含」
+的一行答案。不过**容器两种拼法都认**：本绑定把容器拼成「一次返回数组的调用」，gdal-async
+拼成带 `get` / `count` **和**迭代器的对象 —— 而 JS 的函数本身就是对象，所以那次调用直接驮
+着集合表面，老的写法一个字都没变：
+
+```js
+dataset.bands()                            // 一如既往：数组
+dataset.bands.get(1)                       // 1-based，与 gdal-async 一致
+dataset.bands.count()                      //
+for (const band of dataset.bands) { … }    // 还有 `for await`、`map` / `forEach`
+band.pixels.get(0, 0)                      // 像素访问器，用它的名字
+group.arrays.get('temperature')            // 多维模型同样
+```
+
+另一个入口是：
 
 ```js
 const gdal = require('gdal-rs-napi/compat')

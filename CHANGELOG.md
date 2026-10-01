@@ -6,6 +6,25 @@ First working cut — everything here is new.
 
 ### Binding
 
+- Every container answers **both spellings**. This binding spells one as a call that
+  returns an array — `dataset.bands()`, `layer.features()` — and gdal-async spells it as
+  an object with `get` / `count` / `getNames` and iterators. Both are the same thing now:
+  the call is untouched, and the collection surface hangs off the callable itself, so
+  `dataset.bands()` and `dataset.bands.get(1)` work side by side and
+  `for (const band of dataset.bands)` iterates — nothing that worked before changed.
+  All of them: `gdal.drivers`, `dataset.bands`, `dataset.layers`, `layer.fields`,
+  `layer.features` (with `count()` and `get(fid)`), `band.overviews` (with
+  `getBySampleCount`), the multidimensional model's `group.arrays` / `group.groups` /
+  `group.attributes` / `group.dimensions` and `mdarray.attributes` / `mdarray.dimensions`
+  — and a new `band.pixels`, the reference's object of pixel reads and writes under its
+  own names.
+  Two things worth knowing. An index is **1-based** in a collection, as the reference
+  counts, except `gdal.drivers.get(n)`, which is 0-based there and stays so. And a
+  member the *generated* declarations already own (`dataset.bands`, `layer.features`,
+  `band.overviews`) keeps their type — a class member's type cannot be widened from the
+  hand-written half — so `dataset.bands.get(1)` is a runtime shape a TypeScript caller
+  has to spell out, while the members that are new out of this (`band.pixels`,
+  `group.arrays`, `group.groups`) are declared properly.
 - `Layer.setSpatialRef(crs)` changes a layer's CRS after the layer exists, taking a WKT
   string or a `SpatialRef`. The C API has no `OGR_L_SetSpatialRef` — a layer's CRS is
   its geometry field's — so this goes through `OGR_L_AlterGeomFieldDefn`, which asks the

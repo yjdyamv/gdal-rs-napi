@@ -153,7 +153,59 @@ declare module './binding' {
   interface RasterBand {
     createReadStream(options?: RasterStreamOptions): import('node:stream').Readable
     createWriteStream(options?: RasterStreamOptions): import('node:stream').Writable
+    /** The pixel accessors, under the reference's names. */
+    pixels: BandPixels
   }
+
+  interface Group {
+    arrays: Collection<MDArray>
+    groups: Collection<Group>
+  }
+}
+
+/**
+ * The collection shape the shell hangs on the members gdal-async spells as one:
+ * `get(1)` is the first, `count()` is how many, and both iterators work.
+ *
+ * Note what this type can and cannot do. A member that is **new** — `band.pixels`,
+ * `group.arrays`, `group.groups` — is declared with it, so it is typed like anything
+ * else. A member the generated declarations already own (`dataset.bands`, `layer.features`,
+ * `band.overviews`) keeps their type, because a class member's type cannot be widened
+ * from here: the surface is there at runtime — `dataset.bands.get(1)` works — but a
+ * TypeScript caller sees `Array<RasterBand>` and has to say what it means.
+ */
+export interface Collection<T> extends Array<T> {
+  get(indexOrName?: number | string): T | null
+  count(): number
+  getNames?(): Array<string | number>
+  forEach(callback: (item: T, index: number) => void): void
+  map<U>(callback: (item: T, index: number) => U): Array<U>
+  [Symbol.asyncIterator](): AsyncIterator<T>
+}
+
+/** The reference's object of pixel reads and writes — `band.pixels`. */
+export interface BandPixels {
+  /** The band this belongs to. */
+  band: import('./binding').RasterBand
+  get(x: number, y: number): number
+  set(x: number, y: number, value: number): void
+  read(
+    x: number,
+    y: number,
+    width: number,
+    height: number,
+    into?: Buffer,
+    options?: ReadOptions,
+  ): Buffer
+  readAsync(x: number, y: number, width: number, height: number, options?: ReadOptions): Promise<Buffer>
+  write(x: number, y: number, width: number, height: number, data: Buffer): void
+  writeAsync(x: number, y: number, width: number, height: number, data: Buffer): Promise<void>
+  readBlock(x: number, y: number): Buffer
+  writeBlock(x: number, y: number, data: Buffer): void
+  readValues(x: number, y: number, width: number, height: number): Buffer
+  writeValues(x: number, y: number, width: number, height: number, data: Buffer): void
+  createReadStream(options?: RasterStreamOptions): import('node:stream').Readable
+  createWriteStream(options?: RasterStreamOptions): import('node:stream').Writable
 }
 
 /**

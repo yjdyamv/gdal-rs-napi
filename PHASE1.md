@@ -107,8 +107,11 @@ GDAL 的数字码属于兼容层（WS-7），那里 `gdal-async` 的形状才是
 
 > **本矩阵已按当前状态刷新**。**已经没有「做不到」这一类了** —— 原先归在这一类的两条都翻了案：
 > `Layer.srs` setter 走 `OGR_L_AlterGeomFieldDefn`（由驱动改），`Layer.extent` setter 追的
-> 是一个参考实现里并不存在的 API（它只有 `getExtent()`，已补）。仍标 ❌ 的只剩**形状类非目标**：
-> 主入口里的原生集合对象形态与几何子类族，两者的形状都由 `compat` 承载。
+> 是一个参考实现里并不存在的 API（它只有 `getExtent()`，已补）。
+> **集合对象形态也已落地**（见 A9）：成员保持原来那次调用，同时挂上参考的
+> `get` / `count` / `getNames` / 迭代器，两种拼法共用一个对象。
+> 仍标 ❌ 的只剩**几何子类族**这一条形状类缺口（`Point` / `Polygon` / …；运行时可做，
+> 类型上做不到，理由见 A4）。
 > 🟡 表示能力齐、只是形状或拼法与 `gdal-async` 不同（那层形状归 `compat`）。
 
 图例：✅ 有；🟡 有但形状不同；❌ 做不到 / 已定案不做。
@@ -119,7 +122,7 @@ GDAL 的数字码属于兼容层（WS-7），那里 `gdal-async` 的形状才是
 |---|---|---|
 | `version` | ✅ `version()` | 返回 `{gdal, proj}` |
 | `bundled` | ✅ `gdal.bundled` | 单一布尔 |
-| `drivers`（集合，`drivers.get('GTiff')`） | ✅ `drivers()` / `driver(name)` **返回 `Driver` 对象**；`dataset.driver` 也是对象 | 集合对象形态归 compat |
+| `drivers`（集合，`drivers.get('GTiff')`） | ✅ `drivers()` / `driver(name)` **返回 `Driver` 对象**；**同一对象也是集合**：`drivers.get(i)`（0-based，同参考）/ `get(name)` / `count()` / `getNames()` / 迭代器；`dataset.driver` 也是对象 | 见 A9 |
 | `lastError`（`{number, message, type}`） | ✅ `lastError()`（`{class, number, message}`） | 语义对齐 |
 | `verbose()` / `quiet()` | ✅ | 写 `CPL_DEBUG` |
 | `eventLoopWarning` | ❌ **已定案不做** | 本绑定是一把全局锁，没有"某数据集上还挂着未完成的异步操作"这回事可警告；见 A8 |
@@ -133,8 +136,8 @@ GDAL 的数字码属于兼容层（WS-7），那里 `gdal-async` 的形状才是
 |---|---|---|
 | `open(path, mode, drivers, x, y, bands, type, options)` | ✅ `open(source, options)` | 签名不同：驱动白名单、创建合一 |
 | `openAsync` | ✅ `open()` 返回 Promise | |
-| `bands`（`DatasetBands` 集合） | ✅ `bands(): RasterBand[]`、`band(i)`、`bandCount` | 集合**对象**形态归 compat；数组本身已有 `for…of`/`map`/`forEach`/`length` |
-| `layers`（`DatasetLayers` 集合） | ✅ `layers()`、`layer(i)`、`layerByName()`、`layerCount` | 同上 |
+| `bands`（`DatasetBands` 集合） | ✅ `bands(): RasterBand[]`、`band(i)`、`bandCount`，**同一对象也是集合**：`bands.get(1)` / `count()` / `forEach` / `map` / 迭代器 | 见 A9 |
+| `layers`（`DatasetLayers` 集合） | ✅ `layers()`、`layer(i)`、`layerByName()`、`layerCount`，**同一对象也是集合**：`layers.get(1)` / `get('name')` / `count()` / 迭代器 | 见 A9 |
 | `rasterSize` / `rasterSizeAsync` | ✅ `rasterSize` 对象；`rasterSizeAsync` ❌ 非目标 | 异步 getter，见 A8 |
 | `geoTransform`（可读写） | ✅ getter + `setGeoTransform()` | 赋值风格不同 |
 | `srs`（getter/setter + `srsAsync`） | ✅ `spatialRef` getter + `setProjection`（收 WKT 或 `SpatialRef`） | |
@@ -153,8 +156,8 @@ GDAL 的数字码属于兼容层（WS-7），那里 `gdal-async` 的形状才是
 
 | gdal-async | 我们 | 备注 |
 |---|---|---|
-| `pixels`（`RasterBandPixels`）| ✅ `readPixels`/`readAs`/`writePixels`/`getPixel`/`setPixel`/`readValues`/`writeValues`/`readBlock`/`writeBlock` 直接挂在 band 上；`createReadStream`/`createWriteStream` 也在 | `pixels` **对象**形态归 compat |
-| `overviews`（集合 + 迭代器） | ✅ `overviews` 数组（`index`/`size`/`dataType`/`readSync`/`read`） | |
+| `pixels`（`RasterBandPixels`）| ✅ **`band.pixels` 对象已落地**（`get`/`set`/`read`/`readAsync`/`write`/`writeAsync`/`readBlock`/`writeBlock`/`readValues`/`writeValues`/`createReadStream`/`createWriteStream`/`band`），底下就是下述那些方法 | 见 A9 |
+| `overviews`（集合 + 迭代器） | ✅ `overviews` 数组（`index`/`size`/`dataType`/`readSync`/`read`），**同一数组也是集合**：`get(1)` / `count()` / `getNames()` / `getBySampleCount(n)` / 异步迭代器 | 见 A9 |
 | `colorTable` / `colorTableAsync` | ✅ `colorTable`/`paletteInterpretation`/`setColorTable` | |
 | `mask` / `maskAsync` | ✅ `mask`/`maskFlags`/`createMask` | |
 | `noDataValue`（可赋值） | ✅ `noDataValue` + `setNoDataValue()` | |
@@ -180,8 +183,8 @@ GDAL 的数字码属于兼容层（WS-7），那里 `gdal-async` 的形状才是
 | `Feature` 类（`fields`、`geometry`、`fid`、`defn`） | ✅ `layer.getFeature(fid)` → `Feature`（`fields`/`geometry`/`fid`/`defn`/`toObject`）；`FeatureRecord` 普通对象仍在 | |
 | `FeatureFields`（`.get/.set/.toObject/.toArray/.forEach`） | ✅ `Feature.fields`（`get/has/set/names/count/toObject/toArray`） | |
 | `FeatureDefn` / `FieldDefn` | ✅ `layer.defn`（`FeatureDefn`）、`FieldInfo` 即 `FieldDefn` | |
-| `Layer.fields`（可 `add/remove/reorder/alter`） | ✅ `layer.field(name)` / `addField` / `deleteField` / `reorderFields` | |
-| `Layer.features`（集合：`get/first/last/next/previous/count/forEach/Symbol.iterator/Symbol.asyncIterator`） | ✅ 能力齐：`featuresSync()`（同步可迭代数组）、`features()`（Promise）、`openCursor()`（`Symbol.asyncIterator`）、`feature(fid)` | `first/last/next/previous` 与集合**对象**形态归 compat |
+| `Layer.fields`（可 `add/remove/reorder/alter`） | ✅ `layer.field(name)` / `addField` / `deleteField` / `reorderFields`，且 `fields` **既是数组也是集合**：`fields.get('name')` / `getNames()` / `count()` | 见 A9 |
+| `Layer.features`（集合：`get/first/last/next/previous/count/forEach/Symbol.iterator/Symbol.asyncIterator`） | ✅ 能力齐：`featuresSync()`（同步可迭代数组）、`features()`（Promise）、`openCursor()`（`Symbol.asyncIterator`）、`feature(fid)`；`features` **既是调用也是集合**：`count()` / `get(fid)` / 同步与异步迭代器 | `first/last/next/previous` 归 compat（它们属于迭代状态） |
 | `Layer.getFeature(fid)` | ✅ `feature(fid)` 与 `getFeature(fid)`（对象形式） | |
 | `Layer.setSpatialFilter(geom)`（收几何对象） | ✅ 收 `Geometry` 或 GeoJSON；`getSpatialFilter()` 是读侧 | |
 | `Layer.srs`（getter/setter） | ✅ setter 已落地：`setSpatialRef(wkt 或 SpatialRef)` | GDAL 的 C API 没有 `OGR_L_SetSpatialRef`（图层的 CRS 就是它几何字段的），但 `OGR_L_AlterGeomFieldDefn` 是**驱动**认可的事后改法。**能否改由驱动决定**：GPKG / Shapefile 接受并持久化（`.prj` 被重写），GeoJSON / SQLite / FlatGeobuf 以 `AlterGeomFieldDefn() not supported by this layer` 拒绝并报出驱动名（实测）。读不了的 CRS 在动任何东西之前就被拒。早先记的「做不到」是走错了门（写了 seal 后的定义对象） |
@@ -237,9 +240,11 @@ GDAL 的数字码属于兼容层（WS-7），那里 `gdal-async` 的形状才是
 - `MDArray` / `Group` / `Attribute` / `Dimension` —— ✅ **已完成**，走 GDAL 自己的 C API：
   `Dataset.root`（`open(..., { multidimensional: true })`）开门，结构 / 属性 / CRS /
   `read` / `getView` / `getMask` / `asDataset` 俱全；反方向有 `band.asMDArray()`。
-  `gdal.features().multidimensional === true`。集合形态（`root.arrays` 之类）不做，理由同 A3。
-- 集合（`root.arrays` / `groups` / `attributes`）—— ❌ **非目标**：形状归 `compat`，同
-  A2/A3 的集合条目；命名式入口（`openArray(name)` / `arrayNames()`）已覆盖同样的能力。
+  `gdal.features().multidimensional === true`。集合形态也已落地（见 A9）：`group.arrays` /
+  `group.groups` 是新名字，`group.attributes` / `group.dimensions` 与 `mdarray.attributes` /
+  `mdarray.dimensions` 保持原有那次调用，同时挂上 `get` / `count` / `getNames` / 迭代器。
+- 集合（`root.arrays` / `groups` / `attributes`）—— ✅ 已落地（A9），`arrays` / `groups` 是
+  新名字，`attributes` / `dimensions` 与原有调用共存。
 - `RasterReadStream` / `RasterWriteStream` —— ✅ 后由外壳（`index.js`）在分块读写之上补上：
   `band.createReadStream()` / `createWriteStream()`；`RasterMuxStream` / `RasterTransform`
   与它们之上的 `calcAsync` 也已补齐
@@ -262,6 +267,43 @@ GDAL 的数字码属于兼容层（WS-7），那里 `gdal-async` 的形状才是
 
 异步 getter 的取舍记录在 WS-4；每数据集队列与锁模型的关系记录在 Phase 2 与
 [`docs/PARITY.md`](./docs/PARITY.md)。
+
+### A9. 集合形态：一个成员，两种拼法
+
+参考把容器拼成一个对象（`get` / `count` / `getNames` / 迭代器），本绑定拼成一次调用
+（返回数组）。两者曾是互斥的选择：把成员换成集合对象就会顶掉那次调用，而把形状写在
+JS 里则 `binding.d.ts` 管不到。
+
+JS 的函数本身就是对象，所以两者可以是同一个东西：**调用原样不动，集合表面挂在那个可
+调用的东西上**。
+
+```js
+dataset.bands()          // 一如既往：数组
+dataset.bands.get(1)     // 参考的拼法：第一条波段
+dataset.bands.count()    // 几条
+for (const band of dataset.bands) …          // 同步迭代
+for await (const band of dataset.bands) …    // 异步迭代
+```
+
+落在：`gdal.drivers`、`dataset.bands`、`dataset.layers`、`layer.fields`、
+`layer.features`（`count()` / `get(fid)`）、`band.overviews`（`getBySampleCount(n)`）、
+多维模型的 `group.arrays` / `group.groups` / `group.attributes` / `group.dimensions` /
+`mdarray.attributes` / `mdarray.dimensions`，以及新的 `band.pixels` 对象。
+
+三条实现约束，都是踩出来的：
+
+1. **必须是 getter，不能把表面挂在原型方法上**。`dataset.bands.get(1)` 里 `this` 是那个
+   函数，不是数据集 —— 「这个集合属于谁」只有在 getter 跑的那一刻才知道。于是做成
+   getter：返回一个**已绑定到该对象**的可调用集合，按对象存在 `WeakMap` 里，所以
+   `dataset.bands === dataset.bands` 与参考的「每个数据集一个集合对象」一致。
+2. **索引 1-based**（`get(1)` 是第一个），与参考的集合一致；唯一的例外是
+   `gdal.drivers.get(n)`，参考那里就是 0-based，照办。而元素自己的 `index`
+   （如 `overview.index`）仍按本绑定的 0-based 约定。
+3. **类型只能在"新名字"上做全**。`band.pixels` / `group.arrays` / `group.groups` 是新成
+   员，`index.d.ts` 用 `interface` 合并声明得干净利落；`dataset.bands` / `layer.features` /
+   `band.overviews` 的类型归生成的 `binding.d.ts` 所有，**类成员的既有类型没法从手写那半
+   边加宽** —— 运行时两种拼法都在，但 TS 调用方看到的是 `Array<RasterBand>`，得自己说出来。
+   这与几何子类族是同一个约束，见 A4 与 [`docs/PARITY.md`](./docs/PARITY.md)。
 
 ---
 
@@ -379,11 +421,14 @@ compat 层用测试锁住形状即可。它的价值是——**让 `gdal-async` 
 **WS-2 · Driver 与 Dataset 对象模型**
 - `Driver`：`name`、`longName`、`description`、`metadata(DMD_*)`、`open()`、`create()`、
   `createCopy()`、`delete()`、`testCapability()`。
-- `gdal.drivers` 变成集合（`get(name)`、`count()`、`Symbol.iterator`），
-  **保留 `drivers()` 数组形式**（纯增量）。
+- ✅ `gdal.drivers` 也是集合（`get(name)` / `get(i)` / `count()` / `getNames()` / 迭代器），
+  `drivers()` 数组形式原样保留（纯增量）—— 做法见 A9，同一手法用在 `dataset.bands` /
+  `dataset.layers` / `layer.fields` / `layer.features` / `band.overviews` / 多维四集合上。
 - `Dataset`：`getFileList()`、`description`、`rasterSize` 对象、`srs` setter（收 `SpatialRef`）、
   `driver` 返回 Driver 对象（名字仍可用 `driver.name`）。
-- `DatasetBands` / `DatasetLayers` 集合类 + `Symbol.iterator` / `Symbol.asyncIterator`。
+- ✅ `DatasetBands` / `DatasetLayers` 集合类 + `Symbol.iterator` / `Symbol.asyncIterator`
+  —— 以 A9 的"一个成员两种拼法"落地（`dataset.bands.get(1)` / `count()` / 两种迭代器，
+  `dataset.bands()` 原样保留），不是新类。
 
 **WS-3 · Feature / Field 对象模型**
 - `Feature`：`fid`、`fields`（`get/set/toObject/toArray/forEach`）、`geometry`（`Geometry`）、

@@ -987,6 +987,249 @@ binding.createPixelFunc = createPixelFunc
 binding.createPixelFuncWithArgs = createPixelFuncWithArgs
 binding.wrapVRT = wrapVRT
 
+// ---- gdal-async's collection shapes, on this binding's own members ------------
+//
+// The reference spells a container as an object with `get` / `count` / `getNames` and
+// iterators. This binding spells it as a *call* that returns an array, which is what
+// the rest of the surface is built on. Making the member a plain collection would
+// replace that call — a break.
+//
+// A JavaScript function is an object, though, so both can be one thing. The member
+// becomes a getter that hands back **a callable carrying the collection surface**,
+// bound to the object it was reached through:
+//
+//   dataset.bands()        // what it always was: the array
+//   dataset.bands.get(1)   // the first band, as the reference counts
+//   for (const b of dataset.bands) …
+//
+// It has to be a getter rather than a property hung on the prototype method: inside
+// `dataset.bands.get(1)` the receiver is that function, not the dataset, so the object
+// the collection belongs to is only knowable at the moment the getter runs. One
+// callable per object, kept in a `WeakMap`, so `dataset.bands === dataset.bands` the
+// way the reference's collection is.
+
+/** The reference counts from 1, so `get(1)` is the first. */
+function pick(list, indexOrName) {
+  if (typeof indexOrName === 'number') return list[indexOrName - 1] ?? null
+  return list.find((item) => (item.name ?? item.fName) === indexOrName) ?? null
+}
+
+/** The collection surface, on `obtain` — a call that returns the items. */
+function asCollection(obtain, { names, extra } = {}) {
+  const items = () => obtain()
+  Object.defineProperties(obtain, {
+    get: { configurable: true, value: (indexOrName) => pick(items(), indexOrName) },
+    count: { configurable: true, value: () => items().length },
+    forEach: {
+      configurable: true,
+      value: (callback) => items().forEach((item, index) => callback(item, index + 1)),
+    },
+    map: {
+      configurable: true,
+      value: (callback) => items().map((item, index) => callback(item, index + 1)),
+    },
+  })
+  if (names) {
+    Object.defineProperty(obtain, 'getNames', {
+      configurable: true,
+      value: () => items().map(names),
+    })
+  }
+  for (const [name, member] of Object.entries(extra ?? {})) {
+    Object.defineProperty(obtain, name, { configurable: true, value: member })
+  }
+  Object.defineProperty(obtain, Symbol.iterator, {
+    configurable: true,
+    value: function* () {
+      yield* items()
+    },
+  })
+  Object.defineProperty(obtain, Symbol.asyncIterator, {
+    configurable: true,
+    value: async function* () {
+      // `await`, because the call behind a collection may answer a promise —
+      // `layer.features()` does.
+      for (const item of await items()) yield item
+    },
+  })
+  return obtain
+}
+
+/**
+ * Replace a prototype method with a getter that hands back the callable collection —
+ * the old method, bound to whatever object it was reached through, wearing `get` /
+ * `count` / `getNames` and the iterators.
+ */
+function collectionMember(prototype, name, { names, extra } = {}) {
+  const descriptor = Object.getOwnPropertyDescriptor(prototype, name)
+  const original = descriptor.value
+  const perObject = new WeakMap()
+  Object.defineProperty(prototype, name, {
+    configurable: descriptor.configurable,
+    enumerable: descriptor.enumerable,
+    get() {
+      let collection = perObject.get(this)
+      if (!collection) {
+        const owner = this
+        collection = asCollection(
+          () => original.call(owner),
+          { names, extra: extra?.(owner) },
+        )
+        perObject.set(owner, collection)
+      }
+      return collection
+    },
+  })
+}
+
+/** The same surface on an array we hand back, rather than on a call. */
+function collectionArray(items, { names, extra } = {}) {
+  const collection = [...items]
+  Object.defineProperty(collection, 'get', {
+    configurable: true,
+    value: (indexOrName) => pick(items, indexOrName),
+  })
+  Object.defineProperty(collection, 'count', { configurable: true, value: () => items.length })
+  if (names) {
+    Object.defineProperty(collection, 'getNames', {
+      configurable: true,
+      value: () => items.map(names),
+    })
+  }
+  for (const [name, member] of Object.entries(extra ?? {})) {
+    Object.defineProperty(collection, name, { configurable: true, value: member })
+  }
+  Object.defineProperty(collection, Symbol.asyncIterator, {
+    configurable: true,
+    value: async function* () {
+      for (const item of items) yield item
+    },
+  })
+  return collection
+}
+
+// `gdal.drivers` is a module-level call, so it needs no receiver: the surface goes
+// straight on it. Its `get` takes a name or a 0-based index in the reference, where
+// this binding has `driver(name)` and the array — so both spellings work.
+asCollection(binding.drivers, { names: (driver) => driver.name })
+Object.defineProperty(binding.drivers, 'get', {
+  configurable: true,
+  value: (indexOrName) =>
+    typeof indexOrName === 'number'
+      ? (binding.drivers()[indexOrName] ?? null)
+      : binding.driver(indexOrName),
+})
+
+collectionMember(binding.Dataset.prototype, 'bands')
+collectionMember(binding.Dataset.prototype, 'layers')
+
+/** Wrap a member that is already a getter, so the array it answers is a collection. */
+function collectionGetter(prototype, name, { names, extra, from } = {}) {
+  const descriptor = Object.getOwnPropertyDescriptor(prototype, name)
+  Object.defineProperty(prototype, name, {
+    configurable: descriptor.configurable,
+    enumerable: descriptor.enumerable,
+    get() {
+      const items = (from ?? descriptor.get).call(this) ?? []
+      return collectionArray(items, { names, extra: extra?.(this, items) })
+    },
+  })
+}
+
+collectionGetter(binding.Layer.prototype, 'fields', { names: (field) => field.name })
+
+// `layer.features` is the reference's iterable collection. Ours is a call that answers
+// a promise, so the synchronous parts of the collection use the blocking read —
+// `count()` is the layer's own count when the driver can give one cheaply.
+collectionMember(binding.Layer.prototype, 'features', {
+  extra: (layer) => ({
+    count: () => layer.featureCount ?? layer.featuresSync().length,
+    get: (fid) => layer.feature(fid),
+  }),
+})
+
+// `band.overviews` is already a getter; the reference's is a collection with
+// `getBySampleCount`. `getBySampleCount(n)` is the first level at or below `n` samples
+// across, and the smallest level when every one of them is bigger.
+collectionGetter(binding.RasterBand.prototype, 'overviews', {
+  // The level's own `index` is 0-based, like every other index this binding reports;
+  // `get()` counts from 1, like every other collection here. Each keeps its own rule.
+  names: (overview) => overview.index,
+  extra: (_band, overviews) => ({
+    getBySampleCount: (samples) =>
+      overviews.find((overview) => overview.size[0] <= samples) ?? overviews.at(-1) ?? null,
+  }),
+})
+
+// `band.pixels` — the reference's object of pixel reads and writes. Nothing here
+// collides with it: the pixel accessors are on the band itself, and this is the same
+// set under the reference's names. One per band, as the reference builds one per band.
+const bandPixels = new WeakMap()
+
+Object.defineProperty(binding.RasterBand.prototype, 'pixels', {
+  configurable: true,
+  enumerable: true,
+  get() {
+    let pixels = bandPixels.get(this)
+    if (pixels) return pixels
+    const band = this
+    pixels = {
+      band,
+      get: (x, y) => band.getPixel(x, y),
+      set: (x, y, value) => band.setPixel(x, y, value),
+      read: (x, y, width, height, into, options) =>
+        band.readPixelsSync({ ...options, x, y, width, height, into }),
+      readAsync: (x, y, width, height, options) =>
+        band.readPixels({ ...options, x, y, width, height }),
+      write: (x, y, width, height, data) => band.writePixelsSync(data, { x, y, width, height }),
+      writeAsync: (x, y, width, height, data) => band.writePixels(data, { x, y, width, height }),
+      readBlock: (x, y) => band.readBlock(x, y),
+      writeBlock: (x, y, data) => band.writeBlock(x, y, data),
+      readValues: (x, y, width, height) => band.readValues(x, y, width, height),
+      writeValues: (x, y, width, height, data) => band.writeValues(x, y, width, height, data),
+      createReadStream: (options) => band.createReadStream(options),
+      createWriteStream: (options) => band.createWriteStream(options),
+    }
+    bandPixels.set(this, pixels)
+    return pixels
+  },
+})
+
+// ---- The multidimensional model's collections --------------------------------
+//
+// `arrays` and `groups` are new names, so they are simply getters; `attributes` and
+// `dimensions` are calls here already and get the same treatment as the document
+// model's.
+
+Object.defineProperty(binding.Group.prototype, 'arrays', {
+  configurable: true,
+  enumerable: true,
+  get() {
+    const group = this
+    return collectionArray(
+      group.arrayNames().map((name) => group.openArray(name)),
+      { names: (array) => array.name },
+    )
+  },
+})
+
+Object.defineProperty(binding.Group.prototype, 'groups', {
+  configurable: true,
+  enumerable: true,
+  get() {
+    const group = this
+    return collectionArray(
+      group.groupNames().map((name) => group.openGroup(name)),
+      { names: (child) => child.name },
+    )
+  },
+})
+
+collectionMember(binding.Group.prototype, 'attributes', { names: (attribute) => attribute.name })
+collectionMember(binding.Group.prototype, 'dimensions', { names: (dimension) => dimension.name })
+collectionMember(binding.MDArray.prototype, 'attributes', { names: (attribute) => attribute.name })
+collectionMember(binding.MDArray.prototype, 'dimensions', { names: (dimension) => dimension.name })
+
 binding.RasterMuxStream = RasterMuxStream
 binding.RasterTransform = RasterTransform
 binding.calcAsync = calcAsync

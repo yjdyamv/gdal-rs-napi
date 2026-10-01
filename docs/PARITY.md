@@ -181,13 +181,13 @@ Windows keeps the file locked — after `close()`.
 
 These are **decisions, not omissions**.
 
-- **Native collection classes** — `dataset.bands.get()` / `.count()` / `.map()` /
-  iterators, `layer.fields`, `layer.features`, `driver` collections. Our arrays
-  already have `for…of`, `forEach` and `map`, and the singular accessors
-  (`band(i)`, `layer(i)`, `field(name)`) are the `.get()`. Wrapping them would either
-  change the array returns (a break) or put the shape in JavaScript — where the
-  generated `binding.d.ts` cannot type it. This shape lives in `compat`, collections
-  and all — including the multidimensional model's.
+- **Native collection classes** — the shape, not the capability, and it is in *both*
+  entries now. This binding spells a container as a call that returns an array;
+  gdal-async spells it as an object with `get` / `count` / `getNames` and iterators; a
+  JavaScript function is an object, so the call carries the collection surface and the
+  two spellings are one thing (`dataset.bands()` and `dataset.bands.get(1)`). What is
+  *not* here is the typing of that on a member the generated declarations already own —
+  see `index.d.ts`, and `compat`, whose classes are its own and are typed freely.
 - **The geometry subclass family** — `Point` / `Polygon` / `MultiPolygon` / … . napi
   cannot express inheritance, and the generated declarations own the factories'
   return types, so subclass accessors could not be typed. One `Geometry` with
