@@ -8,7 +8,7 @@
 //! call.
 
 use std::collections::HashMap;
-use std::ffi::{CString, c_char};
+use std::ffi::{CString, c_char, c_int};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -611,6 +611,28 @@ fn file_list(dataset: &GdalDataset) -> Result<Vec<String>> {
     Ok(files)
 }
 
+/// A ground control point: a known correspondence between a pixel/line in the
+/// raster and a coordinate in the dataset's `gcpProjection`. The other way to
+/// georeference a raster, beside the affine `geoTransform`.
+#[napi(object)]
+#[derive(Debug, Clone)]
+pub struct Gcp {
+    /// GDAL's identifier for the point, often numeric.
+    pub id: String,
+    /// A free-form note, or the empty string.
+    pub info: String,
+    /// The pixel (column) the control point sits on.
+    pub pixel: f64,
+    /// The line (row) the control point sits on.
+    pub line: f64,
+    /// The georeferenced X for that pixel and line.
+    pub x: f64,
+    /// The georeferenced Y for that pixel and line.
+    pub y: f64,
+    /// The georeferenced Z, or `0` when the point has none.
+    pub z: f64,
+}
+
 #[napi(js_name = "Dataset")]
 pub struct JsDataset {
     dataset: DatasetRef,
@@ -839,6 +861,112 @@ impl JsDataset {
         let domain = domain.unwrap_or_default();
         self.dataset
             .with_mut(|dataset| dataset.set_metadata_item(&key, &value, &domain).gdal())
+    }
+
+    /// How many ground control points the dataset carries.
+    #[napi(getter)]
+    pub fn gcp_count(&self) -> Result<u32> {
+        ensure_initialized();
+        self.dataset.with_exclusive(|dataset| {
+            // GDAL answers -1 for "error"; treat anything negative as none.
+            Ok(unsafe { gdal_sys::GDALGetGCPCount(dataset.c_dataset()) }.max(0) as u32)
+        })
+    }
+
+    /// The CRS the ground control points are expressed in, or `null` when there is
+    /// none. Distinct from `projection`, which is the raster's own georeferencing.
+    #[napi(getter)]
+    pub fn gcp_projection(&self) -> Result<Option<String>> {
+        ensure_initialized();
+        self.dataset.with_exclusive(|dataset| {
+            let text = crate::runtime::c_string(unsafe {
+                gdal_sys::GDALGetGCPProjection(dataset.c_dataset())
+            });
+            Ok(if text.is_empty() { None } else { Some(text) })
+        })
+    }
+
+    /// The ground control points, in order — `[]` when there are none.
+    #[napi(js_name = "getGCPs")]
+    pub fn get_gcps(&self) -> Result<Vec<Gcp>> {
+        ensure_initialized();
+        self.dataset.with_exclusive(|dataset| {
+            let count = unsafe { gdal_sys::GDALGetGCPCount(dataset.c_dataset()) };
+            if count <= 0 {
+                return Ok(Vec::new());
+            }
+            let list = unsafe { gdal_sys::GDALGetGCPs(dataset.c_dataset()) };
+            if list.is_null() {
+                return Ok(Vec::new());
+            }
+            Ok((0..count as usize)
+                .map(|index| {
+                    let gcp = unsafe { *list.add(index) };
+                    Gcp {
+                        id: crate::runtime::c_string(gcp.pszId),
+                        info: crate::runtime::c_string(gcp.pszInfo),
+                        pixel: gcp.dfGCPPixel,
+                        line: gcp.dfGCPLine,
+                        x: gcp.dfGCPX,
+                        y: gcp.dfGCPY,
+                        z: gcp.dfGCPZ,
+                    }
+                })
+                .collect())
+        })
+    }
+
+    /// Write the ground control points back, with the CRS they are in.
+    ///
+    /// This is the other way to georeference a raster — a set of correspondences
+    /// rather than an affine `geoTransform` — and the warper uses it when a warp is
+    /// asked for `-tps` or the source has no transform. `projection` is the CRS the
+    /// points are expressed in; pass `null` to leave the stored one alone.
+    #[napi(js_name = "setGCPs")]
+    pub fn set_gcps(&self, gcps: Vec<Gcp>, projection: Option<String>) -> Result<()> {
+        ensure_initialized();
+        // The C struct holds `const char *`, so the strings have to outlive the call.
+        let ids: Vec<CString> = gcps
+            .iter()
+            .map(|gcp| CString::new(gcp.id.as_str()))
+            .collect::<std::result::Result<_, _>>()
+            .map_err(|_| bad_argument("a GCP id cannot contain a NUL byte"))?;
+        let infos: Vec<CString> = gcps
+            .iter()
+            .map(|gcp| CString::new(gcp.info.as_str()))
+            .collect::<std::result::Result<_, _>>()
+            .map_err(|_| bad_argument("a GCP info cannot contain a NUL byte"))?;
+        let projection = projection
+            .map(CString::new)
+            .transpose()
+            .map_err(|_| bad_argument("a projection cannot contain a NUL byte"))?;
+
+        self.dataset.with_mut(|dataset| {
+            let points: Vec<gdal_sys::GDAL_GCP> = gcps
+                .iter()
+                .enumerate()
+                .map(|(index, gcp)| gdal_sys::GDAL_GCP {
+                    pszId: ids[index].as_ptr() as *mut c_char,
+                    pszInfo: infos[index].as_ptr() as *mut c_char,
+                    dfGCPPixel: gcp.pixel,
+                    dfGCPLine: gcp.line,
+                    dfGCPX: gcp.x,
+                    dfGCPY: gcp.y,
+                    dfGCPZ: gcp.z,
+                })
+                .collect();
+            let status = unsafe {
+                gdal_sys::GDALSetGCPs(
+                    dataset.c_dataset(),
+                    points.len() as c_int,
+                    points.as_ptr(),
+                    projection
+                        .as_ref()
+                        .map_or(std::ptr::null(), |text| text.as_ptr()),
+                )
+            };
+            crate::raster_tools::cpl_result(status)
+        })
     }
 
     /// Band at `index`, **0-based** (GDAL itself is 1-based).

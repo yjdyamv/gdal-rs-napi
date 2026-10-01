@@ -270,6 +270,9 @@ test('the GEOS operations answer, or say why they cannot', () => {
       () => a.convexHull(),
       () => a.simplify(0.1),
       () => a.union(b),
+      () => a.makeValid(),
+      () => a.boundary(),
+      () => a.simplifyPreserveTopology(0.1),
     ]) {
       assert.throws(call, /no GEOS/)
     }
@@ -294,6 +297,26 @@ test('the GEOS operations answer, or say why they cannot', () => {
   assert.ok(a.buffer(1).area() > 4, 'a buffer covers more than the original')
   assert.equal(a.simplify(0.1).type, 'Polygon')
   assert.ok(a.distance(b) >= 0)
+
+  // The repair and boundary GEOS adds on top of the predicates.
+  assert.equal(a.makeValid().isValid(), true)
+  assert.equal(typeof a.boundary().type, 'string')
+  assert.equal(a.simplifyPreserveTopology(0.1).type, 'Polygon')
+})
+
+test('rings, GML and KML are the questions and encodings that need no GEOS', () => {
+  // WKT has no LINEARRING type; a closed, simple linestring is a ring.
+  const ring = Geometry.fromWkt('LINESTRING (0 0, 2 0, 2 2, 0 0)')
+  const line = Geometry.fromWkt('LINESTRING (0 0, 1 1, 2 0)')
+  assert.equal(ring.isRing(), true)
+  assert.equal(line.isRing(), false)
+
+  const point = Geometry.fromWkt('POINT (10 20)')
+  assert.match(point.toGML(), /10/)
+  assert.match(point.toGML(), /Point/)
+  assert.match(point.toKML(), /10/)
+  // The altitude mode is passed through to GDAL's KML writer.
+  assert.equal(typeof point.toKML('absolute'), 'string')
 })
 
 test('a malformed input is refused at the call, not accepted as an empty geometry', () => {

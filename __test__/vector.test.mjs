@@ -257,6 +257,9 @@ test('attribute and spatial filters narrow the feature set', () => {
   layer.setAttributeFilter(null)
   assert.equal(layer.featuresSync().length, 3)
 
+  // No filter yet.
+  assert.equal(layer.getSpatialFilter(), null)
+
   // A box around the first point only.
   layer.setSpatialFilterRect(9.5, 19.5, 10.5, 20.5)
   assert.deepEqual(
@@ -264,8 +267,12 @@ test('attribute and spatial filters narrow the feature set', () => {
     ['alpha'],
   )
 
+  // The read side reports what GDAL stored: a rectangle is a polygon there.
+  assert.equal(layer.getSpatialFilter().type, 'Polygon')
+
   layer.clearSpatialFilter()
   assert.equal(layer.featuresSync().length, 3)
+  assert.equal(layer.getSpatialFilter(), null)
 
   dataset.close()
 })

@@ -11,6 +11,8 @@
 //! GEOS call its own context, and the last-error slot is thread-local — so two of
 //! these run at once without touching each other. See `runtime` for the split.
 
+use std::ffi::{CString, c_char};
+
 use gdal::vector::{Geometry, OGRwkbGeometryType, geometry_type_flatten, geometry_type_has_z};
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
@@ -188,6 +190,28 @@ unsafe fn adopt(handle: gdal_sys::OGRGeometryH) -> Result<JsGeometry> {
         ));
     }
     Ok(JsGeometry::wrap(Geometry::from_wkb(&bytes).gdal()?))
+}
+
+/// Adopt a geometry GDAL handed over, taking ownership of `handle`.
+///
+/// The same WKB round trip [`adopt`] makes, exposed for the callers outside this
+/// module — a layer's spatial filter is a handle the layer owns, so it is cloned
+/// first and the clone handed here.
+pub(crate) fn adopt_handle(handle: gdal_sys::OGRGeometryH) -> Result<JsGeometry> {
+    unsafe { adopt(handle) }
+}
+
+/// Copy a string GDAL allocated and release it.
+///
+/// `OGR_G_ExportToGML` / `ExportToKML` hand back `CPLMalloc`'d memory the caller
+/// owns; `CPLFree` is `VSIFree` in GDAL's own headers, and that is the symbol bound
+/// here.
+fn take_owned_string(ptr: *mut c_char) -> String {
+    let text = crate::runtime::c_string(ptr);
+    if !ptr.is_null() {
+        unsafe { gdal_sys::VSIFree(ptr.cast()) };
+    }
+    text
 }
 
 #[napi]
@@ -672,6 +696,83 @@ impl JsGeometry {
     #[napi]
     pub fn sym_difference(&self, other: &JsGeometry) -> Result<JsGeometry> {
         self.overlay(other, gdal_sys::OGR_G_SymDifference)
+    }
+
+    /// Whether the geometry is a ring — closed and not self-intersecting, the
+    /// question a `LinearRing` answers yes to. No GEOS needed.
+    #[napi]
+    pub fn is_ring(&self) -> Result<bool> {
+        ensure_initialized();
+        let _guard = lock_gdal_shared();
+        Ok(unsafe { gdal_sys::OGR_G_IsRing(self.handle()) } != 0)
+    }
+
+    /// A valid version of the geometry, as a new object — GEOS's repair for a
+    /// self-intersecting polygon.
+    #[napi]
+    pub fn make_valid(&self) -> Result<JsGeometry> {
+        require_geos()?;
+        ensure_initialized();
+        let _guard = lock_gdal_shared();
+        unsafe { adopt(gdal_sys::OGR_G_MakeValid(self.handle())) }
+    }
+
+    /// The boundary of the geometry, as a new object: a polygon's rings, a line's
+    /// endpoints. Needs GEOS.
+    #[napi]
+    pub fn boundary(&self) -> Result<JsGeometry> {
+        require_geos()?;
+        ensure_initialized();
+        let _guard = lock_gdal_shared();
+        unsafe { adopt(gdal_sys::OGR_G_Boundary(self.handle())) }
+    }
+
+    /// The geometry simplified within `tolerance` while keeping its topology —
+    /// `simplify`'s shape-preserving cousin. Needs GEOS.
+    #[napi]
+    pub fn simplify_preserve_topology(&self, tolerance: f64) -> Result<JsGeometry> {
+        require_geos()?;
+        if !(tolerance.is_finite() && tolerance >= 0.0) {
+            return Err(bad_argument(format!(
+                "a simplify tolerance has to be a finite number and not negative, got {tolerance}"
+            )));
+        }
+        ensure_initialized();
+        let _guard = lock_gdal_shared();
+        unsafe {
+            adopt(gdal_sys::OGR_G_SimplifyPreserveTopology(
+                self.handle(),
+                tolerance,
+            ))
+        }
+    }
+
+    /// The geometry as GML — the XML encoding OGR can also read. No GEOS needed.
+    #[napi(js_name = "toGML")]
+    pub fn to_gml(&self) -> Result<String> {
+        ensure_initialized();
+        let _guard = lock_gdal_shared();
+        Ok(take_owned_string(unsafe {
+            gdal_sys::OGR_G_ExportToGML(self.handle())
+        }))
+    }
+
+    /// The geometry as KML. `altitudeMode` is KML's own (`'clampToGround'`,
+    /// `'relativeToGround'`, `'absolute'`); omit it for GDAL's default.
+    #[napi(js_name = "toKML")]
+    pub fn to_kml(&self, altitude_mode: Option<String>) -> Result<String> {
+        ensure_initialized();
+        let _guard = lock_gdal_shared();
+        let mode = altitude_mode
+            .map(CString::new)
+            .transpose()
+            .map_err(|_| bad_argument("an altitude mode cannot contain a NUL byte"))?;
+        Ok(take_owned_string(unsafe {
+            gdal_sys::OGR_G_ExportToKML(
+                self.handle(),
+                mode.as_ref().map_or(std::ptr::null(), |text| text.as_ptr()),
+            )
+        }))
     }
 }
 

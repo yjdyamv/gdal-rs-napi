@@ -257,6 +257,14 @@ pub fn diagnostics() -> Diagnostics {
 #[napi]
 pub const apiVersion: &str = env!("CARGO_PKG_VERSION");
 
+/// Whether this is the **bundled** build: GDAL and PROJ compiled from source and
+/// linked statically, so the package needs nothing on the host. `false` for a build
+/// that linked a system GDAL (`--no-default-features`). It is `gdal-async`'s
+/// `bundled`, and the one-line answer to "is this self-contained".
+#[allow(non_upper_case_globals)]
+#[napi]
+pub const bundled: bool = cfg!(feature = "bundled");
+
 /// Which optional capabilities this build actually has.
 ///
 /// `info()` answers "what was GDAL compiled with" by listing GDAL's `BUILD_INFO`,

@@ -1005,6 +1005,18 @@ impl JsRasterBand {
             .with(|dataset| with_band(dataset, self.kind, |band| band.overview_count().gdal()))
     }
 
+    /// Whether GDAL can compute overviews on demand for this band — some network
+    /// sources can, and they generally have no fixed `overviews` at all. A read:
+    /// nothing is built.
+    #[napi(getter)]
+    pub fn has_arbitrary_overviews(&self) -> Result<bool> {
+        self.dataset.with(|dataset| {
+            with_band(dataset, self.kind, |band| {
+                Ok(unsafe { gdal_sys::GDALHasArbitraryOverviews(band.c_rasterband()) } != 0)
+            })
+        })
+    }
+
     /// Min, max, mean and standard deviation.
     ///
     /// By default GDAL computes them on the spot if it has nothing cached, which

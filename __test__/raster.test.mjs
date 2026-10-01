@@ -42,6 +42,24 @@ test('version() and drivers() report the statically linked build', () => {
   assert.equal(names.has('PDS'), false)
 
   assert.ok(drivers.every((d) => typeof d.longName === 'string'))
+
+  // This is the bundled build — the whole point of the package.
+  assert.equal(gdal.bundled, true)
+})
+
+test('a band says whether it has arbitrary overviews', () => {
+  const path = tmp('arbitrary-overviews.tif')
+  const dataset = gdal.createSync(path, {
+    driver: 'GTiff',
+    width: 8,
+    height: 8,
+    bandCount: 1,
+    dataType: 'Uint8',
+  })
+  // A plain file has fixed (here, no) overviews; the getter is the question a
+  // network source answers `true` to, and it is a boolean either way.
+  assert.equal(dataset.band(0).hasArbitraryOverviews, false)
+  dataset.close()
 })
 
 test('a driver the full build adds works end to end, not just in the list', () => {

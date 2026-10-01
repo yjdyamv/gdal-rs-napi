@@ -1343,6 +1343,25 @@ impl JsLayer {
             Ok(())
         })
     }
+
+    /// The spatial filter currently in force, as a `Geometry`, or `null` when there
+    /// is none — the read side of `setSpatialFilter`. A rectangle set with
+    /// `setSpatialFilterRect` comes back as a polygon, which is what GDAL stores.
+    #[napi]
+    pub fn get_spatial_filter(&self) -> Result<Option<JsGeometry>> {
+        ensure_initialized();
+        self.dataset.with_exclusive(|dataset| {
+            let layer = dataset.layer(self.index).gdal()?;
+            let handle = unsafe { gdal_sys::OGR_L_GetSpatialFilter(layer.c_layer()) };
+            if handle.is_null() {
+                return Ok(None);
+            }
+            // The layer owns the filter, so clone it before adopting — which destroys.
+            Ok(Some(crate::geometry::adopt_handle(unsafe {
+                gdal_sys::OGR_G_Clone(handle)
+            })?))
+        })
+    }
 }
 
 /// How many features a cursor pulls per read.
