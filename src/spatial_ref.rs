@@ -287,6 +287,104 @@ impl JsSpatialRef {
         clone.set_axis_mapping_strategy(strategy);
         Ok(JsSpatialRef { inner: clone })
     }
+
+    /// Build a CRS from an **ESRI WKT** string — the `.prj` ArcGIS writes, whose
+    /// dialect differs from OGC WKT. GDAL morphs it on the way in.
+    #[napi(factory, js_name = "fromESRI")]
+    pub fn from_esri(esri_wkt: String) -> Result<Self> {
+        ensure_initialized();
+        let _guard = lock_gdal_shared();
+        Ok(Self::wrap(SpatialRef::from_esri(&esri_wkt).gdal()?))
+    }
+
+    /// This CRS as XML — OSR's own serialization, alongside `wkt` and `projJson`.
+    #[napi(js_name = "toXML")]
+    pub fn to_xml(&self) -> Result<String> {
+        ensure_initialized();
+        let _guard = lock_gdal_shared();
+        self.inner.to_xml().gdal()
+    }
+
+    /// Whether the CRS is internally consistent — the check a hand-written WKT
+    /// wants. `false` is a real answer, not an error.
+    #[napi]
+    pub fn validate(&self) -> Result<bool> {
+        ensure_initialized();
+        let _guard = lock_gdal_shared();
+        Ok(unsafe { gdal_sys::OSRValidate(self.inner.to_c_hsrs()) } == 0)
+    }
+
+    /// The geographic CRS underneath this one — WGS 84 for a UTM zone, say. A new
+    /// object; this one is unchanged.
+    #[napi(js_name = "cloneGeogCS")]
+    pub fn clone_geog_cs(&self) -> Result<JsSpatialRef> {
+        ensure_initialized();
+        let _guard = lock_gdal_shared();
+        let handle = unsafe { gdal_sys::OSRCloneGeogCS(self.inner.to_c_hsrs()) };
+        if handle.is_null() {
+            return Err(bad_argument(
+                "this CRS has no geographic component to clone",
+            ));
+        }
+        // The crate keeps `from_c_hsrs` private, so the clone goes out as WKT and
+        // comes back as an owned `SpatialRef`; the intermediate is freed either way.
+        let mut wkt: *mut std::ffi::c_char = std::ptr::null_mut();
+        let status = unsafe { gdal_sys::OSRExportToWkt(handle, &mut wkt) };
+        let text = crate::runtime::c_string(wkt);
+        if !wkt.is_null() {
+            unsafe { gdal_sys::VSIFree(wkt.cast()) };
+        }
+        unsafe { gdal_sys::OSRDestroySpatialReference(handle) };
+        if status != 0 {
+            return Err(bad_argument("the geographic CRS could not be serialized"));
+        }
+        Ok(Self::wrap(SpatialRef::from_wkt(&text).gdal()?))
+    }
+
+    /// Rewrite the CRS in ESRI's dialect, in place — the reverse of `fromESRI`.
+    #[napi(js_name = "morphToESRI")]
+    pub fn morph_to_esri(&self) -> Result<()> {
+        ensure_initialized();
+        let _guard = lock_gdal_shared();
+        self.inner.morph_to_esri().gdal()
+    }
+
+    /// Rewrite the CRS from ESRI's dialect into OGC's, in place.
+    #[napi(js_name = "morphFromESRI")]
+    pub fn morph_from_esri(&self) -> Result<()> {
+        ensure_initialized();
+        let _guard = lock_gdal_shared();
+        if unsafe { gdal_sys::OSRMorphFromESRI(self.inner.to_c_hsrs()) } != 0 {
+            return Err(bad_argument(
+                "this CRS could not be morphed from ESRI's dialect",
+            ));
+        }
+        Ok(())
+    }
+
+    /// Reset this CRS, in place, to a well-known geographic one — `"WGS84"`,
+    /// `"NAD27"`, or any other name `OSRSetWellKnownGeogCS` accepts.
+    #[napi(js_name = "setWellKnownGeogCS")]
+    pub fn set_well_known_geog_cs(&self, name: String) -> Result<()> {
+        ensure_initialized();
+        let _guard = lock_gdal_shared();
+        let name = std::ffi::CString::new(name)
+            .map_err(|_| bad_argument("a well-known CRS name cannot contain a NUL byte"))?;
+        if unsafe { gdal_sys::OSRSetWellKnownGeogCS(self.inner.to_c_hsrs(), name.as_ptr()) } != 0 {
+            return Err(bad_argument("unknown well-known CRS name — try \"WGS84\""));
+        }
+        Ok(())
+    }
+
+    /// Whether the **EPSG authority** reads this CRS as latitude,longitude. It is
+    /// the authority's own order, independent of the one in force here, which
+    /// `axisMapping` reports (`traditional` unless `withAxisMapping` changed it).
+    #[napi(getter)]
+    pub fn epsg_treats_as_lat_long(&self) -> Result<bool> {
+        ensure_initialized();
+        let _guard = lock_gdal_shared();
+        Ok(unsafe { gdal_sys::OSREPSGTreatsAsLatLong(self.inner.to_c_hsrs()) } != 0)
+    }
 }
 
 /// A coordinate transformation from one CRS to another.

@@ -335,3 +335,34 @@ test('a CoordinateTransform can be told how to choose its operation', () => {
     /four numbers/,
   )
 })
+
+test('the CRS extras: XML, validation, the geographic base and the ESRI dialect', () => {
+  const utm = gdal.SpatialRef.fromEpsg(32633)
+
+  // A third serialization beside wkt and projJson, and a validation pass.
+  assert.ok(utm.toXML().length > 0)
+  assert.equal(utm.validate(), true)
+
+  // The geographic CRS underneath a UTM zone is WGS 84 — a new object, not a view.
+  const geog = utm.cloneGeogCS()
+  assert.equal(geog.isGeographic, true)
+  assert.match(geog.name, /WGS 84/)
+
+  // The order the EPSG authority reads each one in.
+  assert.equal(gdal.SpatialRef.fromEpsg(4326).epsgTreatsAsLatLong, true)
+  assert.equal(utm.epsgTreatsAsLatLong, false)
+
+  // ESRI's dialect: morph out, and read it back in.
+  const esri = gdal.SpatialRef.fromEpsg(32633)
+  esri.morphToESRI()
+  const back = gdal.SpatialRef.fromESRI(esri.wkt)
+  assert.equal(back.isProjected, true)
+  assert.equal(back.equals(gdal.SpatialRef.fromEpsg(32633)), true)
+
+  // And a well-known geographic reset, in place: it sets the GEOGCS, so a NAD27
+  // CRS becomes WGS 84.
+  const nad = gdal.SpatialRef.fromEpsg(4267)
+  nad.setWellKnownGeogCS('WGS84')
+  assert.equal(nad.isGeographic, true)
+  assert.match(nad.name, /WGS 84/)
+})
