@@ -297,3 +297,30 @@ test('a declared list field is a list only on drivers that have one', () => {
   )
   dataset.close()
 })
+
+test('copyLayer moves a layer into another dataset, schema and features', () => {
+  const source = gdal.createVectorSync(tmp('copy-source.gpkg'), 'GPKG')
+  const sourceLayer = source.createLayer({ name: 'places', geometryType: 'Point' })
+  sourceLayer.createFeature({ type: 'Point', coordinates: [1, 2] }, { name: 'one' })
+  sourceLayer.createFeature({ type: 'Point', coordinates: [3, 4] }, { name: 'two' })
+
+  const target = gdal.createVectorSync(tmp('copy-target.gpkg'), 'GPKG')
+  const copied = target.copyLayer(sourceLayer, 'places')
+
+  assert.equal(copied.name, 'places')
+  assert.equal(copied.featureCount, 2)
+  assert.deepEqual(
+    copied
+      .featuresSync()
+      .map((feature) => feature.properties.name)
+      .sort(),
+    ['one', 'two'],
+  )
+
+  // The two handles have to be different datasets: a self-copy would need both
+  // per-dataset locks at once, which is what the guard refuses.
+  assert.throws(() => target.copyLayer(copied, 'again'), /already in/)
+
+  target.close()
+  source.close()
+})

@@ -737,9 +737,19 @@ const Gdal = {
     return native.lastError()
   },
 
-  /** gdal-async's log-level switches. The native binding has no level to set. */
-  verbose() {},
-  quiet() {},
+  /** gdal-async's log-level switches — GDAL's own `CPL_DEBUG` in both directions. */
+  verbose() {
+    native.verbose()
+  },
+
+  quiet() {
+    native.quiet()
+  },
+
+  /** gdal-async's decimal-degrees-to-DMS helper, straight through to `CPLDecToDMS`. */
+  decToDMS(angle, axis, precision) {
+    return native.decToDMS(angle, axis, precision)
+  },
 
   Geometry,
   Point,

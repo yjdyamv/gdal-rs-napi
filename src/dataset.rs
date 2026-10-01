@@ -8,6 +8,7 @@
 //! call.
 
 use std::collections::HashMap;
+use std::ffi::{CString, c_char};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
@@ -206,6 +207,24 @@ impl DatasetRef {
             Self::Serialised(_) => false,
             #[cfg(gd_thread_safe)]
             Self::Concurrent { .. } => true,
+        }
+    }
+
+    /// Whether two handles name the *same* underlying dataset — two clones of one
+    /// `Arc`, not two opens of the same file.
+    ///
+    /// [`with_two`] takes both per-dataset mutexes, and they are not reentrant, so a
+    /// caller that needs two datasets has to know when it actually has one before it
+    /// deadlocks on itself.
+    pub(crate) fn same_dataset(&self, other: &Self) -> bool {
+        match self {
+            Self::Serialised(first) => {
+                matches!(other, Self::Serialised(second) if Arc::ptr_eq(first, second))
+            }
+            #[cfg(gd_thread_safe)]
+            Self::Concurrent { dataset: first } => {
+                matches!(other, Self::Concurrent { dataset: second } if Arc::ptr_eq(first, second))
+            }
         }
     }
 
@@ -924,6 +943,77 @@ impl JsDataset {
             // it was declared with rather than the one inference would have picked.
             for definition in &declared_fields {
                 crate::vector::add_field_to_layer(definition, &layer)?;
+            }
+            Ok(index)
+        })?;
+
+        Ok(JsLayer::new(self.dataset.clone(), index))
+    }
+
+    /// Copy an existing layer — schema, features and all — into this dataset under a
+    /// new name. GDAL's `GDALDatasetCopyLayer`, the way a whole layer moves between
+    /// two datasets without re-reading it feature by feature.
+    ///
+    /// `source` must belong to a **different** dataset. Copying a layer into the
+    /// dataset it is already in is refused: two handles to one dataset would have to
+    /// be held at once, and GDAL's per-dataset mutex is not reentrant. `options` are
+    /// GDAL's own layer-creation options (`name=value`), as elsewhere.
+    ///
+    /// ```js
+    /// const source = gdal.openSync('places.geojson')
+    /// const target = gdal.createSync('places.gpkg', { driver: 'GPKG' })
+    /// target.copyLayer(source.layer(0), 'places')
+    /// ```
+    #[napi]
+    pub fn copy_layer(
+        &self,
+        source: &JsLayer,
+        name: String,
+        options: Option<Value>,
+    ) -> Result<JsLayer> {
+        ensure_initialized();
+        self.dataset.ensure_vector_capable()?;
+        source.dataset().ensure_vector_capable()?;
+
+        if self.dataset.same_dataset(source.dataset()) {
+            return Err(bad_argument(
+                "a layer cannot be copied into the dataset it is already in: open a second \
+                 dataset as the destination instead",
+            ));
+        }
+
+        let name_c = CString::new(name.as_str())
+            .map_err(|_| bad_argument("a layer name cannot contain a NUL byte"))?;
+        let option_strings: Vec<CString> = crate::json::option_pairs(options.as_ref())?
+            .into_iter()
+            .map(|(key, value)| format!("{key}={value}"))
+            .map(|option| {
+                CString::new(option)
+                    .map_err(|_| bad_argument("a layer option cannot contain a NUL byte"))
+            })
+            .collect::<Result<_>>()?;
+        let mut option_ptrs: Vec<*mut c_char> = option_strings
+            .iter()
+            .map(|option| option.as_ptr().cast_mut())
+            .collect();
+        option_ptrs.push(std::ptr::null_mut());
+
+        let index = with_two(&self.dataset, source.dataset(), |dest, src| {
+            let src_layer = src.layer(source.index() as usize).gdal()?;
+            // GDAL appends the copy, so record where the layer list ended before it did.
+            let index = dest.layer_count();
+            let handle = unsafe {
+                gdal_sys::GDALDatasetCopyLayer(
+                    dest.c_dataset(),
+                    src_layer.c_layer(),
+                    name_c.as_ptr(),
+                    option_ptrs.as_mut_ptr(),
+                )
+            };
+            if handle.is_null() {
+                return Err(bad_argument(format!(
+                    "the driver could not copy the layer as {name:?}"
+                )));
             }
             Ok(index)
         })?;

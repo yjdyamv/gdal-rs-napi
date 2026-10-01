@@ -41,6 +41,7 @@ mod spatial_ref;
 mod vector;
 
 use std::collections::HashMap;
+use std::ffi::CString;
 
 use gdal::spatial_ref::SpatialRef;
 use napi_derive::napi;
@@ -290,4 +291,45 @@ pub fn features() -> FeatureSupport {
         multidimensional: false,
         streams: false,
     }
+}
+
+/// Degrees as a degrees/minutes/seconds string — GDAL's `CPLDecToDMS`.
+///
+/// `axis` is GDAL's own label for the coordinate, `"Lat"` or `"Long"`; `precision` is
+/// the decimal places on the seconds, default 2. No dataset is involved, so it takes
+/// the shared side of the lock.
+#[napi(js_name = "decToDMS")]
+pub fn dec_to_dms(
+    angle: f64,
+    axis: String,
+    precision: Option<i32>,
+) -> crate::error::Result<String> {
+    runtime::ensure_initialized();
+    let _guard = lock_gdal_shared();
+    let axis = CString::new(axis)
+        .map_err(|_| crate::error::bad_argument("the axis cannot contain a NUL byte"))?;
+    let text = unsafe { gdal_sys::CPLDecToDMS(angle, axis.as_ptr(), precision.unwrap_or(2)) };
+    Ok(runtime::c_string(text))
+}
+
+/// Turn GDAL's debug logging on, the way `--debug` does — `CPL_DEBUG=ON`.
+///
+/// It writes process-global configuration, so it takes the exclusive side of the
+/// lock, exactly as `config.set` does.
+#[napi]
+pub fn verbose() {
+    set_debug_logging("ON");
+}
+
+/// Turn GDAL's debug logging back off — `CPL_DEBUG=OFF`.
+#[napi]
+pub fn quiet() {
+    set_debug_logging("OFF");
+}
+
+fn set_debug_logging(value: &str) {
+    let _guard = runtime::lock_gdal();
+    let key = CString::new("CPL_DEBUG").expect("a literal has no NUL byte");
+    let value = CString::new(value).expect("a literal has no NUL byte");
+    unsafe { gdal_sys::CPLSetConfigOption(key.as_ptr(), value.as_ptr()) };
 }

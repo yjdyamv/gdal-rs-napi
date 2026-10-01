@@ -204,6 +204,7 @@ declare namespace gdal {
   const lastError: { class: number; number: number; message: string } | null
   function verbose(): void
   function quiet(): void
+  function decToDMS(angle: number, axis: string, precision?: number): string
 }
 
 export = gdal
