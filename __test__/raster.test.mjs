@@ -1023,3 +1023,26 @@ test('a closed dataset fails loudly instead of touching freed memory', () => {
   assert.throws(() => band.readPixelsSync(), (err) => err.code === 'GDAL_BAD_ARGUMENT')
   assert.doesNotThrow(() => dataset.close(), 'close is idempotent, not an error')
 })
+
+test('a band and a layer flush below the dataset, both ways', async () => {
+  const path = tmp('flush.tif')
+  const raster = gdal.createSync(path, {
+    driver: 'GTiff',
+    width: 4,
+    height: 4,
+    bandCount: 1,
+    dataType: 'Uint8',
+  })
+  const band = raster.band(0)
+  band.fill(5)
+  band.flushSync()
+  await band.flush()
+  raster.close()
+
+  const vector = gdal.createVectorSync(tmp('flush.gpkg'), 'GPKG')
+  const layer = vector.createLayer({ name: 'things', geometryType: 'Point', epsg: 4326 })
+  layer.createFeature({ type: 'Point', coordinates: [1, 2] }, { n: 1 })
+  layer.flushSync()
+  await layer.flush()
+  vector.close()
+})

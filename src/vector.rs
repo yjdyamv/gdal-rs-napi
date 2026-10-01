@@ -130,6 +130,18 @@ impl JsLayer {
     pub(crate) fn dataset(&self) -> &DatasetRef {
         &self.dataset
     }
+
+    /// Write this layer's pending changes to disk. The dataset `flush()` covers the
+    /// whole file; this is the per-layer one a bulk write into one layer wants.
+    fn flush_pending(&self) -> Result<()> {
+        self.dataset.with_mut(|dataset| {
+            let layer = dataset.layer(self.index).gdal()?;
+            ogr_result(
+                unsafe { gdal_sys::OGR_L_SyncToDisk(layer.c_layer()) },
+                "flush the layer",
+            )
+        })
+    }
 }
 
 /// Pull one feature across the FFI boundary.
@@ -1362,6 +1374,25 @@ impl JsLayer {
             })?))
         })
     }
+
+    /// Write the layer's pending changes to disk — `OGR_L_SyncToDisk`. The dataset
+    /// `flush()` covers the whole file; this is the per-layer one a bulk write into a
+    /// single layer wants.
+    #[napi]
+    pub fn flush_sync(&self) -> Result<()> {
+        ensure_initialized();
+        self.flush_pending()
+    }
+
+    /// The same on the thread pool — a bulk write to commit is exactly what should
+    /// not hold up the event loop.
+    #[napi(ts_return_type = "Promise<void>")]
+    pub fn flush(&self) -> AsyncTask<FlushLayerTask> {
+        AsyncTask::new(FlushLayerTask {
+            dataset: self.dataset.clone(),
+            index: self.index,
+        })
+    }
 }
 
 /// How many features a cursor pulls per read.
@@ -1638,6 +1669,28 @@ impl Task for FeaturesTask {
     fn compute(&mut self) -> napi::Result<Self::Output> {
         Ok(op(
             JsLayer::new(self.dataset.clone(), self.index).read_features()
+        ))
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
+        output.map_err(|(code, reason)| into_status_error(code, reason))
+    }
+}
+
+/// The thread-pool half of `Layer.flush`: `OGR_L_SyncToDisk`, the same body
+/// `flushSync()` runs.
+pub struct FlushLayerTask {
+    dataset: DatasetRef,
+    index: usize,
+}
+
+impl Task for FlushLayerTask {
+    type Output = OpResult<()>;
+    type JsValue = ();
+
+    fn compute(&mut self) -> napi::Result<Self::Output> {
+        Ok(op(
+            JsLayer::new(self.dataset.clone(), self.index).flush_pending()
         ))
     }
 

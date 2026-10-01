@@ -44,11 +44,12 @@ const methods = {
   ],
   Driver: ['create', 'createCopy', 'open'],
   FeatureCursor: ['read'],
-  Layer: ['features'],
+  Layer: ['features', 'flush'],
   RasterBand: [
     'checksum',
     'contourGenerate',
     'fillNoData',
+    'flush',
     'histogram',
     'polygonize',
     'readAs',

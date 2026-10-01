@@ -366,3 +366,39 @@ test('the CRS extras: XML, validation, the geographic base and the ESRI dialect'
   assert.equal(nad.isGeographic, true)
   assert.match(nad.name, /WGS 84/)
 })
+
+test('the CRS tail: geocentric, local, same-geog and named attributes', () => {
+  const wgs84 = gdal.SpatialRef.fromEpsg(4326)
+  const merc = gdal.SpatialRef.fromEpsg(3857)
+  const utm = gdal.SpatialRef.fromEpsg(32633)
+
+  assert.equal(wgs84.isGeocentric, false)
+  assert.equal(wgs84.isLocal, false)
+
+  // Two CRSes that share WGS 84 share a geographic basis, however they project.
+  assert.equal(merc.isSameGeogCS(utm), true)
+  assert.equal(merc.isSameGeogCS(wgs84), true)
+  // Neither has a vertical component, so that comparison is false.
+  assert.equal(merc.isSameVertCS(utm), false)
+
+  // Named attributes are the WKT nodes, by name and child index.
+  assert.match(merc.getAttrValue('PROJCS'), /Mercator/)
+  assert.equal(merc.getAttrValue('NOPE'), null)
+
+  // `autoIdentifyEPSG` works out the code where GDAL can and leaves the CRS alone
+  // where it cannot — neither case throws. On one that already knows its code it is
+  // a no-op; on a hand-written WGS 84 GEOGCS GDAL does *not* identify it here, so no
+  // authority is set, which is the honest answer to pin.
+  const known = gdal.SpatialRef.fromEpsg(4326)
+  known.autoIdentifyEPSG()
+  assert.equal(known.authCode, 4326)
+
+  const hand = gdal.SpatialRef.fromWkt(
+    'GEOGCS["WGS 84",DATUM["WGS_1984",SPHEROID["WGS 84",6378137,298.257223563,' +
+      'AUTHORITY["EPSG","7030"]],AUTHORITY["EPSG","6326"]],' +
+      'PRIMEM["Greenwich",0,AUTHORITY["EPSG","8901"]],' +
+      'UNIT["degree",0.0174532925199433,AUTHORITY["EPSG","9122"]]]',
+  )
+  assert.equal(hand.authority, null)
+  assert.doesNotThrow(() => hand.autoIdentifyEPSG())
+})

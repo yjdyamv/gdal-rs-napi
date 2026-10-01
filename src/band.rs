@@ -493,6 +493,16 @@ impl JsRasterBand {
             .with_mut(|dataset| with_band(dataset, self.kind, |band| sieve_filter(band, request)))
     }
 
+    /// Flush this band's cached writes. `with_mut`, so a read-only thread-safe
+    /// dataset refuses it the way it refuses any other write.
+    fn flush_pending(&self) -> Result<()> {
+        self.dataset.with_mut(|dataset| {
+            with_band(dataset, self.kind, |band| {
+                cpl_result(unsafe { gdal_sys::GDALFlushRasterCache(band.c_rasterband()) })
+            })
+        })
+    }
+
     fn read_sync(&self, target: Option<DataType>, options: &ReadOptions) -> Result<Vec<u8>> {
         ensure_initialized();
         // A pixel read is the one thing that runs concurrently on a thread-safe
@@ -1014,6 +1024,23 @@ impl JsRasterBand {
             with_band(dataset, self.kind, |band| {
                 Ok(unsafe { gdal_sys::GDALHasArbitraryOverviews(band.c_rasterband()) } != 0)
             })
+        })
+    }
+
+    /// Flush this band's cached writes to disk — `GDALFlushRasterCache`. The
+    /// dataset's `flush()` covers the whole file; this is the per-band one.
+    #[napi]
+    pub fn flush_sync(&self) -> Result<()> {
+        ensure_initialized();
+        self.flush_pending()
+    }
+
+    /// The same on the thread pool.
+    #[napi(ts_return_type = "Promise<void>")]
+    pub fn flush(&self) -> AsyncTask<FlushBandTask> {
+        AsyncTask::new(FlushBandTask {
+            dataset: self.dataset.clone(),
+            kind: self.kind,
         })
     }
 
@@ -2277,6 +2304,27 @@ impl Task for ChunkStreamTask {
         // `data_type` only matters when writing; this path never does.
         let band = JsRasterBand::from_kind(self.dataset.clone(), self.kind, DataType::Unknown);
         Ok(op(band.stream_chunks(&self.options, &self.on_chunk)))
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
+        output.map_err(|(code, reason)| into_status_error(code, reason))
+    }
+}
+
+/// The thread-pool half of `RasterBand.flush`, the same body `flushSync()` runs.
+pub struct FlushBandTask {
+    dataset: DatasetRef,
+    kind: BandKind,
+}
+
+impl Task for FlushBandTask {
+    type Output = OpResult<()>;
+    type JsValue = ();
+
+    fn compute(&mut self) -> napi::Result<Self::Output> {
+        // `data_type` only matters when writing; this path never does.
+        let band = JsRasterBand::from_kind(self.dataset.clone(), self.kind, DataType::Unknown);
+        Ok(op(band.flush_pending()))
     }
 
     fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {

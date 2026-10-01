@@ -385,6 +385,77 @@ impl JsSpatialRef {
         let _guard = lock_gdal_shared();
         Ok(unsafe { gdal_sys::OSREPSGTreatsAsLatLong(self.inner.to_c_hsrs()) } != 0)
     }
+
+    /// Whether the CRS is geocentric — an Earth-centred XYZ system rather than a
+    /// projected or geographic one.
+    #[napi(getter)]
+    pub fn is_geocentric(&self) -> Result<bool> {
+        ensure_initialized();
+        let _guard = lock_gdal_shared();
+        Ok(self.inner.is_geocentric())
+    }
+
+    /// Whether the CRS is *local* — a `LOCAL_CS` such as an engineering grid with no
+    /// relation to the Earth. It is the one kind PROJ will not transform.
+    #[napi(getter)]
+    pub fn is_local(&self) -> Result<bool> {
+        ensure_initialized();
+        let _guard = lock_gdal_shared();
+        Ok(self.inner.is_local())
+    }
+
+    /// Whether two CRSes share a geographic basis — same datum, same ellipsoid —
+    /// whatever their projections are. Weaker than `equals`, which compares the whole
+    /// definition.
+    #[napi(js_name = "isSameGeogCS")]
+    pub fn is_same_geog_cs(&self, other: &JsSpatialRef) -> Result<bool> {
+        ensure_initialized();
+        let _guard = lock_gdal_shared();
+        Ok(
+            unsafe { gdal_sys::OSRIsSameGeogCS(self.inner.to_c_hsrs(), other.inner.to_c_hsrs()) }
+                != 0,
+        )
+    }
+
+    /// Whether two CRSes share a vertical component. `false` when either has none.
+    #[napi(js_name = "isSameVertCS")]
+    pub fn is_same_vert_cs(&self, other: &JsSpatialRef) -> Result<bool> {
+        ensure_initialized();
+        let _guard = lock_gdal_shared();
+        Ok(
+            unsafe { gdal_sys::OSRIsSameVertCS(self.inner.to_c_hsrs(), other.inner.to_c_hsrs()) }
+                != 0,
+        )
+    }
+
+    /// A named attribute out of the CRS, the way `gdalinfo` reaches into a WKT —
+    /// `getAttrValue('PROJCS')`, `getAttrValue('UNIT', 0)`. `null` when there is no
+    /// such node; `child` defaults to 0.
+    #[napi]
+    pub fn get_attr_value(&self, name: String, child: Option<i32>) -> Result<Option<String>> {
+        ensure_initialized();
+        let _guard = lock_gdal_shared();
+        let name = std::ffi::CString::new(name)
+            .map_err(|_| bad_argument("an attribute name cannot contain a NUL byte"))?;
+        let value = unsafe {
+            gdal_sys::OSRGetAttrValue(self.inner.to_c_hsrs(), name.as_ptr(), child.unwrap_or(0))
+        };
+        if value.is_null() {
+            return Ok(None);
+        }
+        Ok(Some(crate::runtime::c_string(value)))
+    }
+
+    /// Work out the CRS's EPSG code from its definition and set it, in place — for a
+    /// hand-built WKT that carries no authority. A code GDAL cannot determine leaves
+    /// the CRS alone rather than failing.
+    #[napi(js_name = "autoIdentifyEPSG")]
+    pub fn auto_identify_epsg(&self) -> Result<()> {
+        ensure_initialized();
+        let _guard = lock_gdal_shared();
+        unsafe { gdal_sys::OSRAutoIdentifyEPSG(self.inner.to_c_hsrs()) };
+        Ok(())
+    }
 }
 
 /// A coordinate transformation from one CRS to another.
