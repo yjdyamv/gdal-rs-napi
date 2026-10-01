@@ -3,6 +3,9 @@
 > <https://mmomtchev.github.io/node-gdal-async/>）。
 > 本文只做两件事：**（A）把差距列清楚**，**（B）定下 API 稳定性的规则和补齐顺序**。
 > 上游 `ROADMAP.md` 的 Phase 0（发布）不在此范围内。
+>
+> **本文是当时（v0.2 前）的分析快照**；与 `gdal-async` 3.13 的最新逐项对照、能力边界
+> （哪些明确不做及理由）与分级路线图，见 [`docs/PARITY.md`](./docs/PARITY.md)。
 
 ---
 

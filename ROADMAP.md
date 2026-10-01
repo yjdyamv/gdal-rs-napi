@@ -125,6 +125,7 @@ MDArray、Node Streams、`calcAsync` 明确不做，记为设计取舍。
 
 ### Phase 3 — 生态与 1.0（v0.4 → v1.0，3–6 个月）
 
+- [x] **能力边界与路线图**：[`docs/PARITY.md`](./docs/PARITY.md) —— 对照 `gdal-async` 3.13 的分区矩阵（`parity` / `gap` / `non-goal`）、非目标及其理由、约定对照表，以及分级路线图（Tier 1 已落地：GCP、`getSpatialFilter`、`hasArbitraryOverviews`、几何 `makeValid`/`boundary`/`simplifyPreserveTopology`/`isRing`/`toGML`/`toKML`、`gdal.bundled`；Tier 2 见该文档）。
 - [ ] **文档站**：typedoc 生成 API reference；README 拆分（快速开始 / 迁移 / FAQ）。
 - [ ] **教程**：COG 生成流水线、Serverless 冷启动实测、并行瓦片读取、坐标系踩坑。
 - [x] **类型保障**：`binding.d.ts` 与运行时一致性测试 —— `types.test.mjs` 已重写为**双向对照运行时**：模块级导出双向集合相等、每个类的方法与静态成员逐一核对、namespace 函数核对、异步成员按类与 `async-methods.js` 对齐（不再 flatten，错挂类也能抓）、并覆盖手写外壳（`gdal.const`、`FeatureCursor[Symbol.asyncIterator]`）。
