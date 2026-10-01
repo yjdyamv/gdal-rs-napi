@@ -67,20 +67,25 @@ than filled with a second door:
 One caveat GDAL hands down rather than us: `rename` / `copyFiles` open the source as a
 **raster**, so a vector-only dataset (a bare `.gpkg`) is not recognized.
 
-### Tier 3 — `asType` shipped; the rest still needs a decision
+### Tier 3 — the band algebra shipped; Streams and the multidimensional model remain
 
-`band.asType(type)` is in: it converts a band to another sample type by translating it
-into a **new in-memory dataset** (`gdal_translate -of MEM -ot <type>`) and returns that
-band. It is *eager*, unlike the reference's VRT-backed band, and deliberately so: a VRT
-keeps a shared handle on the source, so reading it after `close()` is a use-after-free
-— measured, not assumed — and this binding's contract is that a closed dataset gives a
-clear error, never a crash.
+The band algebra is in: `asType(type)` plus the elementwise operators — `add`, `sub`,
+`mul`, `div`, `pow`; the unary `abs`, `sqrt`, `log`, `log10`; the comparisons `eq`,
+`notEq`, `lt`, `lte`, `gt`, `gte`; the logical `and`, `or`, `not`; and `ifThenElse`,
+each taking a band or a constant.
+
+It is **eager**: every result is computed once into a new in-memory dataset. The
+reference builds a lazy VRT with *pixel functions* instead, and that was not taken —
+for a reason measured rather than assumed: a VRT keeps a shared handle on its source,
+so reading the derived band after `close()`ing the source is a use-after-free (the
+`asType` probe died with an access violation), and this binding's contract is a clear
+error from a closed dataset, never a crash. Materialising, an explicit result sample
+type, and a size check between the two bands are the price of that choice.
 
 Still needing a decision:
 
 | `gdal-async` | why it is not a straight port |
 |---|---|
-| band algebra (`RasterBand.add` / `sub` / `mul` / … and `gdal.algebra`) | needs VRT *pixel functions* — a C callback GDAL invokes from inside its raster loop — which is real machinery to get right under this binding's lock; the alternative, eager arithmetic into a MEM band, is a different shape again |
 | Node `Stream`s (`pixels.createReadStream` / `createWriteStream`, `RasterReadStream`…) | overlaps `readChunks` / `readChunksSync`; the value is ecosystem compatibility, the cost is a second streaming model |
 | the multidimensional model (`Group` / `MDArray` / `Attribute` / `Dimension`) | a whole subsystem; nothing in the current use surface needs it |
 

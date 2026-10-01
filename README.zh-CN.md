@@ -324,6 +324,11 @@ band.readPixelsSync({ x: 0, y: 0, width: 256, height: 256 })
 band.readAsSync('Uint8')
 // 另一件事：得到一条**另一种类型的波段**，一次性转换进内存
 const asFloat = band.asType('Float32')
+// 以及逐元素算术：每个操作数是一条波段或一个数，每个结果都是一条新波段；
+// 比较与逻辑返回的是 0/1 的 Uint8 掩膜
+const normalized = nir.sub(red).div(nir.add(red))
+const water = normalized.gt(0.2)
+const masked = water.ifThenElse(normalized, 0)
 // 降采样：resampling 取 nearest/bilinear/cubic/cubicspline/lanczos/average/mode/gauss
 band.readPixelsSync({ outWidth: 128, outHeight: 128, resampling: 'average' })
 
@@ -334,7 +339,9 @@ dataset.close()
 ```
 
 `readAs` 是在读出去的时候转换；`asType` 是转换一次、交给你一条波段 —— 一份内存里的拷贝，
-所以源关掉之后它依然可用。
+所以源关掉之后它依然可用。算术（`add`、`sub`、`mul`、`div`、`pow`、`abs`、`sqrt`、`log`、
+`log10`、比较、逻辑运算以及 `ifThenElse`）同样是 eager 的：每个结果都是一条内存中的波段、
+独立于它的操作数，且两条波段必须尺寸一致。
 
 读取返回的是**原始字节**，因为一个返回类型不可能同时是 `Float32Array` 和
 `Uint16Array`。要看成分类型数组：

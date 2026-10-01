@@ -6,6 +6,16 @@ First working cut — everything here is new.
 
 ### Binding
 
+- `RasterBand` gains the **band arithmetic**: `add`, `sub`, `mul`, `div`, `pow`; the
+  unary `abs`, `sqrt`, `log`, `log10`; the comparisons `eq`, `notEq`, `lt`, `lte`,
+  `gt`, `gte`; the logical `and`, `or`, `not`; and `ifThenElse`. Each takes another
+  band or a plain number — `ifThenElse`, one per branch — and answers a **new band**.
+  Arithmetic and `ifThenElse` come back as `Float64`; comparisons and logic as a
+  `Uint8` mask of 0s and 1s, the way a GDAL mask is. Like `asType` it is **eager**:
+  the result is computed once into a new in-memory dataset, so it is independent of its
+  operands and survives their `close()`. That is deliberately *not* the reference's
+  lazy VRT — see `docs/PARITY.md` — and two bands of different sizes are refused
+  rather than one being resampled to the other.
 - `RasterBand.asType(type)` converts a band to another sample type as a band of a new
   **in-memory dataset** — `gdal_translate -of MEM -ot <type>`. The conversion is
   materialised, so the result is independent of the source and stays readable after the

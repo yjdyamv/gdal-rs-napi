@@ -373,6 +373,12 @@ band.readAsSync('Uint8')
 // A different thing: a *band* of another type, converted once into memory.
 const asFloat = band.asType('Float32')
 
+// And the elementwise arithmetic. Each operand is a band or a number, and each
+// answers a new band; comparisons and logic answer a Uint8 mask of 0s and 1s.
+const normalized = nir.sub(red).div(nir.add(red))
+const water = normalized.gt(0.2)
+const masked = water.ifThenElse(normalized, 0)
+
 // Downsample. `resampling` is one of: nearest, bilinear, cubic, cubicspline,
 // lanczos, average, mode, gauss.
 band.readPixelsSync({ outWidth: 128, outHeight: 128, resampling: 'average' })
@@ -385,7 +391,11 @@ dataset.close()
 ```
 
 `readAs` converts on the way out; `asType` converts once and hands back a band — an
-in-memory copy, so it stands on its own after the source is closed.
+in-memory copy, so it stands on its own after the source is closed. The arithmetic
+(`add`, `sub`, `mul`, `div`, `pow`, `abs`, `sqrt`, `log`, `log10`, the comparisons,
+the logical operators and `ifThenElse`) is eager in the same way: every result is one
+in-memory band, independent of its operands, and the two bands have to be the same
+size.
 
 The readers hand back raw bytes, because one return type cannot be a
 `Float32Array` for one band and a `Uint16Array` for the next. To view them:
