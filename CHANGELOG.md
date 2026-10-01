@@ -6,6 +6,17 @@ First working cut — everything here is new.
 
 ### Binding
 
+- `Layer.setSpatialRef(crs)` changes a layer's CRS after the layer exists, taking a WKT
+  string or a `SpatialRef`. The C API has no `OGR_L_SetSpatialRef` — a layer's CRS is
+  its geometry field's — so this goes through `OGR_L_AlterGeomFieldDefn`, which asks the
+  **driver** to rewrite the definition rather than writing through the definition
+  object, which is sealed once the layer exists. **Which formats accept it is the
+  format's**: GPKG and Shapefile do, and persist it (the `.prj` is rewritten), while
+  GeoJSON, SQLite and FlatGeobuf answer `AlterGeomFieldDefn() not supported by this
+  layer` and the call fails naming the driver. A CRS GDAL cannot read is refused before
+  anything is touched, and the layer keeps the one it had. This was previously recorded
+  as impossible; it is not — the earlier attempt went through the sealed definition
+  instead of the driver.
 - The `gdal-rs-napi/compat` layer now reshapes the **multidimensional model** as well:
   `dataset.root` is a `Group`, with the reference's `arrays` / `groups` / `attributes` /
   `dimensions` collections (`get`, `count`, `forEach`, `map`, `getNames`, both
@@ -936,13 +947,18 @@ First working cut — everything here is new.
   `Error` carries only `code` and `cause`, and only the async path goes through the
   shell at all, so fields on every synchronous error would mean wrapping the whole
   exported surface. `docs/API-STABILITY.md` states the rule.
-- A layer's CRS can be read but not changed after the layer exists. GDAL's C API
-  offers `OGR_L_GetSpatialRef` and no setter — the C++ `OGRLayer::SetSpatialRef` is
-  a virtual the C surface does not reach, and going through the layer definition's
-  geometry field is refused once the definition is sealed (GPKG answers
-  `OGRGeomFieldDefn::SetSpatialRef() not allowed on a sealed object`). So the CRS is
-  set where the layer is created: `createLayer({ epsg })` or `{ wkt }`. The dataset's
-  own CRS is still writable with `setProjection`.
+- A layer's CRS can be changed after the layer exists — `layer.setSpatialRef(wkt)` or
+  a `SpatialRef` — but **which formats allow it is the format's business**, and that is
+  worth knowing before reaching for it. GDAL's C API has no `OGR_L_SetSpatialRef`: a
+  layer's CRS is its geometry field's, and the way to change one afterwards is
+  `OGR_L_AlterGeomFieldDefn`, which asks the *driver* to rewrite the definition. Going
+  through the definition object directly does not work — it is sealed once the layer
+  exists, and GPKG answers `OGRGeomFieldDefn::SetSpatialRef() not allowed on a sealed
+  object`. So GPKG and Shapefile take it (and persist it — the `.prj` is rewritten),
+  while GeoJSON, SQLite and FlatGeobuf answer `AlterGeomFieldDefn() not supported by
+  this layer` and the call fails naming them. The CRS is still set where the layer is
+  created — `createLayer({ epsg })` or `{ wkt }` — and the dataset's own CRS remains
+  writable with `setProjection`.
 - `buildOverviews({ bands })` is passed through, but GTiff — the only writable
   overview driver compiled in — refuses anything short of every band.
 - No terrain algorithms beyond the ones `gdaldem` itself offers.

@@ -999,9 +999,18 @@ const target = gdal.createVectorSync('places.gpkg', 'GPKG')
 target.copyLayer(source.layer(0), 'places')  // 要素、字段一并带过去
 ```
 
-图层的 CRS 在创建时给定 —— `createLayer({ epsg })` 或 `{ wkt }` —— 之后无法更改：GDAL 的 C API
-只暴露 `OGR_L_GetSpatialRef`，没有 setter，这里没有可调用的东西。数据集自己的 CRS 仍可用
-`setProjection` 写回。
+图层的 CRS 在创建时给定 —— `createLayer({ epsg })` 或 `{ wkt }` —— 之后也可以改：
+
+```js
+layer.setSpatialRef('EPSG:3857')                       // 或一个 SpatialRef
+layer.setSpatialRef(gdal.SpatialRef.fromEpsg(32633))
+```
+
+**哪些格式允许改，是格式自己的事**，用之前值得知道。GDAL 的 C API 没有 `OGR_L_SetSpatialRef`；
+图层的 CRS 其实就是它几何字段的 CRS，所以这条路走 `OGR_L_AlterGeomFieldDefn`，由**驱动**去重写定义
+—— 直接写定义对象本身不行，图层一旦存在它就被封了。于是 **GPKG 与 Shapefile 接受**并会持久化
+（`.prj` 被重写），而 **GeoJSON / SQLite / FlatGeobuf 不接受**，调用会带着驱动名报错，而不是悄悄
+什么都不做。数据集自己的 CRS 另由 `setProjection` 改写。
 
 ### 声明式 schema
 
@@ -1619,10 +1628,12 @@ GDAL 的读取位置在图层上，所以同一图层同时只能有一个读取
 唯一的不对称是 `scale` 与 `offset` 没有“清除”：GDAL 的 setter 只收数字，所以 `0` 就是一个普通
 取值。
 
-图层的 CRS 只能在创建时设定：GDAL 的 C API 只暴露 `OGR_L_GetSpatialRef`，没有 setter —— C++ 的
-`OGRLayer::SetSpatialRef` 是 C 表面够不到的虚函数，而走图层定义的几何字段在定义被 seal 之后会被
-拒绝（GPKG 的回答是 `OGRGeomFieldDefn::SetSpatialRef() not allowed on a sealed object`）。所以
-CRS 在 `createLayer({ epsg })` / `{ wkt }` 时给出；事后 `setProjection` 能改的是数据集自己的 CRS。
+图层的 CRS 事后可改（`layer.setSpatialRef()`），但**哪些格式允许改由格式决定**：GDAL 的 C API 没有
+`OGR_L_SetSpatialRef` —— 图层的 CRS 是它几何字段的 —— 所以走 `OGR_L_AlterGeomFieldDefn`，请**驱动**
+重写定义（直接写定义对象不行，图层一旦存在它就被 seal，GPKG 会答
+`OGRGeomFieldDefn::SetSpatialRef() not allowed on a sealed object`）。GPKG 与 Shapefile 接受并持久化，
+GeoJSON / SQLite / FlatGeobuf 以 `AlterGeomFieldDefn() not supported by this layer` 拒绝并报出驱动名。
+CRS 在 `createLayer({ epsg })` / `{ wkt }` 时给出仍是最直接的做法；`setProjection` 改的是数据集自己的 CRS。
 
 Intel macOS 与 32 位目标未构建。
 

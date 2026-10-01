@@ -105,8 +105,10 @@ GDAL 的数字码属于兼容层（WS-7），那里 `gdal-async` 的形状才是
 
 ## A. 差距矩阵
 
-> **本矩阵已按当前状态刷新**。仍标 ❌ 的只剩两类，且逐条给了理由：**做不到**（GDAL 的 C API
-> 没有那个函数）与**已定案的取舍/非目标**（原生集合对象形态）。
+> **本矩阵已按当前状态刷新**。**已经没有「做不到」这一类了** —— 原先归在这一类的两条都翻了案：
+> `Layer.srs` setter 走 `OGR_L_AlterGeomFieldDefn`（由驱动改），`Layer.extent` setter 追的
+> 是一个参考实现里并不存在的 API（它只有 `getExtent()`，已补）。仍标 ❌ 的只剩**形状类非目标**：
+> 主入口里的原生集合对象形态与几何子类族，两者的形状都由 `compat` 承载。
 > 🟡 表示能力齐、只是形状或拼法与 `gdal-async` 不同（那层形状归 `compat`）。
 
 图例：✅ 有；🟡 有但形状不同；❌ 做不到 / 已定案不做。
@@ -182,9 +184,9 @@ GDAL 的数字码属于兼容层（WS-7），那里 `gdal-async` 的形状才是
 | `Layer.features`（集合：`get/first/last/next/previous/count/forEach/Symbol.iterator/Symbol.asyncIterator`） | ✅ 能力齐：`featuresSync()`（同步可迭代数组）、`features()`（Promise）、`openCursor()`（`Symbol.asyncIterator`）、`feature(fid)` | `first/last/next/previous` 与集合**对象**形态归 compat |
 | `Layer.getFeature(fid)` | ✅ `feature(fid)` 与 `getFeature(fid)`（对象形式） | |
 | `Layer.setSpatialFilter(geom)`（收几何对象） | ✅ 收 `Geometry` 或 GeoJSON；`getSpatialFilter()` 是读侧 | |
-| `Layer.srs`（getter/setter） | ❌ setter **做不到** | GDAL 的 C API 只有 `OGR_L_GetSpatialRef`，没有 setter（C++ 的 `OGRLayer::SetSpatialRef` 是虚函数，C 表面够不到）；走图层定义的几何字段在定义 seal 后被拒（GPKG 报 `not allowed on a sealed object`）。CRS 在 `createLayer({ epsg })` / `{ wkt }` 时给定 |
+| `Layer.srs`（getter/setter） | ✅ setter 已落地：`setSpatialRef(wkt 或 SpatialRef)` | GDAL 的 C API 没有 `OGR_L_SetSpatialRef`（图层的 CRS 就是它几何字段的），但 `OGR_L_AlterGeomFieldDefn` 是**驱动**认可的事后改法。**能否改由驱动决定**：GPKG / Shapefile 接受并持久化（`.prj` 被重写），GeoJSON / SQLite / FlatGeobuf 以 `AlterGeomFieldDefn() not supported by this layer` 拒绝并报出驱动名（实测）。读不了的 CRS 在动任何东西之前就被拒。早先记的「做不到」是走错了门（写了 seal 后的定义对象） |
 | `Layer.geomType` / `fidColumn` / `geomColumn` / `testCapability` | ✅ | |
-| `Layer.extent`（可赋值） | ❌ setter **做不到** | GDAL 的 C API 没有 `OGR_L_SetExtent`；`extent` 只读，`getEnvelope` 同理 |
+| `Layer.getExtent()` | ✅ `getExtent()` 与 `extent`（同一份读） | 参考实现的 `Layer` **没有**可赋值的 `extent`，只有 `getExtent()`——所以这一行原先记的「setter 做不到」追的是一个并不存在的 API（`OGR_L_SetExtent` 确实没有，但没有也不缺什么） |
 | 字段值类型：list 字段、Date/Time/Binary | ✅ 读有；写看驱动 | 已实测四种驱动（GeoJSON/SQLite 真存列表、GPKG 降级为标量、FlatGeobuf 拒绝写），推断坚持逗号连接文本；有测试钉住 |
 
 ### A5. Geometry

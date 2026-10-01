@@ -1050,6 +1050,15 @@ impl JsLayer {
         })
     }
 
+    /// The same extent, under the name the reference uses for it.
+    ///
+    /// `extent` is the shorter spelling this binding started with; a port from
+    /// gdal-async will be looking for `getExtent()`, and both go through one read.
+    #[napi(js_name = "getExtent")]
+    pub fn get_extent(&self) -> Result<Option<Vec<f64>>> {
+        self.extent()
+    }
+
     /// The layer's CRS as WKT, or `null` when it has none.
     #[napi(getter)]
     pub fn spatial_ref_wkt(&self) -> Result<Option<String>> {
@@ -1073,6 +1082,70 @@ impl JsLayer {
                 Some(srs) => Ok(Some(JsSpatialRef::wrap(srs))),
                 None => Ok(None),
             }
+        })
+    }
+
+    /// Set the layer's CRS, from WKT or a `SpatialRef`.
+    ///
+    /// The C API has no `OGR_L_SetSpatialRef`, and a layer's CRS *is* its geometry
+    /// field's — so this goes through `OGR_L_AlterGeomFieldDefn`, which hands a new
+    /// definition to the **driver** rather than writing through the definition object.
+    /// That is the whole difference, and it is what makes it possible at all: the
+    /// definition is sealed once the layer exists (`OGRGeomFieldDefn::SetSpatialRef()
+    /// not allowed on a sealed object`), and only the driver may reopen it.
+    ///
+    /// A driver that cannot alter its schema answers with an error naming it, rather
+    /// than silently doing nothing.
+    #[napi(js_name = "setSpatialRef")]
+    pub fn set_spatial_ref(&self, spatial_ref: Either<String, &JsSpatialRef>) -> Result<()> {
+        /// `ALTER_GEOM_FIELD_DEFN_SRS_FLAG` from `ogr_core.h`: take the SRS from the new
+        /// definition and leave the field's name, type and nullability as they are.
+        /// `gdal-sys` binds `OGR_L_AlterGeomFieldDefn` but not the macros that go with it.
+        const ALTER_SRS_ONLY: c_int = 0x8000;
+
+        ensure_initialized();
+        // Resolve a `SpatialRef` before taking the lock: `wkt()` takes it itself, and
+        // the lock is not reentrant.
+        let wkt = match spatial_ref {
+            Either::A(wkt) => wkt,
+            Either::B(spatial_ref) => spatial_ref.wkt()?,
+        };
+        let definition =
+            CString::new(wkt).map_err(|_| bad_argument("a CRS cannot contain a NUL byte"))?;
+        self.dataset.with_exclusive(|dataset| {
+            let layer =
+                unsafe { gdal_sys::GDALDatasetGetLayer(dataset.c_dataset(), self.index as c_int) };
+            if layer.is_null() {
+                return Err(bad_argument("this layer is no longer there"));
+            }
+            // `OSRSetFromUserInput`, so WKT, `AUTH:CODE` and a PROJ string all work.
+            let spatial_ref = unsafe { gdal_sys::OSRNewSpatialReference(std::ptr::null()) };
+            let status = unsafe { gdal_sys::OSRSetFromUserInput(spatial_ref, definition.as_ptr()) };
+            if status != gdal_sys::OGRErr::OGRERR_NONE {
+                unsafe { gdal_sys::OSRDestroySpatialReference(spatial_ref) };
+                return Err(bad_argument("GDAL could not read that CRS"));
+            }
+            unsafe {
+                let field = gdal_sys::OGR_GFld_Create(
+                    c"".as_ptr(),
+                    gdal_sys::OGRwkbGeometryType::wkbUnknown,
+                );
+                // `SetSpatialRef` *references* what it is given rather than copying it,
+                // so the definition has its own reference now and ours is released
+                // after. `OGR_L_AlterGeomFieldDefn` only borrows the definition, so it
+                // is ours to destroy either way.
+                gdal_sys::OGR_GFld_SetSpatialRef(field, spatial_ref);
+                gdal_sys::OSRRelease(spatial_ref);
+                let status = gdal_sys::OGR_L_AlterGeomFieldDefn(layer, 0, field, ALTER_SRS_ONLY);
+                gdal_sys::OGR_GFld_Destroy(field);
+                if status != gdal_sys::OGRErr::OGRERR_NONE {
+                    return Err(bad_argument(format!(
+                        "the {} driver would not change this layer's CRS ({status})",
+                        dataset.driver().short_name(),
+                    )));
+                }
+            }
+            Ok(())
         })
     }
 

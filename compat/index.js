@@ -617,11 +617,23 @@ class Layer {
     return wrapSrs(this._native.spatialRef)
   }
 
+  // Assigning a CRS to a layer that already exists — which the reference allows and
+  // which the native binding routes through the *driver*. A format that cannot rewrite
+  // its schema throws here rather than doing nothing.
+  set srs(value) {
+    this._native.setSpatialRef(value instanceof SpatialReference ? value._srs : value)
+  }
+
   get extent() {
     const extent = this._native.extent
     if (!extent) return null
     const [minX, minY, maxX, maxY] = extent
     return { minX, minY, maxX, maxY }
+  }
+
+  /** The reference's name for `extent`, which is the one a port will look for. */
+  getExtent() {
+    return this.extent
   }
 
   setSpatialFilter(geometry) {

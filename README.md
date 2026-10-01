@@ -1192,9 +1192,21 @@ target.copyLayer(source.layer(0), 'places')  // features, fields and all
 ```
 
 A layer's CRS is set where the layer is made — `createLayer({ epsg })` or `{ wkt }` —
-and cannot be changed afterwards: GDAL's C API exposes `OGR_L_GetSpatialRef` and no
-setter, so there is nothing here to call. The dataset's own CRS is still writable with
-`setProjection`.
+and can also be changed afterwards:
+
+```js
+layer.setSpatialRef('EPSG:3857')                       // or a SpatialRef
+layer.setSpatialRef(gdal.SpatialRef.fromEpsg(32633))
+```
+
+Which formats allow that is the format's business, and it is worth knowing before
+reaching for it. GDAL's C API has no `OGR_L_SetSpatialRef`; a layer's CRS is its
+geometry field's, so this goes through `OGR_L_AlterGeomFieldDefn`, which asks the
+*driver* to rewrite the definition — writing through the definition object itself does
+not work, because it is sealed once the layer exists. **GPKG and Shapefile take it**
+and persist it (the `.prj` is rewritten); **GeoJSON, SQLite and FlatGeobuf do not**,
+and the call fails naming the driver rather than silently doing nothing. The dataset's
+own CRS is separately writable with `setProjection`.
 
 ### Declaring the schema
 
