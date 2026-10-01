@@ -1101,6 +1101,7 @@ for (const name of [
   'transform',
   'unaryUnion',
   'union',
+  'unionCascaded',
 ]) {
   adoptReturns(NativeGeometry.prototype, name)
 }

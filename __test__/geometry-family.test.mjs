@@ -74,6 +74,15 @@ test('the operations re-tag what they answer, and leave the receiver alone', () 
   assert.ok(square.simplify(0.5) instanceof gdal.Polygon)
   assert.ok(square.pointOnSurface() instanceof gdal.Point)
   assert.ok(square.flattenTo2D() instanceof gdal.Polygon)
+  // `unionCascaded` is the newest operation on this list, and it is the one that caught
+  // the main entry point's own list being short of it: a `MULTIPOLYGON` of two squares
+  // sharing an edge merges into a `Polygon`, and it has to come back tagged as one.
+  const pair = Geometry.fromWkt(
+    'MULTIPOLYGON (((0 0, 1 0, 1 1, 0 1, 0 0)), ((1 0, 2 0, 2 1, 1 1, 1 0)))',
+  )
+  const merged = pair.unionCascaded()
+  assert.ok(merged instanceof gdal.Polygon)
+  assert.equal(merged.area(), 2)
 
   // The receiver keeps its own class, and the result of an operation can be operated
   // on in turn — the chain is what makes the tag worth having.
