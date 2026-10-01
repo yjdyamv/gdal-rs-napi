@@ -1302,6 +1302,146 @@ const vsimem = {
 
 let vsimemCounter = 0
 
+/**
+ * gdal-async's `Envelope`: a bounding box as an object, which is what its
+ * `geometry.getEnvelope()` answers. This binding reports an envelope as four numbers
+ * in a flat array, so this class is the shape in between — and every rule below was
+ * read out of the reference's own `api_envelope.test.ts` rather than guessed:
+ *
+ * * an envelope with **all four components zero** counts as empty, which is how that
+ *   suite defines it (a degenerate box at the origin is as empty as `{0,0,0,0}`);
+ * * `merge()` expands **in place**, from either an `x, y` pair or another envelope;
+ * * `intersects()` counts envelopes that merely **touch**;
+ * * `intersect()` is in place too, and leaves an all-zero — empty — envelope when the
+ *   two do not overlap; an empty one takes the other when the other spans the origin.
+ */
+class Envelope {
+  constructor(bounds = {}) {
+    this.minX = bounds.minX ?? 0
+    this.maxX = bounds.maxX ?? 0
+    this.minY = bounds.minY ?? 0
+    this.maxY = bounds.maxY ?? 0
+  }
+
+  isEmpty() {
+    return this.minX === 0 && this.maxX === 0 && this.minY === 0 && this.maxY === 0
+  }
+
+  merge(x, y) {
+    const other = x instanceof Envelope ? x : new Envelope({ minX: x, maxX: x, minY: y, maxY: y })
+    if (other.isEmpty()) return this
+    if (this.isEmpty()) return Object.assign(this, other)
+    this.minX = Math.min(this.minX, other.minX)
+    this.maxX = Math.max(this.maxX, other.maxX)
+    this.minY = Math.min(this.minY, other.minY)
+    this.maxY = Math.max(this.maxY, other.maxY)
+    return this
+  }
+
+  intersects(other) {
+    return !(
+      other.minX > this.maxX ||
+      other.maxX < this.minX ||
+      other.minY > this.maxY ||
+      other.maxY < this.minY
+    )
+  }
+
+  contains(other) {
+    return (
+      other.minX >= this.minX &&
+      other.maxX <= this.maxX &&
+      other.minY >= this.minY &&
+      other.maxY <= this.maxY
+    )
+  }
+
+  intersect(other) {
+    if (!this.intersects(other)) return Object.assign(this, new Envelope())
+    if (this.isEmpty()) return Object.assign(this, other)
+    this.minX = Math.max(this.minX, other.minX)
+    this.maxX = Math.min(this.maxX, other.maxX)
+    this.minY = Math.max(this.minY, other.minY)
+    this.maxY = Math.min(this.maxY, other.maxY)
+    return this
+  }
+
+  /** The box as a `Polygon`, which is what the reference hands back here. */
+  toPolygon() {
+    const { minX, minY, maxX, maxY } = this
+    return geometryFactories.fromWKT(
+      `POLYGON ((${minX} ${minY}, ${maxX} ${minY}, ${maxX} ${maxY}, ${minX} ${maxY}, ${minX} ${minY}))`,
+    )
+  }
+}
+
+/** The same box with Z, which is what a 3D geometry's envelope answers. */
+class Envelope3D extends Envelope {
+  constructor(bounds = {}) {
+    super(bounds)
+    this.minZ = bounds.minZ ?? 0
+    this.maxZ = bounds.maxZ ?? 0
+  }
+
+  isEmpty() {
+    return super.isEmpty() && this.minZ === 0 && this.maxZ === 0
+  }
+
+  merge(x, y, z) {
+    if (x instanceof Envelope3D) {
+      super.merge(x)
+      this.minZ = Math.min(this.minZ, x.minZ)
+      this.maxZ = Math.max(this.maxZ, x.maxZ)
+      return this
+    }
+    super.merge(x, y)
+    if (z !== undefined) {
+      this.minZ = Math.min(this.minZ, z)
+      this.maxZ = Math.max(this.maxZ, z)
+    }
+    return this
+  }
+
+  contains(other) {
+    return super.contains(other) && other.minZ >= this.minZ && other.maxZ <= this.maxZ
+  }
+
+  intersects(other) {
+    return super.intersects(other) && !(other.minZ > this.maxZ || other.maxZ < this.minZ)
+  }
+}
+
+// A geometry's envelope is the other half of the class above: the reference answers an
+// `Envelope` object, this binding a flat array. `nativeGeometry` is the prototype the
+// adapter is chained to, so calling *through* it is what reaches the real method
+// rather than the override — `this.envelope()` here would be this very function.
+const nativeGeometry = native.Geometry.prototype
+
+Object.assign(Geometry.prototype, {
+  envelope() {
+    // This binding answers `{ minX, minY, maxX, maxY }` already — the same four field
+    // names the reference's class carries — so the shape in between is a construction
+    // rather than a translation, and `null` (an empty geometry) is the empty box.
+    const bounds = nativeGeometry.envelope.call(this)
+    return bounds ? new Envelope(bounds) : new Envelope()
+  },
+
+  /** The reference's other spelling of the same thing, and the one its tests use. */
+  getEnvelope() {
+    return this.envelope()
+  },
+})
+
+Object.assign(Feature.prototype, {
+  getGeometry() {
+    return this.geometry
+  },
+
+  setGeometry(geometry) {
+    this.geometry = geometry
+  },
+})
+
 let driversCollection = null
 
 const Gdal = {
@@ -1355,6 +1495,8 @@ const Gdal = {
   MultiPolygon,
   GeometryCollection,
   SpatialReference,
+  Envelope,
+  Envelope3D,
 
   // The multidimensional model and its collections.
   Group,

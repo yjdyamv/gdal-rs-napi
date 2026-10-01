@@ -238,6 +238,68 @@ test('vsimem is the memory file system under the reference\'s names', () => {
   gdal.vsimem.release(anonymous)
 })
 
+test('Envelope is a box object, with the reference\'s rules for it', () => {
+  // A default envelope is all zeros, and that is what "empty" means here — the
+  // reference's own definition, which its tests check first.
+  const empty = new gdal.Envelope()
+  assert.equal(empty.isEmpty(), true)
+  assert.equal(new gdal.Envelope({ minX: 0, maxX: 5, minY: 0, maxY: 0 }).isEmpty(), false)
+
+  // merge() expands in place, from either an x, y pair or another envelope.
+  const merged = new gdal.Envelope({ minX: -1, maxX: 1, minY: -2, maxY: 2 })
+  merged.merge(2, 3)
+  assert.deepEqual([merged.minX, merged.minY, merged.maxX, merged.maxY], [-1, -2, 2, 3])
+  merged.merge(new gdal.Envelope({ minX: -3, maxX: 0, minY: 0, maxY: 1 }))
+  assert.deepEqual([merged.minX, merged.minY, merged.maxX, merged.maxY], [-3, -2, 2, 3])
+
+  const a = new gdal.Envelope({ minX: 1, maxX: 2, minY: 1, maxY: 2 })
+  assert.equal(a.intersects(new gdal.Envelope({ minX: 2, maxX: 4, minY: 1, maxY: 2 })), true)
+  assert.equal(a.intersects(new gdal.Envelope({ minX: 10, maxX: 20, minY: 10, maxY: 20 })), false)
+
+  const outer = new gdal.Envelope({ minX: -10, maxX: 10, minY: -10, maxY: 10 })
+  assert.equal(outer.contains(new gdal.Envelope({ minX: -1, maxX: 1, minY: -1, maxY: 1 })), true)
+  assert.equal(outer.contains(new gdal.Envelope({ minX: -1, maxX: 1, minY: -1, maxY: 20 })), false)
+
+  // intersect() is in place, and clearing to all zeros is the "no overlap" answer.
+  const disposable = new gdal.Envelope({ minX: 1, maxX: 2, minY: 1, maxY: 2 })
+  disposable.intersect(new gdal.Envelope({ minX: 10, maxX: 20, minY: 10, maxY: 20 }))
+  assert.equal(disposable.isEmpty(), true)
+  const overlapping = new gdal.Envelope({ minX: -10, maxX: 10, minY: -10, maxY: 10 })
+  overlapping.intersect(new gdal.Envelope({ minX: -2, maxX: 12, minY: -1, maxY: 1 }))
+  assert.deepEqual(
+    [overlapping.minX, overlapping.minY, overlapping.maxX, overlapping.maxY],
+    [-2, -1, 10, 1],
+  )
+
+  // ... and the round trip through a polygon, which is the other half of the object.
+  const box = new gdal.Envelope({ minX: -1, maxX: 5, minY: -3, maxY: 2 })
+  const polygon = box.toPolygon()
+  assert.ok(polygon instanceof gdal.Polygon)
+  const back = polygon.getEnvelope()
+  assert.ok(back instanceof gdal.Envelope)
+  assert.deepEqual([back.minX, back.minY, back.maxX, back.maxY], [-1, -3, 5, 2])
+
+  // The 3D box carries Z, and its rules extend the 2D ones.
+  const box3d = new gdal.Envelope3D({ minX: 0, maxX: 1, minY: 0, maxY: 1, minZ: -5, maxZ: 5 })
+  assert.equal(box3d.isEmpty(), false)
+  assert.equal(box3d.contains(new gdal.Envelope3D({ minX: 0, maxX: 1, minY: 0, maxY: 1 })), true)
+})
+
+test('a feature answers getGeometry and setGeometry', () => {
+  const path = tmp('compat-surface-envelope.gpkg')
+  const created = native.createVectorSync(path, 'GPKG')
+  const layer = created.createLayer({ name: 'things', geometryType: 'Point', epsg: 4326 })
+  layer.createFeature({ type: 'Point', coordinates: [1, 2] }, { name: 'one' })
+  created.close()
+
+  const dataset = gdal.open(path, 'r+')
+  const feature = dataset.layers.get(1).features.get(1)
+  assert.equal(feature.getGeometry().type, 'Point')
+  feature.setGeometry(gdal.fromWKT('POINT (9 9)'))
+  assert.equal(feature.getGeometry().toWKT(), 'POINT (9 9)')
+  dataset.close()
+})
+
 test('the numeric vocabularies come from the headers this build links', () => {
   // The values are read out of `gdal_sys` in `src/constants.rs`, never written out by
   // hand. What is pinned here are GDAL's own ABI values, so a table wired to the wrong
