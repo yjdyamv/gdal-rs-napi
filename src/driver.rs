@@ -11,6 +11,7 @@
 //! accepts are read from, instead of guessing at them.
 
 use std::collections::HashMap;
+use std::ffi::CString;
 
 use gdal::DriverManager;
 use gdal::Metadata;
@@ -180,6 +181,40 @@ impl JsDriver {
         let _guard = lock_gdal();
         let driver = DriverManager::get_driver_by_name(&self.name).gdal()?;
         driver.delete(&path).gdal()
+    }
+
+    /// Rename a dataset through this driver — `GDALRenameDataset`, the driver's own
+    /// multi-file rename: a shapefile is several files and a GeoPackage is one, and
+    /// the driver is what knows the difference.
+    ///
+    /// The arguments are the **new** name first, as GDAL's C API spells them.
+    /// GDAL's default implementation opens the source as a **raster**, so a
+    /// vector-only dataset is not recognized — GDAL's answer rather than a rule
+    /// here, and the same caveat `copyFiles` carries.
+    #[napi]
+    pub fn rename(&self, new_name: String, old_name: String) -> Result<()> {
+        ensure_initialized();
+        let _guard = lock_gdal();
+        let driver = DriverManager::get_driver_by_name(&self.name).gdal()?;
+        driver.rename(&new_name, &old_name).gdal()
+    }
+
+    /// Copy a dataset's files through this driver — `GDALCopyDatasetFiles`, the
+    /// copy twin of `rename`. The driver decides which files that is; one GDAL
+    /// cannot open as a raster says so rather than half-copying.
+    #[napi]
+    pub fn copy_files(&self, new_name: String, old_name: String) -> Result<()> {
+        ensure_initialized();
+        let _guard = lock_gdal();
+        let driver = DriverManager::get_driver_by_name(&self.name).gdal()?;
+        let new_name =
+            CString::new(new_name).map_err(|_| bad_argument("a path cannot contain a NUL byte"))?;
+        let old_name =
+            CString::new(old_name).map_err(|_| bad_argument("a path cannot contain a NUL byte"))?;
+        let status = unsafe {
+            gdal_sys::GDALCopyDatasetFiles(driver.c_driver(), new_name.as_ptr(), old_name.as_ptr())
+        };
+        crate::raster_tools::cpl_result(status)
     }
 
     /// Open a dataset **with this driver only**, so a file another driver would

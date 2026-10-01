@@ -34,7 +34,7 @@ use napi::bindgen_prelude::{Buffer, Error};
 use napi_derive::napi;
 
 use crate::error::{GdalErrorCode, IntoGdalResult, Result, bad_argument, cpl_failure};
-use crate::runtime::{c_string, ensure_initialized, lock_gdal_shared};
+use crate::runtime::{c_string, ensure_initialized, lock_gdal, lock_gdal_shared};
 
 /// GDAL's `VSI_ISDIR` and `VSI_ISREG`, which are the POSIX mode masks. The macros
 /// themselves are not bindgen-visible, but the numbers are fixed.
@@ -317,6 +317,16 @@ pub fn is_local(path: String) -> Result<bool> {
 
     let path = c_path(&path)?;
     Ok(unsafe { gdal_sys::VSIIsLocal(path.as_ptr()) })
+}
+
+/// Drop GDAL's curl cache — the memory it keeps of what it has already fetched from
+/// `/vsicurl/`, `/vsiaz/` and the rest. A no-op when nothing was fetched.
+///
+/// It clears process-global state, so it takes the exclusive side of the lock.
+#[napi(namespace = "fs")]
+pub fn clear_curl_cache() {
+    let _guard = lock_gdal();
+    unsafe { gdal_sys::VSICurlClearCache() };
 }
 
 /// A path GDAL can be handed.

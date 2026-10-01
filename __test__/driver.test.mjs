@@ -219,3 +219,35 @@ test('a dataset with nothing behind it reports no files', () => {
   assert.deepEqual(vsi.getFileList(), ['/vsimem/file-list.tif'])
   vsi.close()
 })
+
+test('a driver renames and copies a dataset, files and all', () => {
+  const from = tmp('driver-from.tif')
+  const copied = tmp('driver-copied.tif')
+  const renamed = tmp('driver-renamed.tif')
+
+  const created = gdal.createSync(from, {
+    driver: GTiff,
+    width: 4,
+    height: 4,
+    bandCount: 1,
+    dataType: 'Uint8',
+  })
+  created.band(0).fill(3)
+  created.close()
+
+  const gtiff = gdal.driver(GTiff)
+
+  // `copyFiles` is the copy twin of `rename`: the driver moves every file the
+  // dataset is made of, not just the one the path names.
+  gtiff.copyFiles(copied, from)
+  assert.equal(gdal.fs.exists(copied), true)
+
+  gtiff.rename(renamed, from)
+  assert.equal(gdal.fs.exists(renamed), true)
+  assert.equal(gdal.fs.exists(from), false)
+
+  // What came out the other side is still a GeoTIFF with its pixels.
+  const reopened = gdal.openSync(renamed)
+  assert.equal(reopened.band(0).getPixel(0, 0), 3)
+  reopened.close()
+})

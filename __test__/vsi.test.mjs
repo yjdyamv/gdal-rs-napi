@@ -204,3 +204,9 @@ test('a /vsizip/ view reads like a path but only partly writes like one', () => 
   assert.throws(() => gdal.fs.unlink(`${view}/hello.txt`))
   assert.throws(() => gdal.fs.rename(`${view}/hello.txt`, `${view}/hi.txt`))
 })
+
+test("fs clears GDAL's curl cache, which is a no-op with nothing fetched", () => {
+  // The call is here so the name is reachable; there is nothing to assert beyond
+  // that it does not throw.
+  assert.doesNotThrow(() => gdal.fs.clearCurlCache())
+})
