@@ -6,6 +6,16 @@ First working cut — everything here is new.
 
 ### Binding
 
+- `gdal.eventLoopWarning` says so when a blocking call holds the JS thread too long.
+  `false` turns the warning off, `true` turns it back on at the default threshold of
+  50 ms, and a number sets that threshold in milliseconds (the last is this binding's).
+  The blocking methods of the classes that reach a dataset are the ones timed —
+  `Dataset`, `RasterBand`, `BandOverview`, `Layer`, `FeatureCursor` — because those are
+  the calls whose length the caller cannot know, and the warning goes out through
+  `process.emitWarning` as a `GdalEventLoopWarning`:
+  ```
+  GdalEventLoopWarning: RasterBand.readPixelsSync() held the event loop for 9.1 ms
+  ```
 - Every read-only property of a `RasterBand` and a `Dataset` now has an **`xxxAsync`
   twin** that answers the same thing off the thread pool: `sizeAsync`, `blockSizeAsync`,
   `dataTypeAsync`, `colorInterpretationAsync`, `descriptionAsync`, `unitTypeAsync`,

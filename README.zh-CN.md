@@ -1381,6 +1381,26 @@ await band.dataTypeAsync   // 同一个答案，但不用为此堵住事件循�
 实现的 `Async` 后缀，也是本绑定「异步形式不带 `Sync` 后缀」这条规则**唯一**没有对象可施的地方：
 `band.dataType` 是属性，旁边不可能存在 `band.dataType()`。）
 
+### 阻塞事件循环的告警
+
+`*Sync` 调用会把 JS 线程占住多久就是多久，对服务端来说那就是事件循环停转。跑得太久时
+`gdal.eventLoopWarning` 会说一声：
+
+```
+GdalEventLoopWarning: RasterBand.readPixelsSync() held the event loop for 9.1 ms
+```
+
+`false` 关闭，`true` 用默认阈值（50 ms）重新打开，数字则直接指定阈值（毫秒）。计时对象是
+「会碰数据集」的那几个类的**阻塞方法** —— `Dataset`、`RasterBand`、`BandOverview`、`Layer`、
+`FeatureCursor` —— 因为只有它们的耗时是调用方无从预知的。告警走 `process.emitWarning`，
+所以能被接住：
+
+```js
+process.on('warning', (warning) => {
+  if (warning.name === 'GdalEventLoopWarning') log.warn(warning.message)
+})
+```
+
 ### 资源：句柄、描述符与流式读取
 
 三件放在一起看的事，都是关于一个进程**同时**开着多少东西：
@@ -1610,7 +1630,7 @@ Intel macOS 与 32 位目标未构建。
 
 主入口**不是**直接替代品 —— 它是 0-based、阻塞形式叫 `xxxSync()`、赋值靠 `setX()`。
 [`docs/PARITY.md`](./docs/PARITY.md) 是两者差距的完整清单：哪些已对齐、还有哪些**加性缺口**、
-以及**明确不做**的能力（VRT 像素函数、异步 getter、原生集合类、几何子类族），
+以及**明确不做**的少数几项（原生集合类、几何子类族），
 并附约定对照表。`gdal.bundled` 是「这个包是否自包含」的一行答案。另一个入口是：
 
 ```js

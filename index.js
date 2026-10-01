@@ -651,6 +651,75 @@ async function calcAsync(inputs, output, fn, options = {}) {
   })
 }
 
+// ---- A warning when a blocking call stops the event loop -----------------
+//
+// A `*Sync` call runs on the JS thread and holds it for as long as it takes. For a
+// server that is the event loop stopped, and the reference warns about the same thing;
+// `gdal.eventLoopWarning` is how it is turned off and on. The blocking methods of the
+// classes that reach a dataset are wrapped to time themselves — the ones that reach a
+// dataset, because those are the calls whose length is not the caller's to know.
+
+/** What "too long" means by default, in milliseconds. */
+const EVENT_LOOP_WARNING_MS = 50
+
+/** `true`/`false`, or a threshold in milliseconds. See `eventLoopWarning` below. */
+let eventLoopWarning = true
+
+/** The threshold in force, or `Infinity` when the warning is off. */
+function warningThreshold() {
+  if (eventLoopWarning === false) return Infinity
+  if (typeof eventLoopWarning === 'number') {
+    return eventLoopWarning > 0 ? eventLoopWarning : EVENT_LOOP_WARNING_MS
+  }
+  return EVENT_LOOP_WARNING_MS
+}
+
+/** The classes whose blocking methods are timed. Each one reaches a dataset. */
+const WARNED_CLASSES = ['Dataset', 'RasterBand', 'BandOverview', 'Layer', 'FeatureCursor']
+
+for (const className of WARNED_CLASSES) {
+  const prototype = binding[className]?.prototype
+  if (!prototype) continue
+  for (const name of Object.getOwnPropertyNames(prototype)) {
+    // A getter is not a call, and the async ones take themselves off the JS thread.
+    if (name === 'constructor' || asyncMethods.methods[className]?.includes(name)) continue
+    const descriptor = Object.getOwnPropertyDescriptor(prototype, name)
+    if (typeof descriptor.value !== 'function') continue
+    Object.defineProperty(prototype, name, {
+      ...descriptor,
+      value: function (...args) {
+        const threshold = warningThreshold()
+        if (threshold === Infinity) return descriptor.value.apply(this, args)
+        const started = process.hrtime.bigint()
+        const result = descriptor.value.apply(this, args)
+        const elapsed = Number(process.hrtime.bigint() - started) / 1e6
+        if (elapsed >= threshold) {
+          process.emitWarning(
+            `${className}.${name}() held the event loop for ${elapsed.toFixed(1)} ms`,
+            'GdalEventLoopWarning',
+          )
+        }
+        return result
+      },
+    })
+  }
+}
+
+/**
+ * Whether a blocking call that holds the event loop too long says so.
+ *
+ * `false` turns the warning off, `true` turns it back on at the default threshold, and
+ * a number sets the threshold in milliseconds — the last one is this binding's, and
+ * the reason the test below can trip it on a call that is not made to be slow.
+ */
+Object.defineProperty(binding, 'eventLoopWarning', {
+  enumerable: true,
+  get: () => eventLoopWarning,
+  set: (value) => {
+    eventLoopWarning = value
+  },
+})
+
 // ---- VRT pixel functions -------------------------------------------------
 //
 // A derived VRT band computes its pixels from its sources through a function GDAL

@@ -17,6 +17,7 @@ const gdal = createRequire(import.meta.url)('..')
 /** Names the JavaScript shell adds that `binding.d.ts` does not declare. */
 const SHELL_ADDITIONS = new Set([
   'const',
+  'eventLoopWarning',
   'RasterMuxStream',
   'RasterTransform',
   'calcAsync',

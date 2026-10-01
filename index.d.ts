@@ -115,6 +115,18 @@ declare const constants: GdalConstants
 export { constants as const }
 
 /**
+ * Whether a blocking call that holds the event loop too long says so, through
+ * `process.emitWarning` with the name `GdalEventLoopWarning`.
+ *
+ * `false` turns it off, `true` turns it back on at the default threshold (50 ms), and
+ * a number sets the threshold in milliseconds. What is timed is the blocking methods of
+ * the classes that reach a dataset — `Dataset`, `RasterBand`, `BandOverview`, `Layer`
+ * and `FeatureCursor` — because those are the calls whose length the caller cannot
+ * know.
+ */
+export declare let eventLoopWarning: boolean | number
+
+/**
  * A cursor pages a layer, and the natural way to read a paged source is
  *
  * ```js

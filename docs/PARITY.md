@@ -141,6 +141,19 @@ read finishes. These do the reading on the thread pool and hand the answer back.
 They report what the dataset already knows, so they are all cheap once the lock is
 had — that, and not the reference's per-dataset I/O queue, is what they are for.
 
+#### `eventLoopWarning`
+
+Also in, and for the same underlying reason: a `*Sync` call holds the JS thread for as
+long as it takes, and for a server that is the event loop stopped. The blocking methods
+of the classes that reach a dataset time themselves and go out through
+`process.emitWarning` as a `GdalEventLoopWarning` when they run long. The reference's
+switch is a boolean; here it also takes a number, which is the threshold in
+milliseconds — the default is 50 ms.
+
+Note the shape of the difference from the reference's reason: theirs warns about a
+per-dataset I/O queue holding things up, and there is no such queue here. Ours warns
+about the thread itself, which is what a synchronous call costs in any binding.
+
 #### The multidimensional model
 
 The whole subsystem is in, on GDAL's own C API: `Dataset.root` opens the door
@@ -182,8 +195,6 @@ These are **decisions, not omissions**.
 - **`toDataType` / `fromDataType` (numeric codes)** — this surface's vocabulary is
   *strings* (`band.dataType === 'Float32'`), so a numeric-code converter would hand
   back a vocabulary it neither returns nor accepts. The codes belong to `compat`.
-- **`eventLoopWarning`** — a diagnostic for the reference's per-dataset I/O queue.
-  Nothing here has that queue to warn about. Left out until someone asks.
 
 ---
 

@@ -1637,6 +1637,27 @@ here, the one place this binding's "the async form drops the `Sync` suffix" rule
 nothing to apply to: `band.dataType` is a property, so a `band.dataType()` cannot exist
 beside it.)
 
+### A warning when a blocking call stops the loop
+
+A `*Sync` call holds the JS thread for as long as it takes, and for a server that is
+the event loop stopped. `gdal.eventLoopWarning` says so when it runs long:
+
+```
+GdalEventLoopWarning: RasterBand.readPixelsSync() held the event loop for 9.1 ms
+```
+
+`false` turns it off, `true` turns it back on at the default threshold of 50 ms, and a
+number sets that threshold in milliseconds. What is timed is the blocking methods of
+the classes that reach a dataset — `Dataset`, `RasterBand`, `BandOverview`, `Layer`,
+`FeatureCursor` — because those are the calls whose length the caller cannot know. The
+warning goes through `process.emitWarning`, so it can be caught:
+
+```js
+process.on('warning', (warning) => {
+  if (warning.name === 'GdalEventLoopWarning') log.warn(warning.message)
+})
+```
+
 ### Resources: handles, descriptors and streaming
 
 Three things worth knowing together, because they are all about *how much* a process
@@ -1899,9 +1920,8 @@ artifact.
 The main entry point is **not** a drop-in replacement — it is 0-based, spells the
 blocking form `xxxSync()`, and sets through `setX()`. [`docs/PARITY.md`](./docs/PARITY.md)
 is the full accounting of where the two stand: what is at parity, the additive gaps
-still open, and the capabilities deliberately left out (VRT pixel functions, async
-getters, the native collection classes and the geometry subclass family), with the
-conventions map. A second entry point is:
+still open, and the few things deliberately left out (the native collection classes and
+the geometry subclass family), with the conventions map. A second entry point is:
 
 ```js
 const gdal = require('gdal-rs-napi/compat')

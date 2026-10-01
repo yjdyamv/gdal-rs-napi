@@ -106,7 +106,7 @@ GDAL 的数字码属于兼容层（WS-7），那里 `gdal-async` 的形状才是
 ## A. 差距矩阵
 
 > **本矩阵已按当前状态刷新**。仍标 ❌ 的只剩两类，且逐条给了理由：**做不到**（GDAL 的 C API
-> 没有那个函数）与**已定案的取舍/非目标**（原生集合对象形态、`eventLoopWarning`）。
+> 没有那个函数）与**已定案的取舍/非目标**（原生集合对象形态）。
 > 🟡 表示能力齐、只是形状或拼法与 `gdal-async` 不同（那层形状归 `compat`）。
 
 图例：✅ 有；🟡 有但形状不同；❌ 做不到 / 已定案不做。
@@ -256,7 +256,7 @@ GDAL 的数字码属于兼容层（WS-7），那里 `gdal-async` 的形状才是
 | 同步迭代器 | ✅ `for (const f of layer.features)` | ✅ `featuresSync()` / `bands()` / `layers()` 返回数组，本来就同步可迭代 |
 | **每数据集 I/O 队列** | 🟡 有 per-dataset mutex（`libuv` 线程池调度） | 🟡 **进程级 `RwLock`**：数据集走独占；`openThreadSafe()` 的读取走共享、真并行；无数据集的调用（CRS / 几何 / `gdal.fs` / 模块自省）也走共享 |
 | 线程安全数据集 | ✅ 打开时 `'rt'` 标志 | ✅ `openThreadSafe()` |
-| 事件循环阻塞告警 | ✅ `eventLoopWarning` | ❌ **非目标**：本绑定没有那个队列可警告 |
+| 事件循环阻塞告警 | ✅ `eventLoopWarning` | ✅ `gdal.eventLoopWarning`：`false` 关闭、`true` 用默认阈值（50 ms）、数字即阈值（本绑定扩展）。计时对象是「会碰数据集」的那几个类的**阻塞方法**（Dataset / RasterBand / BandOverview / Layer / FeatureCursor），经 `process.emitWarning` 以 `GdalEventLoopWarning` 发出 |
 
 异步 getter 的取舍记录在 WS-4；每数据集队列与锁模型的关系记录在 Phase 2 与
 [`docs/PARITY.md`](./docs/PARITY.md)。
@@ -439,9 +439,9 @@ compat 层用测试锁住形状即可。它的价值是——**让 `gdal-async` 
 - 发布 `gdal-rs-napi/compat`；用 `gdal-async` 的真实示例当验收测试。
 
 **WS-8 · 明确不做（记为设计取舍，写进 README）**
-- 只剩 A8 那两条：原生集合对象形态、`eventLoopWarning`。
-（Node Streams、波段代数、多维模型、`calcAsync`、VRT 像素函数与异步 getter 后来都补上了，见
-[`docs/PARITY.md`](./docs/PARITY.md)。）
+- 只剩 A8 那一条：原生集合对象形态。
+（Node Streams、波段代数、多维模型、`calcAsync`、VRT 像素函数、异步 getter 与
+`eventLoopWarning` 后来都补上了，见 [`docs/PARITY.md`](./docs/PARITY.md)。）
 
 ### C3. 顺序与依赖
 
