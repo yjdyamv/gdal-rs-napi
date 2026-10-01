@@ -15,9 +15,10 @@ test('apiVersion names the binding, and features() probes what it can do', () =>
   assert.equal(features.geos, gdal.diagnostics().geosAvailable)
   assert.equal(typeof features.threadSafe, 'boolean')
 
-  // `multidimensional` is the one deliberately absent, and is reported rather than
-  // missing.
-  assert.equal(features.multidimensional, false)
+  // The multidimensional model is in — `Dataset.root` and the `Group` / `MDArray` /
+  // `Attribute` / `Dimension` classes that hang off it.
+  assert.equal(features.multidimensional, true)
+  assert.equal(typeof gdal.MDArray, 'function')
   // Raster streams are in — built in the JavaScript shell, but part of the surface.
   assert.equal(features.streams, true)
   assert.equal(typeof gdal.RasterBand.prototype.createReadStream, 'function')

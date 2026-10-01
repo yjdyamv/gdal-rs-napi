@@ -294,6 +294,16 @@ pub struct OpenOptions {
     /// driver-scoped open is spelled, and it is the difference between "nothing
     /// could read this" and "*this driver* could not".
     pub drivers: Option<Vec<String>>,
+    /// Open GDAL's multidimensional model as well as the raster one — GDAL's
+    /// `GDAL_OF_MULTIDIM_RASTER`. Without it a NetCDF or HDF5 dataset has no
+    /// `Dataset.root`, because GDAL only builds the root group in that mode.
+    /// Default false.
+    ///
+    /// A file that has a multidimensional model is then handed over *as* that
+    /// model: `root` is populated, and the band side is empty, so read it through
+    /// `MDArray` — or open the same path without this to get the bands instead. A
+    /// file without one, a GeoTIFF say, opens as a plain raster exactly as before.
+    pub multidimensional: Option<bool>,
 }
 
 #[napi(object)]
@@ -361,9 +371,10 @@ fn open_bytes_gdal(
     bytes: &[u8],
     update: bool,
     drivers: Option<&[String]>,
+    multidimensional: bool,
 ) -> Result<GdalDataset> {
     write_mem_file(path, bytes)?;
-    match open_gdal(path, update, drivers) {
+    match open_gdal(path, update, drivers, multidimensional) {
         Ok(dataset) => Ok(dataset),
         Err(error) => {
             let _guard = lock_gdal();
@@ -390,7 +401,12 @@ fn mem_file_name() -> String {
     format!("/vsimem/gdal-rs-napi-{}-{count}.bin", std::process::id())
 }
 
-fn open_gdal(path: &str, update: bool, drivers: Option<&[String]>) -> Result<GdalDataset> {
+fn open_gdal(
+    path: &str,
+    update: bool,
+    drivers: Option<&[String]>,
+    multidimensional: bool,
+) -> Result<GdalDataset> {
     ensure_initialized();
     let _guard = lock_gdal();
 
@@ -402,6 +418,12 @@ fn open_gdal(path: &str, update: bool, drivers: Option<&[String]>) -> Result<Gda
     let mut flags = GdalOpenFlags::GDAL_OF_RASTER
         | GdalOpenFlags::GDAL_OF_VECTOR
         | GdalOpenFlags::GDAL_OF_VERBOSE_ERROR;
+    if multidimensional {
+        // The two modes sit together: the raster side keeps working, and `root`
+        // becomes reachable. A driver that has no multidimensional model is
+        // simply opened as a raster, which is what GDAL does with the extra bit.
+        flags |= GdalOpenFlags::GDAL_OF_MULTIDIM_RASTER;
+    }
     if update {
         flags |= GdalOpenFlags::GDAL_OF_UPDATE;
     }
@@ -654,7 +676,7 @@ impl JsDataset {
         }
     }
 
-    fn wrap(dataset: GdalDataset, path: String) -> Self {
+    pub(crate) fn wrap(dataset: GdalDataset, path: String) -> Self {
         Self::wrap_ref(DatasetRef::serialised(dataset), path)
     }
 
@@ -947,6 +969,23 @@ impl JsDataset {
                 gdal_sys::GDALGetGCPProjection(dataset.c_dataset())
             });
             Ok(if text.is_empty() { None } else { Some(text) })
+        })
+    }
+
+    /// The root group of the multidimensional model, or `null` when this dataset has
+    /// none. It is the way in to `MDArray`, `Attribute` and `Dimension`.
+    #[napi(getter)]
+    pub fn root(&self) -> Result<Option<crate::multidim::JsGroup>> {
+        ensure_initialized();
+        self.dataset.with_exclusive(|dataset| {
+            let handle = unsafe { gdal_sys::GDALDatasetGetRootGroup(dataset.c_dataset()) };
+            if handle.is_null() {
+                return Ok(None);
+            }
+            Ok(Some(crate::multidim::JsGroup::new(
+                handle,
+                self.dataset.clone(),
+            )))
         })
     }
 
@@ -1702,6 +1741,7 @@ pub(crate) enum OpenKind {
     Open {
         update: bool,
         drivers: Option<Vec<String>>,
+        multidimensional: bool,
     },
     /// Bytes that have no file yet. They are written to `OpenTask::path` — the
     /// `/vsimem/` name `open(buffer)` generated — before anything is opened, so from
@@ -1710,6 +1750,7 @@ pub(crate) enum OpenKind {
         bytes: Vec<u8>,
         update: bool,
         drivers: Option<Vec<String>>,
+        multidimensional: bool,
     },
     CreateRaster(CreateOptions),
     CreateVector {
@@ -1730,15 +1771,25 @@ impl Task for OpenTask {
 
     fn compute(&mut self) -> napi::Result<Self::Output> {
         Ok(op(match &self.kind {
-            OpenKind::Open { update, drivers } => {
-                open_gdal(&self.path, *update, drivers.as_deref()).map(DatasetRef::serialised)
-            }
+            OpenKind::Open {
+                update,
+                drivers,
+                multidimensional,
+            } => open_gdal(&self.path, *update, drivers.as_deref(), *multidimensional)
+                .map(DatasetRef::serialised),
             OpenKind::OpenBytes {
                 bytes,
                 update,
                 drivers,
-            } => open_bytes_gdal(&self.path, bytes, *update, drivers.as_deref())
-                .map(DatasetRef::serialised),
+                multidimensional,
+            } => open_bytes_gdal(
+                &self.path,
+                bytes,
+                *update,
+                drivers.as_deref(),
+                *multidimensional,
+            )
+            .map(DatasetRef::serialised),
             OpenKind::CreateRaster(options) => {
                 create_gdal(&self.path, options).map(DatasetRef::serialised)
             }
@@ -1778,12 +1829,21 @@ impl Task for OpenTask {
 /// `gdal.fs.writeFile('/vsimem/data.tif', bytes)` and open that path.
 #[napi(ts_return_type = "Promise<Dataset>")]
 pub fn open(source: Either<String, Buffer>, options: Option<OpenOptions>) -> AsyncTask<OpenTask> {
-    let OpenOptions { update, drivers } = options.unwrap_or_default();
+    let OpenOptions {
+        update,
+        drivers,
+        multidimensional,
+    } = options.unwrap_or_default();
     let update = update.unwrap_or(false);
+    let multidimensional = multidimensional.unwrap_or(false);
     match source {
         Either::A(path) => AsyncTask::new(OpenTask {
             path,
-            kind: OpenKind::Open { update, drivers },
+            kind: OpenKind::Open {
+                update,
+                drivers,
+                multidimensional,
+            },
         }),
         Either::B(bytes) => AsyncTask::new(OpenTask {
             path: mem_file_name(),
@@ -1791,6 +1851,7 @@ pub fn open(source: Either<String, Buffer>, options: Option<OpenOptions>) -> Asy
                 bytes: bytes.to_vec(),
                 update,
                 drivers,
+                multidimensional,
             },
         }),
     }
@@ -1802,13 +1863,19 @@ pub fn open_sync(
     source: Either<String, Buffer>,
     options: Option<OpenOptions>,
 ) -> Result<JsDataset> {
-    let OpenOptions { update, drivers } = options.unwrap_or_default();
+    let OpenOptions {
+        update,
+        drivers,
+        multidimensional,
+    } = options.unwrap_or_default();
     let update = update.unwrap_or(false);
+    let multidimensional = multidimensional.unwrap_or(false);
     match source {
-        Either::A(path) => open_dataset_sync(&path, update, drivers.as_deref()),
+        Either::A(path) => open_dataset_sync(&path, update, drivers.as_deref(), multidimensional),
         Either::B(bytes) => {
             let path = mem_file_name();
-            let dataset = open_bytes_gdal(&path, &bytes, update, drivers.as_deref())?;
+            let dataset =
+                open_bytes_gdal(&path, &bytes, update, drivers.as_deref(), multidimensional)?;
             Ok(JsDataset::wrap_buffer(
                 DatasetRef::serialised(dataset),
                 path,
@@ -1823,9 +1890,10 @@ pub(crate) fn open_dataset_sync(
     path: &str,
     update: bool,
     drivers: Option<&[String]>,
+    multidimensional: bool,
 ) -> Result<JsDataset> {
     Ok(JsDataset::wrap(
-        open_gdal(path, update, drivers)?,
+        open_gdal(path, update, drivers, multidimensional)?,
         path.to_string(),
     ))
 }

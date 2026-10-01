@@ -1087,6 +1087,49 @@ impl JsRasterBand {
         })
     }
 
+    /// This band as a multidimensional array — GDAL's `GDALRasterBandAsMDArray`,
+    /// the other direction from `MDArray.asDataset()`. It works on any band,
+    /// however the dataset was opened, so a plain raster is a way into the
+    /// multidimensional model too: `dataset.band(0).asMDArray().shape` is
+    /// `[height, width]`.
+    #[napi(js_name = "asMDArray")]
+    pub fn as_md_array(&self) -> Result<crate::multidim::JsMdArray> {
+        ensure_initialized();
+        let dataset = self.dataset.clone();
+        let handle = self.dataset.with_exclusive(|dataset| {
+            let band = match self.kind {
+                BandKind::Index(index) => unsafe {
+                    gdal_sys::GDALGetRasterBand(dataset.c_dataset(), (index + 1) as c_int)
+                },
+                // The mask band belongs to the band above it, and is borrowed.
+                BandKind::Mask(_) => {
+                    let parent = unsafe {
+                        gdal_sys::GDALGetRasterBand(
+                            dataset.c_dataset(),
+                            (self.kind.parent() + 1) as c_int,
+                        )
+                    };
+                    if parent.is_null() {
+                        std::ptr::null_mut()
+                    } else {
+                        unsafe { gdal_sys::GDALGetMaskBand(parent) }
+                    }
+                }
+            };
+            if band.is_null() {
+                return Err(bad_argument("this band is no longer there"));
+            }
+            let array = unsafe { gdal_sys::GDALRasterBandAsMDArray(band) };
+            if array.is_null() {
+                return Err(bad_argument(
+                    "GDAL would not make a multidimensional array of this band",
+                ));
+            }
+            Ok(array)
+        })?;
+        Ok(crate::multidim::JsMdArray::new(handle, dataset))
+    }
+
     /// This band converted to another sample type, as a band of a **new in-memory
     /// dataset** — `gdal_translate -of MEM -ot <type>`. The conversion is done once,
     /// up front, so the result is independent of the source: closing the source does

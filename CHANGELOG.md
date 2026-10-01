@@ -6,6 +6,25 @@ First working cut — everything here is new.
 
 ### Binding
 
+- The **multidimensional model** is in — GDAL's second data model, which is what NetCDF,
+  HDF5 and Zarr look like through it. `Dataset.root` is a `Group`, reached with
+  `open(path, { multidimensional: true })`; `Group` / `MDArray` / `Attribute` /
+  `Dimension` follow with their structure, attributes, CRS, `read`, `getView`,
+  `getMask` and `asDataset`, and `RasterBand.asMDArray()` goes the other way.
+  `gdal.features().multidimensional` is `true` now.
+- `open(path, { multidimensional: true })` is GDAL's `GDAL_OF_MULTIDIM_RASTER`, and it
+  has to be asked for: without it GDAL builds no root group at all, so a NetCDF dataset
+  has none. A file that *has* a multidimensional model is then handed over as that
+  model — its band side is empty, so read it through `MDArray` — while a file that has
+  none, a GeoTIFF say, opens as a plain raster exactly as before. Two shapes differ from
+  the reference on purpose: `MDArray.read()` answers **raw bytes in the array's own
+  type**, like `readPixels`, rather than a typed array in the JS type of the moment, and
+  refuses a `String` or `Compound` array; and `asDataset()` takes `{ xDim, yDim }` for
+  files that leave their axes untagged, its default being GDAL's own
+  `HORIZONTAL_X` / `HORIZONTAL_Y` and then the last two dimensions. One behaviour is
+  GDAL's rather than ours and worth knowing: a `Group` or `MDArray` handle holds its own
+  reference to the file, so it keeps working — and on Windows keeps the file locked —
+  after `close()`.
 - `Dataset.getEnvelope()` is the dataset's bounding box as `{ minX, minY, maxX, maxY }`:
   a **raster's** four corners under its geotransform — so a rotated raster's box is
   larger than its own rectangle, which is the honest answer rather than a wrong small

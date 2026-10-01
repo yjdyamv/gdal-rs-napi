@@ -32,6 +32,7 @@ mod error;
 mod fs;
 mod geometry;
 mod json;
+mod multidim;
 mod programs;
 mod progress;
 mod raster_io;
@@ -284,7 +285,7 @@ pub struct FeatureSupport {
     /// `build.rs` switches it on from the version `gdal-sys` reports.
     pub thread_safe: bool,
     /// The multidimensional data model (`MDArray`, `Group`, `Attribute`,
-    /// `Dimension`). Not implemented, so always `false`.
+    /// `Dimension`), reached through `Dataset.root`. Always `true`.
     pub multidimensional: bool,
     /// Node.js `Stream`s over raster data — `band.createReadStream()` and
     /// `band.createWriteStream()`. They are built in the JavaScript shell
@@ -300,7 +301,7 @@ pub fn features() -> FeatureSupport {
     FeatureSupport {
         geos: gdal::version::VersionInfo::has_geos(),
         thread_safe: cfg!(gd_thread_safe),
-        multidimensional: false,
+        multidimensional: true,
         streams: true,
     }
 }

@@ -224,26 +224,25 @@ impl JsDriver {
     /// is the same restriction with the async surface.
     #[napi]
     pub fn open_sync(&self, path: String, options: Option<OpenOptions>) -> Result<JsDataset> {
-        let update = options
-            .as_ref()
-            .and_then(|options| options.update)
-            .unwrap_or(false);
+        let options = options.unwrap_or_default();
+        let update = options.update.unwrap_or(false);
+        let multidimensional = options.multidimensional.unwrap_or(false);
         let drivers = [self.name.clone()];
-        crate::dataset::open_dataset_sync(&path, update, Some(&drivers))
+        crate::dataset::open_dataset_sync(&path, update, Some(&drivers), multidimensional)
     }
 
     /// The same, on the libuv thread pool.
     #[napi(ts_return_type = "Promise<Dataset>")]
     pub fn open(&self, path: String, options: Option<OpenOptions>) -> AsyncTask<OpenTask> {
-        let update = options
-            .as_ref()
-            .and_then(|options| options.update)
-            .unwrap_or(false);
+        let options = options.unwrap_or_default();
+        let update = options.update.unwrap_or(false);
+        let multidimensional = options.multidimensional.unwrap_or(false);
         AsyncTask::new(OpenTask {
             path,
             kind: OpenKind::Open {
                 update,
                 drivers: Some(vec![self.name.clone()]),
+                multidimensional,
             },
         })
     }

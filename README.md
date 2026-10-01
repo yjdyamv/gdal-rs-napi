@@ -57,7 +57,7 @@ gdal.info()
 // with": `features()` always answers all of it, so nothing has to be probed by
 // calling a method and catching the TypeError.
 const features = gdal.features()
-// { geos: true, threadSafe: true, multidimensional: false, streams: true }
+// { geos: true, threadSafe: true, multidimensional: true, streams: true }
 
 gdal.apiVersion // '0.1.0' — the binding's version, not `version().gdal`
 ```
@@ -1352,6 +1352,54 @@ Three things worth knowing:
 There is no `onProgress` on the `Sync` entry points on purpose: a sync call holds the
 JS thread, and the callback has to run on that thread, so it could never be called.
 
+## Multidimensional — `Group`, `MDArray`, `Attribute`, `Dimension`
+
+GDAL's second data model, which is what NetCDF, HDF5 and Zarr look like through it:
+arrays of any number of dimensions, each with attributes and its own CRS, arranged in
+a tree of groups. It is reached through `Dataset.root`, and only for a dataset opened
+with `multidimensional: true` — GDAL builds no root group otherwise.
+
+```js
+const dataset = await gdal.open('air.nc', { multidimensional: true })
+const root = dataset.root              // null when the file has no such model
+root.arrayNames()                      // ['temperature', 'pressure']
+root.groupNames()                      // sub-groups, by name
+
+const temperature = root.openArray('temperature')
+temperature.shape                      // [12, 73, 144] — time, lat, lon
+temperature.dataType                   // 'Int16'
+temperature.dimensions()               // Dimension objects: name, size, typeName, direction
+temperature.attributes()               // Attribute objects, in the file's order
+temperature.openAttribute('units').value   // 'K'
+temperature.srs                        // a SpatialRef, or null
+
+// A hyperslab, as raw bytes in the array's own type.
+const january = temperature.read({ start: [0, 0, 0], count: [1, 73, 144] })
+
+// The bridge back to the raster side: a 2D view, so `readPixels` works on it.
+const raster = temperature.asDataset()
+raster.band(0).readPixels({ width: 144, height: 73 })
+```
+
+Four things about it:
+
+- **Opening with the flag gives you the multidimensional dataset.** For a NetCDF file
+  the band side is then empty (`bandCount` is 0) and `root` is the way in. Open the
+  same path without the flag to get the bands instead. A file with no such model — a
+  GeoTIFF — opens as an ordinary raster either way, with `root === null`.
+- **`asDataset()` picks X and Y, or you do.** It uses the dimensions GDAL marks
+  `HORIZONTAL_X` and `HORIZONTAL_Y`; failing that, the last two. A file that leaves its
+  axes untagged lands on that fallback, so pass `{ xDim, yDim }` to say which is which.
+- **`read()` answers bytes in the array's own type**, like `readPixels`, and only for
+  numeric arrays — a `String` or `Compound` array is refused rather than coerced.
+  `getView()` and `getMask()` hand back further `MDArray`s over the same data.
+- **A handle keeps GDAL's own reference to the file.** Closing the dataset closes the
+  raster side — later calls say so — but a `Group` or `MDArray` you are still holding
+  keeps working, and on Windows keeps the file locked until it is let go.
+
+Attributes come back as JavaScript values: a string, a number, or an array of either,
+according to the attribute's type and how many elements it holds.
+
 ## Async semantics — read this before relying on it
 
 GDAL work in this binding goes through a **process-wide `RwLock`**, taken on one of two
@@ -1717,9 +1765,9 @@ artifact.
 The main entry point is **not** a drop-in replacement — it is 0-based, spells the
 blocking form `xxxSync()`, and sets through `setX()`. [`docs/PARITY.md`](./docs/PARITY.md)
 is the full accounting of where the two stand: what is at parity, the additive gaps
-still open, and the capabilities deliberately left out (the multidimensional model,
-VRT pixel functions, async getters, the native collection classes and the geometry
-subclass family), with the conventions map. A second entry point is:
+still open, and the capabilities deliberately left out (VRT pixel functions, async
+getters, the native collection classes and the geometry subclass family), with the
+conventions map. A second entry point is:
 
 ```js
 const gdal = require('gdal-rs-napi/compat')

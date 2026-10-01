@@ -67,7 +67,7 @@ than filled with a second door:
 One caveat GDAL hands down rather than us: `rename` / `copyFiles` open the source as a
 **raster**, so a vector-only dataset (a bare `.gpkg`) is not recognized.
 
-### Tier 3 — the algebra and the streams shipped; the multidimensional model remains
+### Tier 3 — the algebra, the streams and the multidimensional model all shipped
 
 The band algebra is in: `asType(type)` plus the elementwise operators — `add`, `sub`,
 `mul`, `div`, `pow`; the unary `abs`, `sqrt`, `log`, `log10`; the comparisons `eq`,
@@ -88,22 +88,36 @@ yielding the band's own bytes a strip at a time. They are built in the JavaScrip
 `Readable` / `Writable` from a `#[napi]` class — the same reason a `FeatureCursor` gets
 its `for await` there. `gdal.features().streams` is `true`.
 
-Still needing a decision:
+Every Tier 3 entry is now built, or recorded as a non-goal below.
 
-| `gdal-async` | why it is not a straight port |
-|---|---|
-| the multidimensional model (`Group` / `MDArray` / `Attribute` / `Dimension`) | a whole subsystem; nothing in the current use surface needs it |
+#### The multidimensional model
+
+The whole subsystem is in, on GDAL's own C API: `Dataset.root` opens the door
+(`multidimensional: true` on `open()`, which is the `GDAL_OF_MULTIDIM_RASTER` flag —
+without it GDAL builds no root group at all), and `Group` / `MDArray` / `Attribute` /
+`Dimension` hang off it with their structure, attributes, CRS, `read`, `getView`,
+`getMask` and `asDataset`. `gdal.features().multidimensional` is `true`.
+
+Two things are shaped differently from the reference, both for reasons this binding
+already holds to:
+
+- **`read()` returns bytes in the array's own type**, like `readPixels`, rather than a
+  typed array in the JS type of the moment. A `String` or `Compound` array is refused.
+- **`asDataset()` takes `{ xDim, yDim }`** for the files that leave their axes
+  untagged; the default stays GDAL's own `HORIZONTAL_X` / `HORIZONTAL_Y` answer, then
+  the last two dimensions.
+
+One behaviour is GDAL's rather than this binding's, and worth knowing: a `Group` or
+`MDArray` handle holds its own reference to the file, so it keeps working — and on
+Windows keeps the file locked — after `close()`.
 
 ---
 
 ## 2. Deliberate non-goals (with the reason)
 
-These are **decisions, not omissions**. `gdal.features()` reports the one with a
-runtime probe — `multidimensional`.
+These are **decisions, not omissions**. `gdal.features()` reports the ones with a
+runtime probe.
 
-- **The multidimensional model** — `Group`, `MDArray`, `Attribute`, `Dimension` and
-  their collections. A subsystem of its own, far past what this binding is used for.
-  `gdal.features().multidimensional === false`.
 - **VRT pixel functions** — `addPixelFunc` / `createPixelFunc` / `toPixelFunc`, and
   `calcAsync`. They need a C callback that GDAL invokes from inside its raster loop;
   the elementwise arithmetic that would otherwise use them is implemented **eagerly**
@@ -145,8 +159,10 @@ runtime probe — `multidimensional`.
 
 ## 4. Roadmap
 
-1. **Shipped:** Tier 1, Tier 2, and Tier 3's algebra and streams.
-2. **Remaining:** the multidimensional model, only if something needs it — everything
-   else is either done or a recorded non-goal above.
+1. **Shipped:** Tier 1, Tier 2, and all of Tier 3 — the algebra, the streams and the
+   multidimensional model.
+2. **Remaining:** nothing on the parity side — everything else is a recorded non-goal
+   above. The multidimensional model is not reshaped by `compat`, which is the one
+   open edge there.
 3. **Publishing** stays *deliberately deferred* — see `ROADMAP.md` Phase 0 and
    `CHANGELOG.md`; nothing here changes that.

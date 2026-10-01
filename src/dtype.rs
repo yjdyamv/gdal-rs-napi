@@ -57,6 +57,42 @@ impl DataType {
         })
     }
 
+    /// This binding's type for GDAL's numeric ordinal, for the FFI corners that hand
+    /// back a bare code rather than a `GdalDataType`.
+    pub fn from_code(code: gdal_sys::GDALDataType::Type) -> Self {
+        match code {
+            gdal_sys::GDALDataType::GDT_Byte => Self::Uint8,
+            gdal_sys::GDALDataType::GDT_Int8 => Self::Int8,
+            gdal_sys::GDALDataType::GDT_UInt16 => Self::Uint16,
+            gdal_sys::GDALDataType::GDT_Int16 => Self::Int16,
+            gdal_sys::GDALDataType::GDT_UInt32 => Self::Uint32,
+            gdal_sys::GDALDataType::GDT_Int32 => Self::Int32,
+            gdal_sys::GDALDataType::GDT_UInt64 => Self::Uint64,
+            gdal_sys::GDALDataType::GDT_Int64 => Self::Int64,
+            gdal_sys::GDALDataType::GDT_Float32 => Self::Float32,
+            gdal_sys::GDALDataType::GDT_Float64 => Self::Float64,
+            // Complex and half-float samples have no counterpart here.
+            _ => Self::Unknown,
+        }
+    }
+
+    /// The literal JS sees, as `band.dataType` spells it.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Unknown => "Unknown",
+            Self::Uint8 => "Uint8",
+            Self::Int8 => "Int8",
+            Self::Uint16 => "Uint16",
+            Self::Int16 => "Int16",
+            Self::Uint32 => "Uint32",
+            Self::Int32 => "Int32",
+            Self::Uint64 => "Uint64",
+            Self::Int64 => "Int64",
+            Self::Float32 => "Float32",
+            Self::Float64 => "Float64",
+        }
+    }
+
     pub const fn size(self) -> usize {
         match self {
             Self::Uint8 | Self::Int8 | Self::Unknown => 1,
@@ -114,6 +150,29 @@ mod tests {
         assert!(DataType::Unknown.to_gdal().is_none());
         assert_eq!(
             DataType::from_gdal(GdalDataType::Unknown),
+            DataType::Unknown
+        );
+    }
+
+    #[test]
+    fn the_gdal_ordinals_map_back_to_the_binding_names() {
+        // GDAL's code 1 is `Byte`, which this binding spells `Uint8` — the one
+        // ordinal whose name differs, and the one `fromDataType` translates.
+        assert_eq!(
+            DataType::from_code(gdal_sys::GDALDataType::GDT_Byte),
+            DataType::Uint8
+        );
+        assert_eq!(
+            DataType::from_code(gdal_sys::GDALDataType::GDT_Float64),
+            DataType::Float64
+        );
+        // Complex and half-float samples have no counterpart here.
+        assert_eq!(
+            DataType::from_code(gdal_sys::GDALDataType::GDT_CInt16),
+            DataType::Unknown
+        );
+        assert_eq!(
+            DataType::from_code(gdal_sys::GDALDataType::GDT_Float16),
             DataType::Unknown
         );
     }

@@ -21,7 +21,8 @@
 //     `setGeoTransform`, `setProjection`.
 //
 // Coverage is a subset, and honestly so — see `PHASE1.md` (WS-7) for what is
-// deliberately missing (Streams, MDArray, `calcAsync`, pixel functions). The
+// deliberately missing (`calcAsync`, pixel functions) and what is in the native
+// binding but not reshaped here (Streams, the multidimensional model). The
 // test suite in `__test__/compat.test.mjs` is what claims what works.
 
 const native = require('../index.js')

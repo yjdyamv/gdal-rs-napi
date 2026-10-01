@@ -105,7 +105,7 @@ Phase 1 的主线（详见 `PHASE1.md`）：先做 **几何对象模型**（杠�
 **Driver/Dataset 对象模型**、**Feature/FieldDefn 对象模型**、**异步人体工学**
 （异步 getter / `Symbol.asyncIterator`），再加 **`gdal.const` 枚举**与
 **纯 JS 的 `gdal-rs-napi/compat` 兼容层**（让 `gdal-async` 用户改一行 import 即可迁移）。
-MDArray、`calcAsync` 与 VRT 像素函数明确不做；栅格流与波段代数后来也补上了，见
+多维模型、栅格流与波段代数后来也一起补上了，`calcAsync` 与 VRT 像素函数明确不做，见
 [`docs/PARITY.md`](./docs/PARITY.md)。
 
 ---

@@ -33,7 +33,7 @@
 | WS-2 Driver/Dataset 对象模型 | ✅ 已完成 | `Driver` 对象（+`createCopy`）、`dataset.driver` 对象化、`open({drivers})`、`Dataset.description`/`rasterSize`/`getFileList`、`setProjection` 收 `SpatialRef`。集合类**不做**，见下 |
 | WS-3 Feature/Field 对象模型 | ✅ 已完成 | `layer.field(name)`/`addField`/`deleteField`/`reorderFields`、`FieldInfo` 全量定义、`layer.features()`（异步）、`layer.setSpatialFilter(geom)`、`layer.defn`（`FeatureDefn`）、`layer.getFeature(fid)` → `Feature`（`fields` 直写穿、`geometry`、`defn`、`toObject`） |
 | WS-4 异步人体工学 | ✅ 已完成 | `FeatureCursor` 已可用 `for await`（外壳加的，读的仍是同一个 `read()`）；异步错误已带 `err.code`（外壳从消息前缀提取）；`CoordinateTransform.transformPoints` 已跑在线程池上（点数组，百万点不必调用方分块，同步版更名 `transformPointsSync`）；`band.readChunks` 是 `readChunksSync` 的异步孪生。**不做**（非目标，理由见下）：`Dataset.bands/layers` 的异步迭代、异步 getter、`eventLoopWarning` |
-| WS-7 兼容层 | ✅ 已完成 | `gdal-rs-napi/compat` 已落地：1-based 索引、`xxx()`/`xxxAsync()`（含 node 回调形态）、setter 赋值（`noDataValue`/`geoTransform`/`srs`）、`Driver` 与各集合、`Feature`（`fields.toObject`/`toArray`、可赋值 `geometry`）、`SpatialReference`、几何类族（含 `instanceof`、`toWKT`/`toJSON`/`get*`）。**不做**：MDArray、`calcAsync`、像素函数，以及本绑定自己定形状的波段附加物——`colorTable`/`mask`/流（形状在主入口上，不在兼容层包装里）。 |
+| WS-7 兼容层 | ✅ 已完成 | `gdal-rs-napi/compat` 已落地：1-based 索引、`xxx()`/`xxxAsync()`（含 node 回调形态）、setter 赋值（`noDataValue`/`geoTransform`/`srs`）、`Driver` 与各集合、`Feature`（`fields.toObject`/`toArray`、可赋值 `geometry`）、`SpatialReference`、几何类族（含 `instanceof`、`toWKT`/`toJSON`/`get*`）。**不做**：`calcAsync`、像素函数，以及本绑定自己定形状的波段附加物——`colorTable`/`mask`/流（形状在主入口上，不在兼容层包装里）。多维模型已在主入口落地，但 compat **没有**给它做 1-based / 集合式的重包装。 |
 
 ### 一个修正：`gdal.const` 应该是字符串词汇，不是 GDAL 数字码
 
@@ -106,8 +106,8 @@ GDAL 的数字码属于兼容层（WS-7），那里 `gdal-async` 的形状才是
 ## A. 差距矩阵
 
 > **本矩阵已按当前状态刷新**。仍标 ❌ 的只剩两类，且逐条给了理由：**做不到**（GDAL 的 C API
-> 没有那个函数）与**已定案的取舍/非目标**（异步 getter、原生集合对象形态、MDArray、VRT 像素
-> 函数、`eventLoopWarning`）。🟡 表示能力齐、只是形状或拼法与 `gdal-async` 不同（那层形状归
+> 没有那个函数）与**已定案的取舍/非目标**（异步 getter、原生集合对象形态、VRT 像素
+> 函数 / `calcAsync`、`eventLoopWarning`）。🟡 表示能力齐、只是形状或拼法与 `gdal-async` 不同（那层形状归
 > `compat`）。
 
 图例：✅ 有；🟡 有但形状不同；❌ 做不到 / 已定案不做。
@@ -143,7 +143,7 @@ GDAL 的数字码属于兼容层（WS-7），那里 `gdal-async` 的形状才是
 | `close()` / `buildOverviews` | ✅ | |
 | `layer` 创建（`layers.create()`） | ✅ `createLayer(options)` | |
 | `layers.copy()` | ✅ `copyLayer(source, name, options?)` | |
-| `root`（`Group`，多维入口） | ❌ 非目标（MDArray） | 见 A7 |
+| `root`（`Group`，多维入口） | ✅ `root`（需 `open(..., { multidimensional: true })`，即 `GDAL_OF_MULTIDIM_RASTER`；没有该标志 GDAL 根本不建 root group） | 见 A7 |
 | `threadSafe` | ✅ | |
 | `description` / `metadata` | ✅ | |
 | `getEnvelope()` | ✅ `getEnvelope()` | 栅格按 geotransform 四角，矢量按图层 extent 并集 |
@@ -169,7 +169,7 @@ GDAL 的数字码属于兼容层（WS-7），那里 `gdal-async` 的形状才是
 | `checksumImage` | ✅ `checksum()` | |
 | `fill` / `fillNoData` / `sieveFilter` | ✅ | |
 | `rasterize` / `polygonize` / `contourGenerate` | ✅（在 Dataset/Band 上） | |
-| `asMDArray()` | ❌ 非目标（MDArray） | 见 A7 |
+| `asMDArray()` | ✅（`GDALRasterBandAsMDArray`；掩膜波段没有自己的数据集，GDAL 会拒绝） | |
 | `unitType` 等 async getter | ❌ 非目标 | 见 A8 |
 
 ### A4. 矢量（Feature / Layer / Field）
@@ -233,8 +233,12 @@ GDAL 的数字码属于兼容层（WS-7），那里 `gdal-async` 的形状才是
 
 ### A7. 多维模型与流
 
-- `MDArray` / `Group` / `Attribute` / `Dimension` 及各自的集合 —— ❌ **非目标**（整块子系统，
-  当前使用面用不到；`gdal.features().multidimensional === false`）
+- `MDArray` / `Group` / `Attribute` / `Dimension` —— ✅ **已完成**，走 GDAL 自己的 C API：
+  `Dataset.root`（`open(..., { multidimensional: true })`）开门，结构 / 属性 / CRS /
+  `read` / `getView` / `getMask` / `asDataset` 俱全；反方向有 `band.asMDArray()`。
+  `gdal.features().multidimensional === true`。集合形态（`root.arrays` 之类）不做，理由同 A3。
+- 集合（`root.arrays` / `groups` / `attributes`）—— ❌ **非目标**：形状归 `compat`，同
+  A2/A3 的集合条目；命名式入口（`openArray(name)` / `arrayNames()`）已覆盖同样的能力。
 - `RasterReadStream` / `RasterWriteStream` —— ✅ 后由外壳（`index.js`）在分块读写之上补上：
   `band.createReadStream()` / `createWriteStream()`；`RasterMuxStream` / `RasterTransform`
   仍不做
@@ -311,7 +315,7 @@ const gdal = require('gdal-rs-napi/compat')
 | 几何谓词 | **只有启用 GEOS 的构建才能真适配** | 见 C1 |
 | 异步 getter | 包成 Promise，但不改变底层串行事实 | 低（语义有差） |
 | `pixels.readAsync()` | 包 `readPixels()` | 低 |
-| Streams / MDArray | Streams 已在主入口（`band.createReadStream()` / `createWriteStream()`，外壳实现）；compat 不包它们。MDArray 不做 | — |
+| Streams / MDArray | Streams 已在主入口（`band.createReadStream()` / `createWriteStream()`，外壳实现）；MDArray 也已落地（A7）。compat 不重包装这两者 | — |
 | 同步迭代器 `Symbol.iterator` | 在 compat 里实现（也值得进自有 API） | 低 |
 
 **这不是"两套 API 维护负担"**：compat 层只是适配器，不复制逻辑；自有 API 演进时
@@ -432,9 +436,8 @@ compat 层用测试锁住形状即可。它的价值是——**让 `gdal-async` 
 - 发布 `gdal-rs-napi/compat`；用 `gdal-async` 的真实示例当验收测试。
 
 **WS-8 · 明确不做（记为设计取舍，写进 README）**
-- MDArray / 多维模型（A7）
 - `calcAsync` / 像素函数
-（Node Streams 与波段代数后来补上了，见 [`docs/PARITY.md`](./docs/PARITY.md)。）
+（Node Streams、波段代数与多维模型后来补上了，见 [`docs/PARITY.md`](./docs/PARITY.md)。）
 
 ### C3. 顺序与依赖
 

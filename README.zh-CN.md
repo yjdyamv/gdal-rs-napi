@@ -41,7 +41,7 @@ gdal.info()
 // “本绑定能做什么”是另一个问题：`features()` 总是把所有开关都答全，
 // 不必靠“调用一个方法再捕获 TypeError”来探测。
 const features = gdal.features()
-// { geos: true, threadSafe: true, multidimensional: false, streams: true }
+// { geos: true, threadSafe: true, multidimensional: true, streams: true }
 
 gdal.apiVersion // '0.1.0' —— 绑定的版本，不是 `version().gdal`
 ```
@@ -1140,6 +1140,49 @@ try {
 同步入口（`*Sync`）**没有** `onProgress`，这是有意的：同步调用占着 JS 线程，而回调必须跑在那个线程上，
 永远没有机会执行。
 
+## 多维模型 —— `Group` / `MDArray` / `Attribute` / `Dimension`
+
+GDAL 的第二套数据模型，也就是 NetCDF、HDF5、Zarr 通过 GDAL 看到的样子：任意维度的数组，各自带属性
+和 CRS，组织成 group 树。入口是 `Dataset.root`，而且只有以 `multidimensional: true` 打开的数据集才有
+——GDAL 在其它情况下根本不会构建 root group。
+
+```js
+const dataset = await gdal.open('air.nc', { multidimensional: true })
+const root = dataset.root              // 文件没有多维模型时是 null
+root.arrayNames()                      // ['temperature', 'pressure']
+root.groupNames()                      // 子 group 名字
+
+const temperature = root.openArray('temperature')
+temperature.shape                      // [12, 73, 144] —— time, lat, lon
+temperature.dataType                   // 'Int16'
+temperature.dimensions()               // Dimension 对象：name / size / typeName / direction
+temperature.attributes()               // Attribute 对象，按文件里的顺序
+temperature.openAttribute('units').value   // 'K'
+temperature.srs                        // SpatialRef，或 null
+
+// 取一个超矩形切片，结果是**该数组自身类型**的原始字节
+const january = temperature.read({ start: [0, 0, 0], count: [1, 73, 144] })
+
+// 回到栅格侧的桥：拿到 2D 视图，于是 `readPixels` 能用
+const raster = temperature.asDataset()
+raster.band(0).readPixels({ width: 144, height: 73 })
+```
+
+四点需要知道：
+
+- **带上标记打开，拿到的就是多维数据集本身**。对 NetCDF 文件来说波段侧是空的（`bandCount === 0`），
+  入口是 `root`；想要波段就用不带标记的方式打开同一个路径。没有多维模型的文件（比如 GeoTIFF）两种
+  打开方式都还是普通栅格，`root === null`。
+- **`asDataset()` 会自己挑 X/Y，也可以由你指定**：优先用 GDAL 标了 `HORIZONTAL_X` / `HORIZONTAL_Y`
+  的维度，都没有就取最后两维。没给轴打标记的文件会落到这个兜底上，所以用 `{ xDim, yDim }` 明确指定。
+- **`read()` 返回数组自身类型的原始字节**（和 `readPixels` 同一约定），且只支持数值数组：`String` /
+  `Compound` 数组会被明确拒绝，而不是硬转。`getView()` 与 `getMask()` 返回的仍是 `MDArray`，只是数据
+  的另一个视图。
+- **句柄自己持有一份 GDAL 引用**。`close()` 关掉的是栅格侧（之后调用会报「已关闭」），但你手里的
+  `Group` / `MDArray` 仍然可用；在 Windows 上，它们没被释放前文件会一直被占着。
+
+属性值按类型和元素个数还原成 JS 值：字符串、数字，或二者的数组。
+
 ## 异步语义（用之前请读）
 
 本绑定里碰 GDAL 的工作都走一把**进程级 `RwLock`**，取它的**某一侧**。用读写锁而不是互斥锁，
@@ -1450,7 +1493,7 @@ Intel macOS 与 32 位目标未构建。
 
 主入口**不是**直接替代品 —— 它是 0-based、阻塞形式叫 `xxxSync()`、赋值靠 `setX()`。
 [`docs/PARITY.md`](./docs/PARITY.md) 是两者差距的完整清单：哪些已对齐、还有哪些**加性缺口**、
-以及**明确不做**的能力（多维模型、VRT 像素函数、异步 getter、原生集合类、几何子类族），
+以及**明确不做**的能力（VRT 像素函数、异步 getter、原生集合类、几何子类族），
 并附约定对照表。`gdal.bundled` 是「这个包是否自包含」的一行答案。另一个入口是：
 
 ```js
