@@ -987,6 +987,150 @@ binding.createPixelFunc = createPixelFunc
 binding.createPixelFuncWithArgs = createPixelFuncWithArgs
 binding.wrapVRT = wrapVRT
 
+// ---- the geometry class family ----------------------------------------------
+//
+// napi cannot express inheritance, so every geometry arrives as one class, and the
+// generated declarations own what the factories return. What the reference's
+// subclasses add over one class is `instanceof` — and that is a question about a
+// prototype, which is settable from here.
+//
+// Re-tagging is honest because the base class already carries every accessor: a
+// shape-specific one answers `null` for the wrong shape, so a `Point` offers nothing a
+// `Polygon` could not answer. What a subclass narrows is what the caller knows.
+//
+// The declared return type stays `Geometry`, as it must — the generated half owns it.
+// These classes are declarations of their own, though, so `geometry instanceof
+// gdal.Point` narrows in TypeScript exactly as it does in gdal-async; it is the
+// *automatic* narrowing of a `Point`-typed return that stays out of reach.
+
+const NativeGeometry = binding.Geometry
+
+class Point extends NativeGeometry {}
+class LineString extends NativeGeometry {}
+class LinearRing extends LineString {}
+class Polygon extends NativeGeometry {}
+class MultiPoint extends NativeGeometry {}
+class MultiLineString extends NativeGeometry {}
+class MultiPolygon extends NativeGeometry {}
+class GeometryCollection extends NativeGeometry {}
+
+/** The type string carries the dimensionality, and the class does not: `Point Z`. */
+const GEOMETRY_BY_TYPE = {
+  Point,
+  LineString,
+  Polygon,
+  MultiPoint,
+  MultiLineString,
+  MultiPolygon,
+  GeometryCollection,
+}
+
+/**
+ * Hand the geometry back as the class the reference would have.
+ *
+ * Only ever re-tags something that is already one of our geometries: the shell's
+ * free functions answer plain GeoJSON objects (`geometryFromWkt`), and giving one of
+ * those a prototype it was never built with is how a method ends up called with the
+ * wrong receiver.
+ */
+function adopt(geometry) {
+  if (!geometry || typeof geometry.type !== 'string') return geometry
+  if (!(geometry instanceof NativeGeometry)) return geometry
+  const klass = GEOMETRY_BY_TYPE[geometry.type.replace(/ [ZM]+$/, '')]
+  if (!klass) return geometry
+  Object.setPrototypeOf(geometry, klass.prototype)
+  return geometry
+}
+
+const adoptAll = (value) => (Array.isArray(value) ? value.map(adopt) : adopt(value))
+
+/** Wrap a member so whatever geometry it answers comes back re-tagged. */
+function adoptReturns(owner, name, accessor = false) {
+  const descriptor = Object.getOwnPropertyDescriptor(owner, name)
+  if (accessor) {
+    const original = descriptor.get
+    Object.defineProperty(owner, name, {
+      configurable: descriptor.configurable,
+      enumerable: descriptor.enumerable,
+      get() {
+        return adoptAll(original.call(this))
+      },
+    })
+    return
+  }
+  const original = descriptor.value
+  Object.defineProperty(owner, name, {
+    configurable: descriptor.configurable,
+    enumerable: descriptor.enumerable,
+    writable: descriptor.writable,
+    value(...args) {
+      return adoptAll(original.apply(this, args))
+    },
+  })
+}
+
+// The operations that build a new geometry, and the one member on another class that
+// answers one. Everything here *returns* a geometry; the predicates answer booleans
+// and the accessors coordinate arrays.
+//
+// Not wrapped, because they answer GeoJSON rather than a geometry: the free factories
+// (`geometryFromWkt` and friends) and `CoordinateTransform.transformGeometry`. That is
+// this binding's design — those are the shapes `createFeature` and `setSpatialFilter`
+// take, and `FeatureRecord.geometry` answers — and re-tagging one would give it a
+// prototype it was never built with.
+for (const name of [
+  'boundary',
+  'buffer',
+  'centroid',
+  'children',
+  'clone',
+  'concaveHull',
+  'convexHull',
+  'difference',
+  'flattenTo2D',
+  'intersection',
+  'makeValid',
+  'normalize',
+  'pointOnSurface',
+  'segmentize',
+  'setPrecision',
+  'simplify',
+  'simplifyPreserveTopology',
+  'swapXY',
+  'symDifference',
+  'transform',
+  'unaryUnion',
+  'union',
+]) {
+  adoptReturns(NativeGeometry.prototype, name)
+}
+adoptReturns(binding.Layer.prototype, 'getSpatialFilter')
+
+// The three factories are the one thing a prototype cannot carry: napi registers the
+// statics non-writable *and* non-configurable, so the only way to make them re-tag
+// what they answer is to put a face over the class — **the same prototype object**, so
+// every geometry that ever existed is still an instance of this, adopted or not, and
+// the subclass chain goes through it. The face is exported in the class's place.
+const Geometry = function Geometry() {
+  throw new TypeError('Geometry is not constructible — use Geometry.fromWkt, .fromWkb or .fromJson')
+}
+Geometry.prototype = NativeGeometry.prototype
+Geometry.fromWkt = (wkt) => adopt(NativeGeometry.fromWkt(wkt))
+Geometry.fromWkb = (wkb) => adopt(NativeGeometry.fromWkb(wkb))
+Geometry.fromJson = (json) => adopt(NativeGeometry.fromJson(json))
+
+Object.assign(binding, {
+  Geometry,
+  Point,
+  LineString,
+  LinearRing,
+  Polygon,
+  MultiPoint,
+  MultiLineString,
+  MultiPolygon,
+  GeometryCollection,
+})
+
 // ---- gdal-async's collection shapes, on this binding's own members ------------
 //
 // The reference spells a container as an object with `get` / `count` / `getNames` and
@@ -1022,11 +1166,21 @@ function asCollection(obtain, { names, extra } = {}) {
     count: { configurable: true, value: () => items().length },
     forEach: {
       configurable: true,
-      value: (callback) => items().forEach((item, index) => callback(item, index + 1)),
+      // The index counts from 1, as `get` does — which is what the reference's own
+      // hand-written band iterator does, and the array comes third the way
+      // `Array.forEach` hands it over. Answering `false` stops the walk: that part the
+      // reference's two implementations agree on.
+      value: (callback, thisArg) => {
+        const list = items()
+        for (let index = 0; index < list.length; index += 1) {
+          if (callback.call(thisArg, list[index], index + 1, list) === false) return
+        }
+      },
     },
     map: {
       configurable: true,
-      value: (callback) => items().map((item, index) => callback(item, index + 1)),
+      value: (callback, thisArg) =>
+        items().map((item, index, array) => callback.call(thisArg, item, index + 1, array)),
     },
   })
   if (names) {
@@ -1090,6 +1244,23 @@ function collectionArray(items, { names, extra } = {}) {
     value: (indexOrName) => pick(items, indexOrName),
   })
   Object.defineProperty(collection, 'count', { configurable: true, value: () => items.length })
+  // The same counting as the callable collections: an index from 1, and `false` from
+  // the callback stops the walk.
+  Object.defineProperties(collection, {
+    forEach: {
+      configurable: true,
+      value: (callback, thisArg) => {
+        for (let index = 0; index < items.length; index += 1) {
+          if (callback.call(thisArg, items[index], index + 1, items) === false) return
+        }
+      },
+    },
+    map: {
+      configurable: true,
+      value: (callback, thisArg) =>
+        items.map((item, index, array) => callback.call(thisArg, item, index + 1, array)),
+    },
+  })
   if (names) {
     Object.defineProperty(collection, 'getNames', {
       configurable: true,

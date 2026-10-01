@@ -1,5 +1,7 @@
 export * from './binding'
 
+import { Geometry, ReadOptions } from './binding'
+
 /**
  * The frozen string vocabularies the binding reads and writes, as `gdal.const`.
  *
@@ -164,6 +166,30 @@ declare module './binding' {
 }
 
 /**
+ * The geometry class family, added by the shell.
+ *
+ * napi cannot express inheritance, so every geometry arrives as one class and the
+ * generated declarations name that one in every return type. The shell re-tags what
+ * the factories and the operations answer, so `geometry instanceof gdal.Point` is true
+ * at runtime — and these declarations are what makes it *narrow* here, the same way it
+ * does in gdal-async. They declare no members of their own because there are none:
+ * every accessor lives on `Geometry`, where a shape-specific one answers `null` for the
+ * wrong shape, so nothing is lost by the generated type only knowing the base class.
+ *
+ * A ring is a `LineString` from the outside. Rings come back as coordinate arrays
+ * rather than geometries, so nothing is ever tagged `LinearRing` — it exists so a port
+ * that names it does not find it missing.
+ */
+export declare class Point extends Geometry {}
+export declare class LineString extends Geometry {}
+export declare class LinearRing extends LineString {}
+export declare class Polygon extends Geometry {}
+export declare class MultiPoint extends Geometry {}
+export declare class MultiLineString extends Geometry {}
+export declare class MultiPolygon extends Geometry {}
+export declare class GeometryCollection extends Geometry {}
+
+/**
  * The collection shape the shell hangs on the members gdal-async spells as one:
  * `get(1)` is the first, `count()` is how many, and both iterators work.
  *
@@ -178,8 +204,16 @@ export interface Collection<T> extends Array<T> {
   get(indexOrName?: number | string): T | null
   count(): number
   getNames?(): Array<string | number>
-  forEach(callback: (item: T, index: number) => void): void
-  map<U>(callback: (item: T, index: number) => U): Array<U>
+  /**
+   * `Array.forEach`'s shape, with the index counted from 1 the way `get` counts, and
+   * the array it is walking as the third argument. Answering `false` stops the walk,
+   * as it does in the reference.
+   */
+  forEach(
+    callback: (item: T, index: number, items: T[]) => boolean | void,
+    thisArg?: unknown,
+  ): void
+  map<U>(callback: (item: T, index: number, items: T[]) => U, thisArg?: unknown): Array<U>
   [Symbol.asyncIterator](): AsyncIterator<T>
 }
 

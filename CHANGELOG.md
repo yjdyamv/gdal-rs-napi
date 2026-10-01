@@ -6,6 +6,10 @@ First working cut — everything here is new.
 
 ### Binding
 
+- `gdal.infoAsync()` — `gdal.info()` on the thread pool. Nothing in it is slow; the
+  point is the **wait**: `info()` takes the shared side of the lock, the shared side
+  still waits for a dataset holding the exclusive one, and that wait was in the event
+  loop. Same reason the asynchronous getters exist.
 - Every container answers **both spellings**. This binding spells one as a call that
   returns an array — `dataset.bands()`, `layer.features()` — and gdal-async spells it as
   an object with `get` / `count` / `getNames` and iterators. Both are the same thing now:
@@ -25,6 +29,26 @@ First working cut — everything here is new.
   hand-written half — so `dataset.bands.get(1)` is a runtime shape a TypeScript caller
   has to spell out, while the members that are new out of this (`band.pixels`,
   `group.arrays`, `group.groups`) are declared properly.
+- The geometry **class family** is here: `gdal.Point` / `LineString` / `LinearRing` /
+  `Polygon` / `MultiPoint` / `MultiLineString` / `MultiPolygon` / `GeometryCollection`,
+  and `geometry instanceof gdal.Point` answers. napi cannot express inheritance and the
+  generated declarations own what the factories return, so the shell re-tags what comes
+  out of them — `Geometry.fromWkt` / `fromWkb` / `fromJson`, the operations that build a
+  new geometry (`buffer`, `intersection`, `clone`, `simplify`, `children` and the rest),
+  and `layer.getSpatialFilter()`. The three factories could not be wrapped in place
+  (napi registers statics non-writable *and* non-configurable), so `gdal.Geometry` is
+  now a **face over the native class with the same prototype object** — every geometry
+  that ever existed is still an instance of it, adopted or not.
+  The classes declare no members, because there are none to declare: every accessor
+  lives on `Geometry`, where a shape-specific one answers `null` for the wrong shape.
+  What the family buys is what a port asks of it — `instanceof` narrows in TypeScript
+  too, since each subclass is a declaration of its own; the one thing still out of
+  reach is a `Point`-*typed* return, which the generated half owns. `LinearRing` exists
+  and is never handed out: rings come back as coordinates here, not as geometries.
+  The members that answer **GeoJSON** by design are untouched — the free factories
+  (`geometryFromWkt`), `CoordinateTransform.transformGeometry` and
+  `FeatureRecord.geometry` — because re-tagging a plain object is how a native method
+  ends up called with the wrong receiver.
 - `Layer.setSpatialRef(crs)` changes a layer's CRS after the layer exists, taking a WKT
   string or a `SpatialRef`. The C API has no `OGR_L_SetSpatialRef` — a layer's CRS is
   its geometry field's — so this goes through `OGR_L_AlterGeomFieldDefn`, which asks the
@@ -374,10 +398,10 @@ First working cut — everything here is new.
   Each answers for its own shape and is `null` for the others, so any of them can
   be read without checking `type` first; `coordinates` is the GeoJSON nesting, and
   `null` for a collection, whose parts are geometries rather than coordinates.
-  There is deliberately **no** `Point` / `Polygon` / … subclass family: napi-rs
+  There is a `Point` / `Polygon` / … class family as well — see the entry above. napi-rs
   cannot express inheritance, and the generated `binding.d.ts` owns the factories'
-  return types, so subclass accessors could not be typed — the `gdal-async` class
-  shape belongs to the compatibility layer. See `PHASE1.md`.
+  return types, so the binding itself has one `Geometry` and the shell re-tags what
+  comes out of it; a subclass-typed *return* is the part that stays out of reach.
 - The GEOS-backed operations are on `Geometry` too: the predicates `intersects`,
   `contains`, `within`, `crosses`, `touches`, `overlaps`, `disjoint` and `equals`;
   `distance`; `isValid` and `isSimple`; and the set algebra `buffer`, `centroid`,

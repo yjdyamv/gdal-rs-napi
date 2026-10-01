@@ -19,6 +19,7 @@ const functions = [
   'createVector',
   'demProcess',
   'identifyEpsg',
+  'infoAsync',
   'open',
   'openThreadSafe',
   'translate',

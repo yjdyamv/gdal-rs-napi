@@ -51,7 +51,9 @@ aspirational.
    property that hands back a promise — which is the reference's spelling too.
    These exist for the *wait*, not for the work: a getter takes the process-wide
    lock, and while an async read holds it a synchronous getter would stop the event
-   loop until the read finished.
+   loop until the read finished. `gdal.infoAsync()` is the same exception in function
+   form — `info()` touches no dataset, but the *shared* side of the lock still waits
+   for one held exclusively, and the name is the reference's.
 3. **Cheap getters carry no async twin.** `band.blockSize`, `layer.fields`,
    `band.getPixel(x, y)` and `band.defaultHistogram()` never touch the disk, so
    there is nothing to wait for beyond that lock — and only the ones that report

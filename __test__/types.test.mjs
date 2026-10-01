@@ -26,6 +26,16 @@ const SHELL_ADDITIONS = new Set([
   'createPixelFunc',
   'createPixelFuncWithArgs',
   'wrapVRT',
+  // The geometry class family, which is a face over the native class: same prototype
+  // object, plus the factories that re-tag what they answer.
+  'Point',
+  'LineString',
+  'LinearRing',
+  'Polygon',
+  'MultiPoint',
+  'MultiLineString',
+  'MultiPolygon',
+  'GeometryCollection',
 ])
 
 /** `Function`'s own properties, which are not members anyone declares. */

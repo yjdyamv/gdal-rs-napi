@@ -141,6 +141,12 @@ read finishes. These do the reading on the thread pool and hand the answer back.
 They report what the dataset already knows, so they are all cheap once the lock is
 had — that, and not the reference's per-dataset I/O queue, is what they are for.
 
+`gdal.infoAsync()` is the same exception in function form: `info()` reads the build and
+the driver count, which is cheap, but it takes the *shared* side of the lock and the
+shared side still waits for a dataset holding the exclusive one — so the wait is what
+moves to the pool, and the name keeps the reference's suffix for the same reason the
+getters do.
+
 #### `eventLoopWarning`
 
 Also in, and for the same underlying reason: a `*Sync` call holds the JS thread for as
@@ -188,11 +194,20 @@ These are **decisions, not omissions**.
   two spellings are one thing (`dataset.bands()` and `dataset.bands.get(1)`). What is
   *not* here is the typing of that on a member the generated declarations already own —
   see `index.d.ts`, and `compat`, whose classes are its own and are typed freely.
-- **The geometry subclass family** — `Point` / `Polygon` / `MultiPolygon` / … . napi
-  cannot express inheritance, and the generated declarations own the factories'
-  return types, so subclass accessors could not be typed. One `Geometry` with
-  shape-specific accessors covers the same ground; the family (and `instanceof`)
-  lives in `compat`.
+- **The geometry subclass family** — `Point` / `Polygon` / `MultiPolygon` / … . It is
+  here, and `instanceof gdal.Point` answers: napi cannot express inheritance, so the
+  shell re-tags what the factories and the operations answer — `Geometry.fromWkt` /
+  `fromWkb` / `fromJson`, the operations that build a new geometry (`buffer`,
+  `intersection`, `clone`, `simplify`, `children`, and the rest), and
+  `layer.getSpatialFilter()`. The three factories could not be wrapped in place (napi
+  registers statics non-writable *and* non-configurable), so `gdal.Geometry` is a face
+  over the native class with the **same prototype object** — every geometry is still an
+  instance of it, adopted or not. The subclasses declare no members because there are
+  none to declare: every accessor is on `Geometry`, where a shape-specific one answers
+  `null` for the wrong shape, so `instanceof` is all a subclass narrows. What is still
+  *not* here is the one thing the generated half owns — a return type that **is** a
+  `Point` without the caller asking. `instanceof` itself narrows in TypeScript, since
+  each subclass is a declaration of its own.
 - **`toDataType` / `fromDataType` (numeric codes)** — this surface's vocabulary is
   *strings* (`band.dataType === 'Float32'`), so a numeric-code converter would hand
   back a vocabulary it neither returns nor accepts. The codes belong to `compat`.
@@ -210,16 +225,18 @@ These are **decisions, not omissions**.
 | setter | `band.noDataValue = x` | `band.setNoDataValue(x)` |
 | enum value | numeric `GDT_*` / `GCI_*` / `OFT_*` | string (`'Float32'`, `'RedBand'`) via `gdal.const` |
 | feature | `Feature` object with `fields` / `geometry` | `FeatureRecord` plain object, plus `layer.getFeature(fid)` for the object form |
-| geometry | class family | one `Geometry`, shape-specific accessors |
+| geometry | class family | the class family too, `instanceof` and all — re-tagged by the shell, `instanceof` narrowing in TypeScript |
 
 ## 4. Roadmap
 
 1. **Shipped:** Tier 1, Tier 2, and all of Tier 3 — the algebra, the streams, the
    multidimensional model, the pixel functions, `calcAsync`, the async getters and
    `eventLoopWarning`.
-2. **Remaining:** nothing on the parity side — everything else is a recorded non-goal
-   above (the native collection classes and the geometry subclass family, both of which
-   `compat` carries as shapes). The `compat` layer reshapes the multidimensional model
-   too, which closed the last edge there.
+2. **Remaining:** nothing on the parity side — every capability the reference has is
+   here under one spelling or the other. What is left of the section above is one type
+   asymmetry, not a missing capability: a member the generated declarations own keeps
+   their return type, so `dataset.bands.get(1)` and a `Point`-typed return are shapes a
+   TypeScript caller spells out (`instanceof` narrows, so the cast is a check rather
+   than a leap). `compat`, whose classes are its own, carries both without that caveat.
 3. **Publishing** stays *deliberately deferred* — see `ROADMAP.md` Phase 0 and
    `CHANGELOG.md`; nothing here changes that.

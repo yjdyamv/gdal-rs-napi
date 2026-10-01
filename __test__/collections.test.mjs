@@ -60,6 +60,15 @@ test('a dataset answers both spellings of bands and layers', async () => {
     dataset.bands.map((band) => band.id),
     [1, 2],
   )
+  // The index counts from 1, as `get` does, and answering `false` stops the walk —
+  // which is what the reference's callbacks do.
+  const stopped = []
+  dataset.bands.forEach((band, index) => {
+    stopped.push([index, band.id])
+    if (index === 1) return false
+    return undefined
+  })
+  assert.deepEqual(stopped, [[1, 1]])
 
   // Layers are the same, and their `get` takes a name too.
   const vector = await gdal.createVector(tmp('collections-layers.gpkg'), 'GPKG')

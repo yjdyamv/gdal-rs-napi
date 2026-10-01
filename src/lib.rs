@@ -47,6 +47,7 @@ use std::collections::HashMap;
 use std::ffi::CString;
 
 use gdal::spatial_ref::SpatialRef;
+use napi::bindgen_prelude::{AsyncTask, Env, Task};
 use napi_derive::napi;
 
 use crate::error::IntoGdalResult;
@@ -130,6 +131,33 @@ pub fn info() -> GdalInfo {
         // in `ensure_initialized` above, and nothing deregisters them.
         driver_count: gdal::DriverManager::count() as u32,
     }
+}
+
+/// The same readings as `info()`, on the thread pool.
+///
+/// Nothing here is slow — the point is the **wait**, which is the same reason the
+/// async getters exist: this takes the shared side of the lock, and the shared side
+/// still waits for a dataset holding the exclusive one. On the pool that wait is off
+/// the event loop instead of in it.
+pub struct InfoTask;
+
+impl Task for InfoTask {
+    type Output = GdalInfo;
+    type JsValue = GdalInfo;
+
+    fn compute(&mut self) -> napi::Result<Self::Output> {
+        Ok(info())
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
+        Ok(output)
+    }
+}
+
+/// What `info()` answers, without holding the event loop while it waits its turn.
+#[napi(ts_return_type = "Promise<GdalInfo>")]
+pub fn info_async() -> AsyncTask<InfoTask> {
+    AsyncTask::new(InfoTask)
 }
 
 #[napi(object)]

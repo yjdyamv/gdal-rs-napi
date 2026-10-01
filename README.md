@@ -1931,12 +1931,12 @@ artifact.
 
 The main entry point is **not** a drop-in replacement — it is 0-based, spells the
 blocking form `xxxSync()`, and sets through `setX()`. [`docs/PARITY.md`](./docs/PARITY.md)
-is the full accounting of where the two stand: what is at parity, the additive gaps
-still open, and the one thing deliberately left out (the geometry subclass family), with
-the conventions map. The **containers answer both spellings**, though: this binding
-spells one as a call that returns an array, gdal-async as an object with `get` / `count`
-and iterators, and a JavaScript function is an object — so the call carries the
-collection surface and nothing that worked before changed:
+is the full accounting of where the two stand: what is at parity, the additive gaps,
+and the conventions map. Two of the reference's shapes are here as well, spelled the same
+way. The **containers answer both spellings**: this binding spells one as a call that
+returns an array, gdal-async as an object with `get` / `count` and iterators, and a
+JavaScript function is an object — so the call carries the collection surface and
+nothing that worked before changed:
 
 ```js
 dataset.bands()                            // what it always was: the array
@@ -1946,6 +1946,13 @@ for (const band of dataset.bands) { … }    // and `for await`, and `map` / `fo
 band.pixels.get(0, 0)                      // the pixel accessors, under its names
 group.arrays.get('temperature')            // the multidimensional model too
 ```
+
+And the **geometry class family**: `Geometry.fromWkt('POINT (1 2)') instanceof
+gdal.Point` is true, as are `Polygon` / `MultiPoint` / `GeometryCollection` and the
+rest, because the shell re-tags what the factories and the operations answer. The
+classes add no members — every accessor is on `Geometry`, where a shape-specific one
+answers `null` for the wrong shape — so what they add is the one thing a port reaches
+for: `instanceof`, which narrows in TypeScript too.
 
 A second entry point is:
 

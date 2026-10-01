@@ -41,6 +41,38 @@ test('info() reports the build that version() summarises', () => {
   assert.equal(info.driverCount, gdal.drivers().length)
 })
 
+test('infoAsync() is info() without holding the event loop while it waits', async () => {
+  const dataset = gdal.createSync(tmp('info-async.tif'), {
+    driver: 'GTiff',
+    width: 1500,
+    height: 1500,
+    bandCount: 1,
+    dataType: 'Float64',
+  })
+  dataset.band(0).fill(1)
+
+  // Building overviews holds the exclusive lock for a while. `info()` takes the
+  // *shared* side — it touches no dataset and changes no global state — but the
+  // shared side still waits for that lock, and that wait is the whole reason the
+  // asynchronous form exists.
+  const building = dataset.buildOverviews('average', [2, 4])
+
+  const pending = gdal.infoAsync()
+  assert.ok(pending instanceof Promise)
+  let ticked = false
+  await new Promise((resolve) => {
+    setTimeout(() => {
+      ticked = true
+      resolve()
+    }, 0)
+  })
+  assert.equal(ticked, true, 'the event loop ran while infoAsync was waiting')
+
+  assert.deepEqual(await pending, gdal.info())
+  await building
+  dataset.close()
+})
+
 test('lastError reports an error that never became an exception', () => {
   // GTiff does not know this creation option: GDAL warns and carries on, so the
   // call succeeds and nothing consumes the error state.

@@ -20,7 +20,7 @@
 | WS-6 掩膜波段 | ✅ 已完成 | `mask` / `maskFlags` / `createMask(perDataset?)` —— 掩膜是一条完整 `RasterBand`（读走共享锁）；没掩膜时给隐式"全有效"波段（只读、全 255）；`maskFlags` 区分存储型与派生型（`alpha` / `noData`） |
 | WS-6 其余小工具 | ✅ 已完成 | `gdal.decToDMS(angle, axis, precision?)`（`CPLDecToDMS`）、`gdal.verbose()` / `gdal.quiet()`（把 `CPL_DEBUG` 设成 `ON` / `OFF`）、`toDataType` / `fromDataType`（收/发本绑定的字符串词汇，也接受 GDAL 拼写）、`gdal.bundled`。`wrapVRT` 不另开门：`translate(dest, ['-of','VRT'])` 就是它 |
 | WS-6 GCP / Driver / fs / flush | ✅ 已完成 | `getGCPs`/`setGCPs`/`gcpProjection`/`gcpCount`、`Dataset.getEnvelope()`、`Driver.rename`/`copyFiles`、`fs.clearCurlCache()`、`RasterBand.flush`/`Layer.flush` |
-| WS-1 几何补全 | ✅ 已完成 | `makeValid`/`boundary`/`pointOnSurface`/`unaryUnion`/`concaveHull`/`normalize`/`setPrecision`/`isRing`/`toGML`/`toKML` —— 至此 A5 的整套方法与谓词齐全（类族不做的理由见 A5） |
+| WS-1 几何补全 | ✅ 已完成 | `makeValid`/`boundary`/`pointOnSurface`/`unaryUnion`/`concaveHull`/`normalize`/`setPrecision`/`isRing`/`toGML`/`toKML` —— 至此 A5 的整套方法与谓词齐全（类族见 A5） |
 | WS-5 CRS 补全 | ✅ 已完成 | `fromESRI`/`morphToESRI`/`morphFromESRI`/`toXML`/`validate`/`cloneGeogCS`/`setWellKnownGeogCS`/`epsgTreatsAsLatLong`/`isGeocentric`/`isLocal`/`isSameGeogCS`/`isSameVertCS`/`getAttrValue`/`autoIdentifyEPSG` |
 | WS-3 波段代数与类型 | ✅ 已完成 | `add`/`sub`/`mul`/`div`/`pow`、`abs`/`sqrt`/`log`/`log10`、比较、逻辑、`ifThenElse`、`asType` —— **eager**（结果是独立的内存波段），不取 VRT 像素函数路线，理由见 A3/A6 |
 | WS-7 流 | ✅ 已完成 | `band.createReadStream()` / `createWriteStream()`（外壳实现，见 A7） |
@@ -29,10 +29,10 @@
 | B2 特性探测 | ✅ 已完成 | `gdal.apiVersion`、`gdal.features()` |
 | WS-5 常量枚举 | ✅ 已完成 | `gdal.const` —— `DataType`/`FieldType`/`Justification`/`GeometryType`/`ColorInterpretation`/`Resampling`/`OverviewResampling`/`SqlDialect`，纯 JS（`index.js`）+ 逐值对照运行时的测试 |
 | C1 GEOS 决策 | ✅ 已定 | 自行构建 + **静态链接**（`geos_static`，进入 `bundled` 默认开启），见 [`docs/GEOS.md`](./docs/GEOS.md) |
-| WS-1 几何对象模型 | ✅ 已完成 | `gdal.Geometry` 类已落地（`fromWkt`/`fromWkb`/`fromJson`、`toWkt`/`toWkb`/`toJson`、`type`/`isEmpty`/`pointCount`/`area`/`length`/`envelope`、`flattenTo2D`/`segmentize`/`swapXY`/`transform`）；写入端已能收 `Geometry` 或 GeoJSON（`createFeature`/`updateFeature`/`setSpatialFilter`/`Feature.setGeometry`/`rasterize`/`transformGeometry`）；GEOS 谓词与集合运算已写好并带 `has_geos()` 守卫（`intersects`/`contains`/…/`buffer`/`union`…，共 19 个）；按形状的访问器（`x`/`y`/`z`、`points`、`rings`/`exteriorRing`/`interiorRings`、`children`、`coordinates`）；GEOS 已**默认静态链入**（Windows/MSVC 上实测 `features().geos === true`，谓词与集合运算跑通）；后续又补了 `makeValid`/`boundary`/`pointOnSurface`/`unaryUnion`/`concaveHull`/`normalize`/`setPrecision`/`isRing`/`toGML`/`toKML`。**类族不做**（见下）。**待**只剩其余平台验证（属发布范围） |
-| WS-2 Driver/Dataset 对象模型 | ✅ 已完成 | `Driver` 对象（+`createCopy`）、`dataset.driver` 对象化、`open({drivers})`、`Dataset.description`/`rasterSize`/`getFileList`、`setProjection` 收 `SpatialRef`。集合类**不做**，见下 |
+| WS-1 几何对象模型 | ✅ 已完成 | `gdal.Geometry` 类已落地（`fromWkt`/`fromWkb`/`fromJson`、`toWkt`/`toWkb`/`toJson`、`type`/`isEmpty`/`pointCount`/`area`/`length`/`envelope`、`flattenTo2D`/`segmentize`/`swapXY`/`transform`）；写入端已能收 `Geometry` 或 GeoJSON（`createFeature`/`updateFeature`/`setSpatialFilter`/`Feature.setGeometry`/`rasterize`/`transformGeometry`）；GEOS 谓词与集合运算已写好并带 `has_geos()` 守卫（`intersects`/`contains`/…/`buffer`/`union`…，共 19 个）；按形状的访问器（`x`/`y`/`z`、`points`、`rings`/`exteriorRing`/`interiorRings`、`children`、`coordinates`）；GEOS 已**默认静态链入**（Windows/MSVC 上实测 `features().geos === true`，谓词与集合运算跑通）；后续又补了 `makeValid`/`boundary`/`pointOnSurface`/`unaryUnion`/`concaveHull`/`normalize`/`setPrecision`/`isRing`/`toGML`/`toKML`。**类族也已落地**（八个子类 + `instanceof`，见 A5）。**待**只剩其余平台验证（属发布范围） |
+| WS-2 Driver/Dataset 对象模型 | ✅ 已完成 | `Driver` 对象（+`createCopy`）、`dataset.driver` 对象化、`open({drivers})`、`Dataset.description`/`rasterSize`/`getFileList`、`setProjection` 收 `SpatialRef`。集合形态**已落地**，做法见 A9 |
 | WS-3 Feature/Field 对象模型 | ✅ 已完成 | `layer.field(name)`/`addField`/`deleteField`/`reorderFields`、`FieldInfo` 全量定义、`layer.features()`（异步）、`layer.setSpatialFilter(geom)`、`layer.defn`（`FeatureDefn`）、`layer.getFeature(fid)` → `Feature`（`fields` 直写穿、`geometry`、`defn`、`toObject`） |
-| WS-4 异步人体工学 | ✅ 已完成 | `FeatureCursor` 已可用 `for await`（外壳加的，读的仍是同一个 `read()`）；异步错误已带 `err.code`（外壳从消息前缀提取）；`CoordinateTransform.transformPoints` 已跑在线程池上（点数组，百万点不必调用方分块，同步版更名 `transformPointsSync`）；`band.readChunks` 是 `readChunksSync` 的异步孪生；只读 getter 的异步孪生也补齐了（19 个 `xxxAsync`）。**不做**（非目标，理由见下）：`Dataset.bands/layers` 的异步迭代、`eventLoopWarning` |
+| WS-4 异步人体工学 | ✅ 已完成 | `FeatureCursor` 已可用 `for await`（外壳加的，读的仍是同一个 `read()`）；异步错误已带 `err.code`（外壳从消息前缀提取）；`CoordinateTransform.transformPoints` 已跑在线程池上（点数组，百万点不必调用方分块，同步版更名 `transformPointsSync`）；`band.readChunks` 是 `readChunksSync` 的异步孪生；只读 getter 的异步孪生补齐（19 个 `xxxAsync`）+ `gdal.infoAsync()`；`eventLoopWarning` 也落地了（不发的告警就按 `false` 关）。**不做**（非目标，理由见下）：`Dataset.bands/layers` 的异步迭代 —— 集合形态已由 A9 提供，`for await (const b of dataset.bands)` 走的是集合自己的异步迭代器 |
 | WS-7 兼容层 | ✅ 已完成 | `gdal-rs-napi/compat` 已落地：1-based 索引、`xxx()`/`xxxAsync()`（含 node 回调形态）、setter 赋值（`noDataValue`/`geoTransform`/`srs`）、`Driver` 与各集合、`Feature`（`fields.toObject`/`toArray`、可赋值 `geometry`）、`SpatialReference`、几何类族（含 `instanceof`、`toWKT`/`toJSON`/`get*`）。**不做**：本绑定自己定形状的波段附加物——`colorTable`/`mask`/流（形状在主入口上，不在兼容层包装里）。多维模型、`calcAsync` 与 VRT 像素函数也已在主入口落地；多维模型另在 compat 里做了 `Group`/`MDArray`/`Attribute`/`Dimension` 与六个集合的重包装，`calcAsync` 与像素函数则不在。 |
 
 ### 一个修正：`gdal.const` 应该是字符串词汇，不是 GDAL 数字码
@@ -48,30 +48,41 @@
 这才是真正的 API 稳定性收益 —— 把事实上已经在用的契约写成明文。
 GDAL 的数字码属于兼容层（WS-7），那里 `gdal-async` 的形状才是目标。
 
-### 三个已定案的分歧：集合类、几何类族，与 `Feature.geometry`
+### 三个曾经的"不做"：两条已翻案，一条仍成立
 
-**1. 集合类不做。** 本 API 的 `drivers()` / `bands()` / `layers()` 返回**就是数组** ——
-数组本身已经具备 `for…of`、`forEach`、`map` 与 `Symbol.iterator`；而 `gdal-async` 集合对象多出来的
-`.get()` / `.count()`，在这里等价于现成的单数访问器：`band(i)` / `layer(i)` / `driver(name)` 与
-`bandCount` / `layerCount` / `drivers().length`。再套一层集合对象，要么改掉数组返回（违反「只增不改」），
-要么在 JS 侧包装数组 —— 而**生成的 `binding.d.ts` 拥有这些方法的返回类型**，包装后的类型没有地方声明。
-因此集合那层形状留给兼容层（WS-7），那里类型本来就是手写的。`Layer.fields` 同理：它是快照数组，
-增删改由 `addField` / `deleteField` / `reorderFields` 承担，`get(name)` 由 `field(name)` 承担。
+**1. 集合类 —— 已翻案（见 A9）。** 当初的理由是："本 API 的 `drivers()` / `bands()` /
+`layers()` 返回**就是数组**，数组已有 `for…of` / `forEach` / `map`；再套一层集合对象，要么改掉
+数组返回（违反「只增不改」），要么在 JS 侧包装数组 —— 而生成的 `binding.d.ts` 拥有这些方法的
+返回类型，包装后的类型没有地方声明。"
 
-**2. 几何类族不做，改为按形状的访问器。** `gdal-async` 有 `Point` / `Polygon` / `MultiPolygon`…
-一整套子类。我们这里不建：napi-rs **无法表达继承**（没有 `extends`），所以子类要么在 JS 侧用
-`Object.setPrototypeOf` 假装 —— 那样 `instanceof` 有了，但**访问器类型没地方声明**（生成的
-`binding.d.ts` 拥有 `Geometry.fromWkt()` 等的返回类型）—— 要么每个子类在 Rust 里复制一遍基类的方法。
-两者都不值得。取而代之：**单一 `Geometry` 类 + 按形状作答的访问器**（`x`/`y`/`z`、`points()`、
-`rings()`/`exteriorRing`/`interiorRings`、`children()`），能力与类族相同、类型齐全、可测；
-`type` 说清是哪一种。类族那层形状（以及它带来的 `instanceof`）属于兼容层 WS-7。
+前半段仍成立，后半段没想到的是：**JS 的函数本身就是对象**。所以不必二选一 —— 成员保持原来那次
+调用（数组照发），集合表面挂在那次调用上（`get` / `count` / `getNames` / 迭代器），两者是同一个
+东西。类型那半仍如当初所判：**新名字**（`band.pixels` / `group.arrays` / `group.groups`）能声明得
+干干净净，而**既有成员**（`dataset.bands` / `layer.features` / `band.overviews`）的返回类型改不
+了 —— 运行时两种拼法都在，TS 调用方得自己说出来。
 
-**3. `Feature.geometry` 仍发 GeoJSON。** 写入端两种形状都收（`createFeature` / `updateFeature` /
-`setSpatialFilter` / `Feature.setGeometry` / `rasterize` / `transformGeometry`），但读出来的
-`featuresSync()` / `feature(fid)` 记录里，`geometry` 依旧是那份 GeoJSON 普通对象 —— 那是
-`FeatureRecord`「拷贝出来的普通数据」这一设计的一部分，要对象形式就 `Geometry.fromJson(record.geometry)`，
-或直接用 `layer.getFeature(fid)`（它的 `geometry` 同样如此，`fields` 才走图层）。把 getter 直接换成
-`Geometry` 实例会同时打破「普通数据」和「只增不改」两条，所以不做。
+**2. 几何类族 —— 已翻案（见 A5）。** 当初的理由是："napi-rs **无法表达继承**，所以子类要么在
+JS 侧用 `Object.setPrototypeOf` 假装 —— 那样 `instanceof` 有了，但**访问器类型没地方声明** ——
+要么每个子类在 Rust 里复制一遍基类的方法。两者都不值得。"
+
+后半句仍然对（没在 Rust 里复制方法），前半句被验伪了：**`instanceof` 就是值得的**，而"访问器类型
+没地方声明"其实不成立 —— 子类是**独立的声明**（`index.d.ts` 里 `class Point extends Geometry {}`），
+`geometry instanceof gdal.Point` 在 TS 里照样收窄；真正的缺口只是"返回类型自动就是子类"这一点。
+另外基类本来就带全部访问器，所以空子类不丢能力，只多一个「调用方知道得更多」的收窄。落地时还撞到
+一个 napi 细节：静态方法（`Geometry.fromWkt` 等）**既不可写也不可配置**，裹不动，于是 `gdal.Geometry`
+改成**同原型的一张面**（原型对象不变，所以任何几何照旧是它的实例），三个工厂换成会重贴标签的版本。
+
+**3. `Feature.geometry` 仍发 GeoJSON —— 这条不变。** 写入端两种形状都收（`createFeature` /
+`updateFeature` / `setSpatialFilter` / `Feature.setGeometry` / `rasterize` / `transformGeometry`），
+但读出来的 `featuresSync()` / `feature(fid)` 记录里，`geometry` 依旧是那份 GeoJSON 普通对象 ——
+那是 `FeatureRecord`「拷贝出来的普通数据」这一设计的一部分，要对象形式就
+`Geometry.fromJson(record.geometry)`（此时 `instanceof` 也会成立），或直接用 `layer.getFeature(fid)`
+（它的 `geometry` 同样如此，`fields` 才走图层）。把 getter 直接换成 `Geometry` 实例会同时打破
+「普通数据」和「只增不改」两条，所以不做。
+
+一个连带的提醒：**凡按设计发 GeoJSON 的入口都不会被重贴标签** —— 自由的工厂
+（`geometryFromWkt` / `geometryFromWkb`）、`CoordinateTransform.transformGeometry` 都是。
+给一个不是按类建出来的普通对象换原型，正是"native 方法配错接收者"的来路。
 
 （一个实现时才发现、值得记下的细节：GDAL 有**两套**重采样词汇。像素读取与 `warp` /
 `reprojectImage` 用 `Resampling`，最近邻拼作 `nearestneighbour`；`buildOverviews` 用
@@ -105,13 +116,15 @@ GDAL 的数字码属于兼容层（WS-7），那里 `gdal-async` 的形状才是
 
 ## A. 差距矩阵
 
-> **本矩阵已按当前状态刷新**。**已经没有「做不到」这一类了** —— 原先归在这一类的两条都翻了案：
+> **本矩阵已按当前状态刷新**。**已经没有「做不到」这一类了** —— 原先归在这一类的三条全部翻案：
 > `Layer.srs` setter 走 `OGR_L_AlterGeomFieldDefn`（由驱动改），`Layer.extent` setter 追的
-> 是一个参考实现里并不存在的 API（它只有 `getExtent()`，已补）。
-> **集合对象形态也已落地**（见 A9）：成员保持原来那次调用，同时挂上参考的
-> `get` / `count` / `getNames` / 迭代器，两种拼法共用一个对象。
-> 仍标 ❌ 的只剩**几何子类族**这一条形状类缺口（`Point` / `Polygon` / …；运行时可做，
-> 类型上做不到，理由见 A4）。
+> 是一个参考实现里并不存在的 API（它只有 `getExtent()`，已补），而**集合对象形态**（A9）与
+> **几何子类族**（A5）都已落地。
+> 集合：成员保持原来那次调用，同时挂上参考的 `get` / `count` / `getNames` / 迭代器，两种拼法
+> 共用一个对象。
+> 类族：外壳按 `type` 重贴原型，`geometry instanceof gdal.Point` 成立，除 `LinearRing`
+> （本 API 不把环当几何发出去）之外的七个子类都在。唯一仍够不到的，是**返回类型自动就是子类**
+> —— 生成的声明拥有工厂的返回类型；而 `instanceof` 本身在 TS 里照样收窄，两个入口都能用。
 > 🟡 表示能力齐、只是形状或拼法与 `gdal-async` 不同（那层形状归 `compat`）。
 
 图例：✅ 有；🟡 有但形状不同；❌ 做不到 / 已定案不做。
@@ -128,7 +141,7 @@ GDAL 的数字码属于兼容层（WS-7），那里 `gdal-async` 的形状才是
 | `eventLoopWarning` | ❌ **已定案不做** | 本绑定是一把全局锁，没有"某数据集上还挂着未完成的异步操作"这回事可警告；见 A8 |
 | `setPROJSearchPaths` | ✅ `configureDataPaths()` | 行为等价 |
 | 常量枚举（`GDT_*`, `GCI_*`, `OFT_*`, `OLC*`, `DCAP_*`, `wkb*`, `GRA_*`, `CPLE_*`, `DIM_*`…） | ✅ `gdal.const`（八个**字符串**词汇）+ `toDataType`/`fromDataType` 取数字码 | 数字码词汇属兼容层 |
-| `info` / `infoAsync` | ✅ `info()`；`infoAsync` ❌ **非目标** | 异步 getter，见 A8 |
+| `info` / `infoAsync` | ✅ 两者都有。`infoAsync()` 与 `info()` 读的是同一份东西，区别只在**等锁的时候站哪**：`info()` 取共享锁，共享也是锁，遇上独占的数据集操作就要等，于是把事件循环堵住；`infoAsync()` 把这段等待放到线程池 | 与 19 个异步 getter 同一理由，见 A8 |
 
 ### A2. Dataset
 
@@ -214,8 +227,13 @@ GDAL 的数字码属于兼容层（WS-7），那里 `gdal-async` 的形状才是
 `transform`，以及按形状的访问器（`x`/`y`/`z`、`points()`、`rings()`/`exteriorRing`/`interiorRings`、
 `children()`、`coordinates`）。上列**全部** GEOS 谓词、`distance`、`isValid`/`isSimple` 与集合运算
 都已实现，再加 `makeValid`/`boundary`/`pointOnSurface`/`unaryUnion`/`concaveHull`/`normalize`/
-`setPrecision`/`isRing`/`toGML`/`toKML`。**类族不做**（见「三个已定案的分歧」）：napi 无法表达
-继承，按形状的访问器覆盖同样的能力；类族那层形状（含 `instanceof`）归兼容层。模块级的
+`setPrecision`/`isRing`/`toGML`/`toKML`。**类族已落地**：`gdal.Point` / `LineString` /
+`LinearRing` / `Polygon` / `MultiPoint` / `MultiLineString` / `MultiPolygon` /
+`GeometryCollection` 都导出，`geometry instanceof gdal.Point` 成立 —— napi 表达不了继承，
+所以由外壳按 `type` 重贴原型（`Object.setPrototypeOf`），工厂与运算的返回值都过一遍；
+`LinearRing` 只作为名字存在（本 API 不把环当几何发出去）。空子类不丢能力：全部访问器都在基类上，
+按形状作答、不合形状给 `null`。唯一够不到的是"返回类型自动就是子类"（生成的声明拥有工厂的返回类型），
+而 `instanceof` 在 TS 里照样收窄。见「三个曾经的『不做』」与 A9。模块级的
 `geometryToWkt` 等仍以 GeoJSON 收发，不变。
 
 ### A6. 算法与工具
@@ -258,7 +276,7 @@ GDAL 的数字码属于兼容层（WS-7），那里 `gdal-async` 的形状才是
 | 能力 | gdal-async | 我们 |
 |---|---|---|
 | 方法级异步 | ✅ `xxxAsync` + callback 双形态 | ✅ `xxxSync()` / `xxx(): Promise`（本绑定的命名约定，不引入 `Async` 后缀） |
-| **异步 getter** | ✅ `rasterSizeAsync`、`srsAsync`、`colorTableAsync`… | ✅ 已落地 19 个（Dataset 3 + RasterBand 16）。理由与参考不同：我们这边是**等锁** —— 串行数据集上 getter 取独占锁，若此刻有异步读在跑，同步 getter 会把事件循环堵到读完；异步版把这段等待放到线程池。命名照参考保留 `Async` 后缀：getter 没有可改名的零参调用形式（`band.dataType` 是属性），「异步不带 Sync」这条规则没有对象可施 |
+| **异步 getter** | ✅ `rasterSizeAsync`、`srsAsync`、`colorTableAsync`… | ✅ 已落地 19 个（Dataset 3 + RasterBand 16），加上函数形态的 `gdal.infoAsync()`。理由与参考不同：我们这边是**等锁** —— 串行数据集上 getter 取独占锁，若此刻有异步读在跑，同步 getter 会把事件循环堵到读完；异步版把这段等待放到线程池。`info()` 取的是共享锁，而共享也是锁，所以函数形态同理。命名照参考保留 `Async` 后缀：getter 没有可改名的零参调用形式（`band.dataType` 是属性），「异步不带 Sync」这条规则在它们身上没有对象可施，`info` 旁边的 `infoAsync` 是同一处例外 |
 | **异步迭代器** | ✅ `for await (const f of layer.features)` | ✅ `for await (const f of layer.openCursor())`（外壳加的） |
 | 同步迭代器 | ✅ `for (const f of layer.features)` | ✅ `featuresSync()` / `bands()` / `layers()` 返回数组，本来就同步可迭代 |
 | **每数据集 I/O 队列** | 🟡 有 per-dataset mutex（`libuv` 线程池调度） | 🟡 **进程级 `RwLock`**：数据集走独占；`openThreadSafe()` 的读取走共享、真并行；无数据集的调用（CRS / 几何 / `gdal.fs` / 模块自省）也走共享 |
@@ -303,7 +321,9 @@ for await (const band of dataset.bands) …    // 异步迭代
    员，`index.d.ts` 用 `interface` 合并声明得干净利落；`dataset.bands` / `layer.features` /
    `band.overviews` 的类型归生成的 `binding.d.ts` 所有，**类成员的既有类型没法从手写那半
    边加宽** —— 运行时两种拼法都在，但 TS 调用方看到的是 `Array<RasterBand>`，得自己说出来。
-   这与几何子类族是同一个约束，见 A4 与 [`docs/PARITY.md`](./docs/PARITY.md)。
+   几何类族是同一个约束的另一面：那边靠 `instanceof` 收窄就够了（子类是独立的声明），
+   够不到的只有"返回类型自动是子类"；而集合这边连收窄都没有，因为成员本身没变。
+   见 A5 与 [`docs/PARITY.md`](./docs/PARITY.md)。
 
 ---
 
