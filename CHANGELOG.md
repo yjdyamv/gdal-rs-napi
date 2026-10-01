@@ -6,6 +6,15 @@ First working cut — everything here is new.
 
 ### Binding
 
+- `RasterBand.createReadStream(options?)` and `createWriteStream(options?)` are the
+  raster **streams**: a Node `Readable` whose chunks are the band's own bytes, one strip
+  at a time, and a `Writable` that consumes them the same way. Both take the window
+  `readChunksSync` takes — `x`, `y`, `width`, `height` and `rows` — and the writer
+  refuses what it cannot place: half a row, or more than its window holds. They live in
+  the JavaScript shell (`index.js`) rather than in the Rust, because napi cannot hand
+  back a Node `Readable` / `Writable` from a `#[napi]` class — the same reason a
+  `FeatureCursor` gets its `for await` there — and `index.d.ts` declares them.
+  `gdal.features().streams` is `true` now.
 - `RasterBand` gains the **band arithmetic**: `add`, `sub`, `mul`, `div`, `pow`; the
   unary `abs`, `sqrt`, `log`, `log10`; the comparisons `eq`, `notEq`, `lt`, `lte`,
   `gt`, `gte`; the logical `and`, `or`, `not`; and `ifThenElse`. Each takes another
@@ -304,8 +313,9 @@ First working cut — everything here is new.
   `GeometryCollection` class family with `toWKT()` / `toJSON()` and the `get*`
   spellings. The family lands *here* because this layer's types are hand-written —
   exactly what a prototype-swapped subclass needs and what the generated
-  declarations cannot give it. Streams, MDArray, `calcAsync` and pixel functions
-  are not covered; see `PHASE1.md` (WS-7).
+  declarations cannot give it. The adapter does not cover the raster streams
+  (`band.pixels.…`), MDArray, `calcAsync` or the pixel functions; see `PHASE1.md`
+  (WS-7).
 - `layer.defn` groups a layer's schema into one object: `name`, `geometryType`,
   `geometryColumn`, `fidColumn`, `fieldCount` and `fields`. `Feature.defn` returns
   the same object, so the two cannot describe one layer differently. `FieldInfo`
@@ -793,11 +803,11 @@ First working cut — everything here is new.
 
 ### Known gaps
 
-- The capabilities deliberately left out — the multidimensional model, Node
-  `Stream`s, band algebra and pixel functions, async getters, the native collection
-  classes and the geometry subclass family — are listed with their reasons in
-  [`docs/PARITY.md`](./docs/PARITY.md), the full boundary against `gdal-async`; the
-  additive gaps that remain are tiered there too.
+- The capabilities deliberately left out — the multidimensional model, the VRT pixel
+  functions, async getters, the native collection classes and the geometry subclass
+  family — are listed with their reasons in [`docs/PARITY.md`](./docs/PARITY.md), the
+  full boundary against `gdal-async`; the additive gaps that remain are tiered there
+  too.
 - Transformations are 2D, and a *geometry* transform is synchronous. A coordinate
   array has a threaded form (`transformPointsSync` / `transformPoints`), which is the
   bulk entry; `Geometry.transform` and `transformGeometry` stay synchronous because a

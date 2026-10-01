@@ -57,7 +57,7 @@ gdal.info()
 // with": `features()` always answers all of it, so nothing has to be probed by
 // calling a method and catching the TypeError.
 const features = gdal.features()
-// { geos: false, threadSafe: true, multidimensional: false, streams: false }
+// { geos: true, threadSafe: true, multidimensional: false, streams: true }
 
 gdal.apiVersion // '0.1.0' — the binding's version, not `version().gdal`
 ```
@@ -467,8 +467,26 @@ JS thread, and the worker holds the GDAL lock while it waits for the answer — 
 between callbacks on the calling thread, which is the right shape when the caller is
 already a worker. Both take the same answer as backpressure. (A band is not
 async-*iterable* — napi cannot put `Symbol.asyncIterator` on a generated class — which
-is why the streaming form is a callback; a layer's cursor can be, because the shell adds
-it; see *Reading in batches*.)
+is why this walk is a callback; a layer's cursor can be, because the shell adds it;
+see *Reading in batches*.)
+
+The same walk is also a pair of **Node streams**, built by the shell over those reads:
+
+```js
+for await (const strip of band.createReadStream({ rows: 64 })) {
+  // strip is the band's own bytes for one strip, at chunk.x/y = the window
+}
+
+band.createWriteStream({ rows: 64 }).end(allTheBytes)
+```
+
+`band.createReadStream(options)` is a `Readable` whose chunks are the band's bytes, one
+strip at a time; `band.createWriteStream(options)` is a `Writable` that consumes them
+the same way and refuses a write it cannot place (half a row, or more than its window
+holds). Both take the same window as `readChunksSync` — `x`, `y`, `width`, `height`,
+and `rows` — and `gdal.features().streams` says they are there. They are shells over
+the blocking reads, so a strip costs a synchronous read on the calling thread; the
+thread-pool form of a long walk is still `readChunks`.
 
 Writing and creating:
 
@@ -1685,7 +1703,7 @@ The main entry point is **not** a drop-in replacement — it is 0-based, spells 
 blocking form `xxxSync()`, and sets through `setX()`. [`docs/PARITY.md`](./docs/PARITY.md)
 is the full accounting of where the two stand: what is at parity, the additive gaps
 still open, and the capabilities deliberately left out (the multidimensional model,
-Streams, band algebra, async getters, the native collection classes and the geometry
+VRT pixel functions, async getters, the native collection classes and the geometry
 subclass family), with the conventions map. A second entry point is:
 
 ```js
@@ -1712,10 +1730,12 @@ for (const feature of layer.features) {    // iterable, like a collection
 `feature.geometry = gdal.fromWKT('POINT (9 9)')` replaces it. The blocking/async
 pair is `xxx()` / `xxxAsync()`, and `xxxAsync` also takes a node-style callback.
 
-What it does **not** cover, so a port does not find out the hard way: Streams,
-multi-dimensional arrays, `calcAsync`, the VRT pixel functions, and the two band
-extras this API spells its own way — `colorTable` and `mask` — whose shapes are on
-the main entry point and not on the wrapper. Everything else
+What it does **not** cover, so a port does not find out the hard way: multi-dimensional
+arrays, `calcAsync`, the VRT pixel functions, and the two band extras this API spells
+its own way — `colorTable` and `mask` — whose shapes are on the main entry point and
+not on the wrapper. Raster streams are on the main entry point too, as
+`band.createReadStream()` / `createWriteStream()` rather than `band.pixels.…`.
+Everything else
 the native API can do, the adapter can — including the GEOS predicates, since they
 are in the same build. `PHASE1.md` (WS-7) is the full list.
 

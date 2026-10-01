@@ -67,7 +67,7 @@ than filled with a second door:
 One caveat GDAL hands down rather than us: `rename` / `copyFiles` open the source as a
 **raster**, so a vector-only dataset (a bare `.gpkg`) is not recognized.
 
-### Tier 3 — the band algebra shipped; Streams and the multidimensional model remain
+### Tier 3 — the algebra and the streams shipped; the multidimensional model remains
 
 The band algebra is in: `asType(type)` plus the elementwise operators — `add`, `sub`,
 `mul`, `div`, `pow`; the unary `abs`, `sqrt`, `log`, `log10`; the comparisons `eq`,
@@ -82,28 +82,32 @@ so reading the derived band after `close()`ing the source is a use-after-free (t
 error from a closed dataset, never a crash. Materialising, an explicit result sample
 type, and a size check between the two bands are the price of that choice.
 
+Raster **Streams** are in too — `band.createReadStream()` / `band.createWriteStream()`,
+yielding the band's own bytes a strip at a time. They are built in the JavaScript shell
+(`index.js`) over the chunked reads and writes, because napi cannot hand back a Node
+`Readable` / `Writable` from a `#[napi]` class — the same reason a `FeatureCursor` gets
+its `for await` there. `gdal.features().streams` is `true`.
+
 Still needing a decision:
 
 | `gdal-async` | why it is not a straight port |
 |---|---|
-| Node `Stream`s (`pixels.createReadStream` / `createWriteStream`, `RasterReadStream`…) | overlaps `readChunks` / `readChunksSync`; the value is ecosystem compatibility, the cost is a second streaming model |
 | the multidimensional model (`Group` / `MDArray` / `Attribute` / `Dimension`) | a whole subsystem; nothing in the current use surface needs it |
 
 ---
 
 ## 2. Deliberate non-goals (with the reason)
 
-These are **decisions, not omissions**. `gdal.features()` reports the two that have a
-runtime probe (`multidimensional`, `streams`).
+These are **decisions, not omissions**. `gdal.features()` reports the one with a
+runtime probe — `multidimensional`.
 
 - **The multidimensional model** — `Group`, `MDArray`, `Attribute`, `Dimension` and
   their collections. A subsystem of its own, far past what this binding is used for.
   `gdal.features().multidimensional === false`.
-- **Node `Stream`s** — `features().streams === false`. `readChunks` / `readChunksSync`
-  are the streaming reads (see the README's *Resources* section).
-- **Band algebra and pixel functions** — `RasterBand.add`/`…`, `addPixelFunc`,
-  `createPixelFunc`, `toPixelFunc`, `calcAsync`. They rest on VRT pixel functions;
-  see Tier 3 for the shape question.
+- **VRT pixel functions** — `addPixelFunc` / `createPixelFunc` / `toPixelFunc`, and
+  `calcAsync`. They need a C callback that GDAL invokes from inside its raster loop;
+  the elementwise arithmetic that would otherwise use them is implemented **eagerly**
+  instead (see Tier 3).
 - **Async getters** — the `xxxAsync` form of every getter. It conflicts with the
   naming rule (sync is `xxxSync()`, async is `xxx()`; no `Async` suffix), and its
   purpose in the reference — not blocking behind a per-dataset I/O queue — does not
@@ -141,9 +145,8 @@ runtime probe (`multidimensional`, `streams`).
 
 ## 4. Roadmap
 
-1. **Now (this cut):** Tier 1 above.
-2. **Next:** Tier 2 above, one commit per group.
-3. **Then:** a design for band algebra / `asType` (Tier 3), and decide Streams and the
-   multidimensional model on demand rather than by default.
-4. **Publishing** stays *deliberately deferred* — see `ROADMAP.md` Phase 0 and
+1. **Shipped:** Tier 1, Tier 2, and Tier 3's algebra and streams.
+2. **Remaining:** the multidimensional model, only if something needs it — everything
+   else is either done or a recorded non-goal above.
+3. **Publishing** stays *deliberately deferred* — see `ROADMAP.md` Phase 0 and
    `CHANGELOG.md`; nothing here changes that.

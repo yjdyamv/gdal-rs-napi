@@ -221,7 +221,9 @@ geometryFromWkb` + `transformGeometry`（走 GeoJSON `Value`）。**几何是 `a
 ### A7. 多维模型与流（整块缺失）
 
 - `MDArray` / `Group` / `Attribute` / `Dimension` 及各自的集合 —— ❌
-- `RasterReadStream` / `RasterWriteStream` / `RasterMuxStream` / `RasterTransform` —— ❌
+- `RasterReadStream` / `RasterWriteStream` —— ✅ 后由外壳（`index.js`）在分块读写之上补上：
+  `band.createReadStream()` / `createWriteStream()`；`RasterMuxStream` / `RasterTransform`
+  仍不做
 
 ### A8. 异步人体工学（影响服务端可用性的核心差距）
 
@@ -270,7 +272,7 @@ geometryFromWkb` + `transformGeometry`（走 GeoJSON `Value`）。**几何是 `a
 6. **重载而非改名**：`setProjection(wkt)` 增加接受 `SpatialRef` 的重载，而不是改成 `setSrs()`。
 7. **弃用**：`@deprecated` + `CHANGELOG` 标注，保留 ≥2 个 minor，major 才删。
 8. **特性探测**：加 `gdal.apiVersion`（自有 API 版本，区别于 `version()` 的 GDAL 版本）
-   与 `gdal.features()`（`{ geos: false, mdArray: false, streams: false, compat: true }`）。
+   与 `gdal.features()`（`{ geos: true, mdArray: false, streams: true, compat: true }`）。
 9. **类型契约**：`binding.d.ts` 顶部加"generated, but the shape is the contract"说明；
    `types.test.mjs` 扩展为"声明与运行时一致"检查。
 
@@ -297,7 +299,7 @@ const gdal = require('gdal-rs-napi/compat')
 | 几何谓词 | **只有启用 GEOS 的构建才能真适配** | 见 C1 |
 | 异步 getter | 包成 Promise，但不改变底层串行事实 | 低（语义有差） |
 | `pixels.readAsync()` | 包 `readPixels()` | 低 |
-| Streams / MDArray | 不做 | — |
+| Streams / MDArray | Streams 已在主入口（`band.createReadStream()` / `createWriteStream()`，外壳实现）；compat 不包它们。MDArray 不做 | — |
 | 同步迭代器 `Symbol.iterator` | 在 compat 里实现（也值得进自有 API） | 低 |
 
 **这不是"两套 API 维护负担"**：compat 层只是适配器，不复制逻辑；自有 API 演进时
@@ -419,8 +421,8 @@ compat 层用测试锁住形状即可。它的价值是——**让 `gdal-async` 
 
 **WS-8 · 明确不做（记为设计取舍，写进 README）**
 - MDArray / 多维模型（A7）
-- Node Streams（A7）
 - `calcAsync` / 像素函数
+（Node Streams 与波段代数后来补上了，见 [`docs/PARITY.md`](./docs/PARITY.md)。）
 
 ### C3. 顺序与依赖
 

@@ -41,7 +41,7 @@ gdal.info()
 // “本绑定能做什么”是另一个问题：`features()` 总是把所有开关都答全，
 // 不必靠“调用一个方法再捕获 TypeError”来探测。
 const features = gdal.features()
-// { geos: false, threadSafe: true, multidimensional: false, streams: false }
+// { geos: true, threadSafe: true, multidimensional: false, streams: true }
 
 gdal.apiVersion // '0.1.0' —— 绑定的版本，不是 `version().gdal`
 ```
@@ -405,7 +405,23 @@ band.readChunksSync({ rows: 64 }, onChunk)
 JS 线程上执行，而 worker 在等答案时持有 GDAL 锁 —— 所以和 `onProgress` 一样，回调里
 **不得再调回本库**。`readChunksSync` 在调用线程上、两次回调之间读，适合调用方本身就在 worker
 里的情形。两者都把返回值当背压。（波段没法做成可异步*迭代*：napi 无法给生成的类挂
-`Symbol.asyncIterator`，所以流式形态是回调；图层的游标可以，因为那是外壳加的 —— 见「按批读取」。）
+`Symbol.asyncIterator`，所以这个走法是回调；图层的游标可以，因为那是外壳加的 —— 见「按批读取」。）
+
+同一个走法也是一对 **Node 流**，由外壳在这些读取之上搭出来：
+
+```js
+for await (const strip of band.createReadStream({ rows: 64 })) {
+  // strip 是该波段自己类型的字节，一次一条
+}
+
+band.createWriteStream({ rows: 64 }).end(allTheBytes)
+```
+
+`band.createReadStream(options)` 是一条 `Readable`，chunk 就是波段的字节、一次一条；
+`band.createWriteStream(options)` 是一条 `Writable`，以同样的方式消费，并拒绝放不下的写
+（半行，或超过窗口容量的数据）。两者收的窗口与 `readChunksSync` 一样 —— `x`、`y`、
+`width`、`height` 和 `rows`；`gdal.features().streams` 会告诉你它们存在。它们只是阻塞读之上的
+外壳，所以每条 strip 都是一次调用线程上的同步读；长时间遍历的线程池形态仍然是 `readChunks`。
 
 写入、创建、地理参考：
 
@@ -1421,7 +1437,7 @@ Intel macOS 与 32 位目标未构建。
 
 主入口**不是**直接替代品 —— 它是 0-based、阻塞形式叫 `xxxSync()`、赋值靠 `setX()`。
 [`docs/PARITY.md`](./docs/PARITY.md) 是两者差距的完整清单：哪些已对齐、还有哪些**加性缺口**、
-以及**明确不做**的能力（多维模型、Streams、波段代数、异步 getter、原生集合类、几何子类族），
+以及**明确不做**的能力（多维模型、VRT 像素函数、异步 getter、原生集合类、几何子类族），
 并附约定对照表。`gdal.bundled` 是「这个包是否自包含」的一行答案。另一个入口是：
 
 ```js
@@ -1447,9 +1463,9 @@ for (const feature of layer.features) {    // 可迭代，和集合一样
 gdal.fromWKT('POINT (9 9)')` 直接替换。阻塞/异步成对为 `xxx()` / `xxxAsync()`，
 `xxxAsync` 也接受 node 风格回调。
 
-**不覆盖**的部分（免得迁移时才发现）：Streams、多维数组、`calcAsync`、VRT 像素函数，
-以及两个由本绑定自己定形状的波段附加物——`colorTable` 与 `mask`（形状在主入口上，
-不在兼容层包装里）。
+**不覆盖**的部分（免得迁移时才发现）：多维数组、`calcAsync`、VRT 像素函数，以及两个由本绑定
+自己定形状的波段附加物——`colorTable` 与 `mask`（形状在主入口上，不在兼容层包装里）。栅格流也在
+主入口上，拼作 `band.createReadStream()` / `createWriteStream()`，而不是 `band.pixels.…`。
 原生 API 能做的其余一切，适配层都能做 —— 包括 GEOS 谓词，因为它们在同一个构建里。
 完整清单见 `PHASE1.md`（WS-7）。
 
