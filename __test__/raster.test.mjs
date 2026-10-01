@@ -1050,6 +1050,67 @@ test('asType converts a band into an independent in-memory band', () => {
   assert.equal(asFloat.getPixel(0, 0), 7)
 })
 
+test('the band arithmetic is elementwise, eager and independent', () => {
+  const make = (values) => {
+    const dataset = gdal.createSync('', {
+      driver: 'MEM',
+      width: 2,
+      height: 2,
+      bandCount: 1,
+      dataType: 'Uint8',
+    })
+    dataset.band(0).writeValues(0, 0, 2, 2, bytesOf(Uint8Array.from(values)))
+    return dataset
+  }
+  const a = make([1, 2, 3, 4])
+  const b = make([10, 20, 30, 40])
+
+  // Arithmetic comes back as Float64; the other operand may be a band or a number.
+  const sum = a.band(0).add(b.band(0))
+  assert.equal(sum.dataType, 'Float64')
+  assert.deepEqual(
+    [sum.getPixel(0, 0), sum.getPixel(1, 0), sum.getPixel(0, 1), sum.getPixel(1, 1)],
+    [11, 22, 33, 44],
+  )
+  assert.equal(a.band(0).add(5).getPixel(0, 0), 6)
+  assert.equal(a.band(0).mul(2).getPixel(1, 1), 8)
+
+  // Comparisons and logic come back as a Uint8 mask of 0s and 1s.
+  const over = a.band(0).gt(2)
+  assert.equal(over.dataType, 'Uint8')
+  assert.deepEqual(
+    [over.getPixel(0, 0), over.getPixel(1, 0), over.getPixel(0, 1), over.getPixel(1, 1)],
+    [0, 0, 1, 1],
+  )
+  assert.equal(a.band(0).eq(b.band(0)).getPixel(0, 0), 0)
+  assert.equal(a.band(0).and(b.band(0)).getPixel(0, 0), 1)
+  assert.equal(a.band(0).not().getPixel(0, 0), 0)
+
+  // `ifThenElse` is the ternary operator, elementwise.
+  const picked = over.ifThenElse(a.band(0), 0)
+  assert.deepEqual(
+    [picked.getPixel(0, 0), picked.getPixel(1, 0), picked.getPixel(0, 1), picked.getPixel(1, 1)],
+    [0, 0, 3, 4],
+  )
+
+  // Two bands of different sizes are refused.
+  const wrong = gdal.createSync('', {
+    driver: 'MEM',
+    width: 3,
+    height: 1,
+    bandCount: 1,
+    dataType: 'Uint8',
+  })
+  assert.throws(() => a.band(0).add(wrong.band(0)), /same size/)
+
+  // The result is materialised, so it outlives the bands it came from.
+  a.close()
+  b.close()
+  wrong.close()
+  assert.equal(sum.getPixel(0, 0), 11)
+  assert.equal(picked.getPixel(1, 1), 4)
+})
+
 test('a band and a layer flush below the dataset, both ways', async () => {
   const path = tmp('flush.tif')
   const raster = gdal.createSync(path, {

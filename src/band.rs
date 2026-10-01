@@ -18,7 +18,7 @@ use napi::bindgen_prelude::*;
 use napi::threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode};
 use napi_derive::napi;
 
-use crate::dataset::{DatasetRef, with_two};
+use crate::dataset::{CreateOptions, DatasetRef, with_two};
 use crate::dtype::DataType;
 use crate::error::{GdalErrorCode, IntoGdalResult, Result, bad_argument, into_status_error, split};
 use crate::raster_io::{
@@ -491,6 +491,49 @@ impl JsRasterBand {
         ensure_initialized();
         self.dataset
             .with_mut(|dataset| with_band(dataset, self.kind, |band| sieve_filter(band, request)))
+    }
+
+    /// This band's samples as `f64`, with its size — the form the band arithmetic
+    /// works in, whatever the band's own type is.
+    fn samples_f64(&self) -> Result<(u32, u32, Vec<f64>)> {
+        let (width, height) = self.dataset.with(|dataset| {
+            with_band(dataset, self.kind, |band| {
+                let (width, height) = band.size();
+                Ok((width as u32, height as u32))
+            })
+        })?;
+        let bytes = self.read_sync(Some(DataType::Float64), &ReadOptions::default())?;
+        let values = bytes
+            .as_chunks::<8>()
+            .0
+            .iter()
+            .map(|chunk| f64::from_ne_bytes(*chunk))
+            .collect();
+        Ok((width, height, values))
+    }
+
+    /// A binary elementwise result, eagerly, as a new in-memory band.
+    fn binary(
+        &self,
+        other: Either<&JsRasterBand, f64>,
+        result_type: DataType,
+        op: impl Fn(f64, f64) -> f64,
+    ) -> Result<JsRasterBand> {
+        let (width, height, left) = self.samples_f64()?;
+        let right = operand_values(&other, width, height)?;
+        let values = left
+            .iter()
+            .zip(&right)
+            .map(|(a, b)| op(*a, *b))
+            .collect::<Vec<f64>>();
+        write_mem(width, height, result_type, &values)
+    }
+
+    /// A unary elementwise result, eagerly, as a new in-memory band.
+    fn unary(&self, result_type: DataType, op: impl Fn(f64) -> f64) -> Result<JsRasterBand> {
+        let (width, height, samples) = self.samples_f64()?;
+        let values = samples.into_iter().map(op).collect::<Vec<f64>>();
+        write_mem(width, height, result_type, &values)
     }
 
     /// Flush this band's cached writes. `with_mut`, so a read-only thread-safe
@@ -1069,6 +1112,146 @@ impl JsRasterBand {
             BandKind::Index(index),
             data_type,
         ))
+    }
+
+    /// The sum of this band and another band or a constant, elementwise, as a new
+    /// **in-memory `Float64` band**.
+    ///
+    /// The arithmetic here is **eager**: the result is computed once and materialised,
+    /// rather than a lazy VRT that reads through to its sources — see `docs/PARITY.md`
+    /// for why (a VRT shares the source handle and would dangle once it is closed).
+    #[napi]
+    pub fn add(&self, other: Either<&JsRasterBand, f64>) -> Result<JsRasterBand> {
+        self.binary(other, DataType::Float64, |a, b| a + b)
+    }
+
+    /// The difference: this band minus `other`, elementwise.
+    #[napi]
+    pub fn sub(&self, other: Either<&JsRasterBand, f64>) -> Result<JsRasterBand> {
+        self.binary(other, DataType::Float64, |a, b| a - b)
+    }
+
+    /// The product, elementwise.
+    #[napi]
+    pub fn mul(&self, other: Either<&JsRasterBand, f64>) -> Result<JsRasterBand> {
+        self.binary(other, DataType::Float64, |a, b| a * b)
+    }
+
+    /// The quotient: this band divided by `other`, elementwise.
+    #[napi]
+    pub fn div(&self, other: Either<&JsRasterBand, f64>) -> Result<JsRasterBand> {
+        self.binary(other, DataType::Float64, |a, b| a / b)
+    }
+
+    /// This band raised to `other`, elementwise.
+    #[napi]
+    pub fn pow(&self, other: Either<&JsRasterBand, f64>) -> Result<JsRasterBand> {
+        self.binary(other, DataType::Float64, f64::powf)
+    }
+
+    /// The absolute value of each sample.
+    #[napi]
+    pub fn abs(&self) -> Result<JsRasterBand> {
+        self.unary(DataType::Float64, f64::abs)
+    }
+
+    /// The square root of each sample.
+    #[napi]
+    pub fn sqrt(&self) -> Result<JsRasterBand> {
+        self.unary(DataType::Float64, f64::sqrt)
+    }
+
+    /// The natural logarithm of each sample.
+    #[napi]
+    pub fn log(&self) -> Result<JsRasterBand> {
+        self.unary(DataType::Float64, f64::ln)
+    }
+
+    /// The base-10 logarithm of each sample.
+    #[napi]
+    pub fn log10(&self) -> Result<JsRasterBand> {
+        self.unary(DataType::Float64, f64::log10)
+    }
+
+    /// `1` where a sample equals `other`, `0` elsewhere — a **`Uint8`** band, the way
+    /// a GDAL mask is.
+    #[napi]
+    pub fn eq(&self, other: Either<&JsRasterBand, f64>) -> Result<JsRasterBand> {
+        self.binary(other, DataType::Uint8, |a, b| flag(a == b))
+    }
+
+    /// `1` where a sample differs from `other`, `0` elsewhere.
+    #[napi]
+    pub fn not_eq(&self, other: Either<&JsRasterBand, f64>) -> Result<JsRasterBand> {
+        self.binary(other, DataType::Uint8, |a, b| flag(a != b))
+    }
+
+    /// `1` where a sample is below `other`, `0` elsewhere.
+    #[napi]
+    pub fn lt(&self, other: Either<&JsRasterBand, f64>) -> Result<JsRasterBand> {
+        self.binary(other, DataType::Uint8, |a, b| flag(a < b))
+    }
+
+    /// `1` where a sample is below or equal to `other`, `0` elsewhere.
+    #[napi]
+    pub fn lte(&self, other: Either<&JsRasterBand, f64>) -> Result<JsRasterBand> {
+        self.binary(other, DataType::Uint8, |a, b| flag(a <= b))
+    }
+
+    /// `1` where a sample is above `other`, `0` elsewhere.
+    #[napi]
+    pub fn gt(&self, other: Either<&JsRasterBand, f64>) -> Result<JsRasterBand> {
+        self.binary(other, DataType::Uint8, |a, b| flag(a > b))
+    }
+
+    /// `1` where a sample is above or equal to `other`, `0` elsewhere.
+    #[napi]
+    pub fn gte(&self, other: Either<&JsRasterBand, f64>) -> Result<JsRasterBand> {
+        self.binary(other, DataType::Uint8, |a, b| flag(a >= b))
+    }
+
+    /// `1` where both samples are non-zero, `0` elsewhere — the logical AND.
+    #[napi]
+    pub fn and(&self, other: Either<&JsRasterBand, f64>) -> Result<JsRasterBand> {
+        self.binary(other, DataType::Uint8, |a, b| flag(a != 0.0 && b != 0.0))
+    }
+
+    /// `1` where either sample is non-zero, `0` elsewhere — the logical OR.
+    #[napi]
+    pub fn or(&self, other: Either<&JsRasterBand, f64>) -> Result<JsRasterBand> {
+        self.binary(other, DataType::Uint8, |a, b| flag(a != 0.0 || b != 0.0))
+    }
+
+    /// `1` where a sample is zero, `0` elsewhere — the logical NOT.
+    #[napi]
+    pub fn not(&self) -> Result<JsRasterBand> {
+        self.unary(DataType::Uint8, |a| flag(a == 0.0))
+    }
+
+    /// `thenValue` where a sample of this band is non-zero, `elseValue` elsewhere —
+    /// the ternary operator, elementwise, as a `Float64` band. Each is a band or a
+    /// constant.
+    #[napi]
+    pub fn if_then_else(
+        &self,
+        then_value: Either<&JsRasterBand, f64>,
+        else_value: Either<&JsRasterBand, f64>,
+    ) -> Result<JsRasterBand> {
+        let (width, height, condition) = self.samples_f64()?;
+        let then_values = operand_values(&then_value, width, height)?;
+        let else_values = operand_values(&else_value, width, height)?;
+        let values = condition
+            .iter()
+            .enumerate()
+            .map(|(index, sample)| {
+                if *sample != 0.0 {
+                    then_values[index]
+                } else {
+                    else_values[index]
+                }
+            })
+            .collect::<Vec<f64>>();
+        write_mem(width, height, DataType::Float64, &values)
     }
 
     /// Min, max, mean and standard deviation.
@@ -1672,6 +1855,71 @@ impl JsRasterBand {
             block_height.min(band_height.saturating_sub(top)),
         ))
     }
+}
+
+/// `1.0` / `0.0`, which a `Uint8` result band stores as `1` / `0`.
+fn flag(condition: bool) -> f64 {
+    if condition { 1.0 } else { 0.0 }
+}
+
+/// A whole operand as a vector: a band's own samples, or a constant repeated across
+/// the window. A band's size has to match the one driving the operation.
+fn operand_values(
+    operand: &Either<&JsRasterBand, f64>,
+    width: u32,
+    height: u32,
+) -> Result<Vec<f64>> {
+    match operand {
+        Either::A(band) => {
+            let (other_width, other_height, values) = band.samples_f64()?;
+            if (other_width, other_height) != (width, height) {
+                return Err(bad_argument(format!(
+                    "the two bands have to be the same size, got {width}x{height} and \
+                     {other_width}x{other_height}"
+                )));
+            }
+            Ok(values)
+        }
+        Either::B(constant) => Ok(vec![*constant; width as usize * height as usize]),
+    }
+}
+
+/// Put a result into a new in-memory band of its own — the eager half of the algebra,
+/// which is what keeps a result independent of the bands it came from.
+fn write_mem(width: u32, height: u32, data_type: DataType, values: &[f64]) -> Result<JsRasterBand> {
+    let options = CreateOptions {
+        driver: "MEM".to_string(),
+        width,
+        height,
+        band_count: Some(1),
+        data_type: Some(data_type),
+        options: None,
+    };
+    let dataset = crate::dataset::create_gdal("", &options)?;
+    {
+        let mut band = dataset.rasterband(1).gdal()?;
+        let shape = (width as usize, height as usize);
+        match data_type {
+            DataType::Float64 => {
+                let mut buffer = gdal::raster::Buffer::new(shape, values.to_vec());
+                band.write((0, 0), shape, &mut buffer).gdal()?;
+            }
+            DataType::Uint8 => {
+                let bytes = values
+                    .iter()
+                    .map(|v| u8::from(*v != 0.0))
+                    .collect::<Vec<u8>>();
+                let mut buffer = gdal::raster::Buffer::new(shape, bytes);
+                band.write((0, 0), shape, &mut buffer).gdal()?;
+            }
+            _ => unreachable!("a band result is Float64 or Uint8"),
+        }
+    }
+    Ok(JsRasterBand::from_kind(
+        DatasetRef::serialised(dataset),
+        BandKind::Index(0),
+        data_type,
+    ))
 }
 
 /// GDAL's name for a sample type, for the command-line arguments that take one by

@@ -456,7 +456,9 @@ fn open_thread_safe_gdal(path: &str) -> Result<DatasetRef> {
     }
 }
 
-fn create_gdal(path: &str, options: &CreateOptions) -> Result<GdalDataset> {
+/// Create a dataset through a named driver. `pub(crate)` because the band
+/// arithmetic builds its results as in-memory datasets and needs the same door.
+pub(crate) fn create_gdal(path: &str, options: &CreateOptions) -> Result<GdalDataset> {
     ensure_initialized();
     let _guard = lock_gdal();
 
