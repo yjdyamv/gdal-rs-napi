@@ -424,17 +424,69 @@ JS 线程上执行，而 worker 在等答案时持有 GDAL 锁 —— 所以和 
 
 ```js
 for await (const strip of band.createReadStream({ rows: 64 })) {
-  // strip 是该波段自己类型的字节，一次一条
+  // strip 是**该波段自身样本类型**的类型化数组，一次一条
 }
 
-band.createWriteStream({ rows: 64 }).end(allTheBytes)
+band.createWriteStream({ rows: 64 }).end(allTheValues)
 ```
 
-`band.createReadStream(options)` 是一条 `Readable`，chunk 就是波段的字节、一次一条；
-`band.createWriteStream(options)` 是一条 `Writable`，以同样的方式消费，并拒绝放不下的写
-（半行，或超过窗口容量的数据）。两者收的窗口与 `readChunksSync` 一样 —— `x`、`y`、
-`width`、`height` 和 `rows`；`gdal.features().streams` 会告诉你它们存在。它们只是阻塞读之上的
-外壳，所以每条 strip 都是一次调用线程上的同步读；长时间遍历的线程池形态仍然是 `readChunks`。
+`band.createReadStream(options)` 是一条 **object mode** 的 `Readable`，chunk 是波段自身样本类型
+的类型化数组（`Float64` 波段就是 `Float64Array`）、一次一条；`band.createWriteStream(options)`
+是一条 `Writable`，以同样的方式消费，并拒绝放不下的写（半行，或超过窗口容量的数据）。两者收的
+窗口与 `readChunksSync` 一样 —— `x`、`y`、`width`、`height` 和 `rows`；`gdal.features().streams`
+会告诉你它们存在。它们只是阻塞读之上的外壳，所以每条 strip 都是一次调用线程上的同步读；长时间
+遍历的线程池形态仍然是 `readChunks`。
+
+还有两个选项，都跟缺测值有关：`type` 以另一种样本类型读写（`Float64Array`，或 `'Float64'`）；
+`convertNoData` 把波段的缺测值在出口变成 `NaN`、在入口把 `NaN` 变回缺测值 —— 这需要浮点类型才有
+地方放它：
+
+```js
+for await (const strip of band.createReadStream({ type: 'Float64', convertNoData: true })) {
+  // 缺测样本现在是 NaN，下面的算术才成立
+}
+```
+
+### 逐像素计算 —— `calcAsync`
+
+上面这对流正是 `gdal.calcAsync` 的构成：多条波段进、一条波段出，对每个像素应用一个 JS 函数。
+它就是 `gdal_calc.py`，只是把表达式字符串换成了回调。
+
+```js
+const temperature = (await gdal.open('T2m.tif')).band(0)
+const dewpoint = (await gdal.open('D2m.tif')).band(0)
+const output = gdal.createSync('cloudbase.tif', {
+  driver: 'GTiff', width, height, bandCount: 1, dataType: 'Float64',
+})
+
+await gdal.calcAsync(
+  { t: temperature, td: dewpoint },
+  output.band(0),
+  (t, td) => 125 * (t - td),        // Espy 的云底高度估算
+  { convertNoData: true, onProgress: (fraction) => console.log(fraction) },
+)
+```
+
+所有波段必须与输出同尺寸，`fn` 的形参按输入给出的顺序一一对应。输入按输出的样本类型读入，所以
+`convertInput` 决定是否先把**输入**转成该类型 —— 整数输出要靠这一步，`convertNoData` 才有地方
+放 `NaN`。`fn` 跑在 JS 线程上、每个像素调用一次，这就是瓶颈所在，这里任何设计都改不了；走流的
+是读和写。
+
+它底下是两块可以单独使用的积木：
+
+```js
+const mux = new gdal.RasterMuxStream({
+  t: temperature.createReadStream(),
+  td: dewpoint.createReadStream(),
+})                                    // chunk 形如 { t: Float64Array, td: Float64Array }
+const transform = new gdal.RasterTransform({ fn: (t, td) => 125 * (t - td), type: 'Float64' })
+
+mux.pipe(transform).pipe(output.band(0).createWriteStream())
+```
+
+`RasterMuxStream` 按行同步读取所有输入，发布所有输入都已就绪的最大长度，所以无论分条怎么切，
+像素都保持对齐；输入长度不一致时它会以错误摧毁流，而不是给出一个短的答案。`RasterTransform` 是
+逐元素的那一半；要做算术以外的事情，就用 `new Transform({ objectMode: true, transform })`。
 
 写入、创建、地理参考：
 

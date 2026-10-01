@@ -36,15 +36,35 @@ First working cut — everything here is new.
   it matches `band.dataType` and the pair round-trips. `toDataType` takes either
   spelling (case is ignored, and `Uint8` is translated to GDAL's `Byte`), and a name
   GDAL does not know is refused rather than answered `Unknown`.
+- `gdal.calcAsync(inputs, output, fn, options?)` computes one band from a pixel-wise
+  function of several — `gdal_calc.py` with a JS callback in place of an expression
+  string. Every band has to be the output's size, `fn` takes one argument per input in
+  the order given, and the bands are read as the output's sample type. Two options are
+  `gdal_calc.py`'s: `convertNoData` reads the missing value as `NaN` and writes `NaN`
+  back as it, and `convertInput` converts the inputs to the output's type before `fn`
+  sees them — which is what an integer output needs for the first to have anywhere to
+  put a `NaN`. `fn` runs on the JS thread, once per pixel; the reading and the writing
+  are what goes through the streams. (`onProgress` is this binding's own name for the
+  callback; the reference calls it `progress_cb`.)
+- `gdal.RasterMuxStream` and `gdal.RasterTransform` are the two pieces `calcAsync` is
+  built from, usable on their own. A mux reads several read streams in lockstep and
+  publishes the largest amount all of them have ready, so chunks stay aligned however
+  the strips fall; inputs that end at different lengths destroy it with an error rather
+  than answering short. A transform is the elementwise half — object chunks in, one
+  typed array out — and `new Transform({ objectMode: true, transform })` remains the
+  way to do anything beyond arithmetic. Both are the shell's, like the streams.
 - `RasterBand.createReadStream(options?)` and `createWriteStream(options?)` are the
-  raster **streams**: a Node `Readable` whose chunks are the band's own bytes, one strip
-  at a time, and a `Writable` that consumes them the same way. Both take the window
-  `readChunksSync` takes — `x`, `y`, `width`, `height` and `rows` — and the writer
-  refuses what it cannot place: half a row, or more than its window holds. They live in
-  the JavaScript shell (`index.js`) rather than in the Rust, because napi cannot hand
-  back a Node `Readable` / `Writable` from a `#[napi]` class — the same reason a
-  `FeatureCursor` gets its `for await` there — and `index.d.ts` declares them.
-  `gdal.features().streams` is `true` now.
+  raster **streams**: an object-mode Node `Readable` whose chunks are typed arrays of
+  the band's own sample type, one strip at a time, and a `Writable` that consumes them
+  the same way. Both take the window `readChunksSync` takes — `x`, `y`, `width`,
+  `height` and `rows` — and the writer refuses what it cannot place: half a row, or
+  more than its window holds. Both also take `type`, to read and write as another
+  sample type (a constructor or a name), and `convertNoData`, to read the band's
+  missing value as `NaN` and write `NaN` back as it. They live in the JavaScript shell
+  (`index.js`) rather than in the Rust, because napi cannot hand back a Node
+  `Readable` / `Writable` from a `#[napi]` class — the same reason a `FeatureCursor`
+  gets its `for await` there — and `index.d.ts` declares them.
+  `gdal.features().streams` is `true`.
 - `RasterBand` gains the **band arithmetic**: `add`, `sub`, `mul`, `div`, `pow`; the
   unary `abs`, `sqrt`, `log`, `log10`; the comparisons `eq`, `notEq`, `lt`, `lte`,
   `gt`, `gte`; the logical `and`, `or`, `not`; and `ifThenElse`. Each takes another

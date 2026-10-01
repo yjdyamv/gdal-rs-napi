@@ -489,19 +489,77 @@ The same walk is also a pair of **Node streams**, built by the shell over those 
 
 ```js
 for await (const strip of band.createReadStream({ rows: 64 })) {
-  // strip is the band's own bytes for one strip, at chunk.x/y = the window
+  // strip is a typed array of the band's own sample type, one strip at a time
 }
 
-band.createWriteStream({ rows: 64 }).end(allTheBytes)
+band.createWriteStream({ rows: 64 }).end(allTheValues)
 ```
 
-`band.createReadStream(options)` is a `Readable` whose chunks are the band's bytes, one
-strip at a time; `band.createWriteStream(options)` is a `Writable` that consumes them
-the same way and refuses a write it cannot place (half a row, or more than its window
+`band.createReadStream(options)` is an object-mode `Readable` whose chunks are typed
+arrays of the band's own sample type — `Float64Array` for a `Float64` band — one strip
+at a time; `band.createWriteStream(options)` is a `Writable` that consumes them the
+same way and refuses a write it cannot place (half a row, or more than its window
 holds). Both take the same window as `readChunksSync` — `x`, `y`, `width`, `height`,
 and `rows` — and `gdal.features().streams` says they are there. They are shells over
 the blocking reads, so a strip costs a synchronous read on the calling thread; the
 thread-pool form of a long walk is still `readChunks`.
+
+Two more options, both about the missing value: `type` reads and writes as another
+sample type (`Float64Array`, or `'Float64'`), and `convertNoData` turns the band's
+missing value into `NaN` on the way out and `NaN` back into it on the way in — which
+needs a float type to have somewhere to put it:
+
+```js
+for await (const strip of band.createReadStream({ type: 'Float64', convertNoData: true })) {
+  // missing samples are NaN, so the arithmetic below works on them
+}
+```
+
+### Pixel-wise calc — `calcAsync`
+
+Those streams are what `gdal.calcAsync` is made of: several bands in, one band out,
+with a JS function applied to every pixel. It is `gdal_calc.py` with a callback in
+place of an expression string.
+
+```js
+const temperature = (await gdal.open('T2m.tif')).band(0)
+const dewpoint = (await gdal.open('D2m.tif')).band(0)
+const output = gdal.createSync('cloudbase.tif', {
+  driver: 'GTiff', width, height, bandCount: 1, dataType: 'Float64',
+})
+
+await gdal.calcAsync(
+  { t: temperature, td: dewpoint },
+  output.band(0),
+  (t, td) => 125 * (t - td),        // Espy's estimate of the cloud base height
+  { convertNoData: true, onProgress: (fraction) => console.log(fraction) },
+)
+```
+
+Every band has to be the output's size, and `fn` takes one argument per input, in the
+order given. The bands are read as the output's sample type, so `convertInput` decides
+whether the *inputs* are converted to it first — which is what an integer output needs
+before `convertNoData` has anywhere to put a `NaN`. `fn` runs on the JS thread, once
+per pixel: that is the bottleneck and nothing here can change it. The reading and the
+writing are what goes through the streams.
+
+Underneath it are the two pieces it is built from, both usable on their own:
+
+```js
+const mux = new gdal.RasterMuxStream({
+  t: temperature.createReadStream(),
+  td: dewpoint.createReadStream(),
+})                                    // chunks are { t: Float64Array, td: Float64Array }
+const transform = new gdal.RasterTransform({ fn: (t, td) => 125 * (t - td), type: 'Float64' })
+
+mux.pipe(transform).pipe(output.band(0).createWriteStream())
+```
+
+A `RasterMuxStream` reads its inputs in lockstep and publishes the largest amount all
+of them have ready, so the pixels stay lined up however the strips fall; inputs that
+end at different lengths destroy the stream with an error rather than answering short.
+A `RasterTransform` is the elementwise half, and `new Transform({ objectMode: true,
+transform })` is the way to do anything beyond arithmetic.
 
 Writing and creating:
 

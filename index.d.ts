@@ -154,4 +154,95 @@ export interface RasterStreamOptions {
   width?: number
   height?: number
   rows?: number
+  /**
+   * The typed array the reads come back as — a constructor (`Float64Array`) or a
+   * sample type name (`'Float64'`). Default: the band's own type.
+   */
+  type?: ((length: number) => ArrayBufferView) | string
+  /**
+   * Read the band's missing value as `NaN` (reading), and `NaN` as the missing value
+   * (writing). Needs a float type to have somewhere to put the `NaN`: on an integer
+   * one a missing sample is `0`, as it is without this.
+   */
+  convertNoData?: boolean
 }
+
+/** How a `RasterMuxStream` pairs its inputs up. */
+export interface RasterMuxStreamOptions {
+  /**
+   * Hand a buffered chunk straight through when it is exactly the length being
+   * published. Default `true`; `false` always joins into a fresh array.
+   */
+  blockOptimize?: boolean
+}
+
+/**
+ * Reads several raster read streams as one, in lockstep — the input half of
+ * `calcAsync`, useful on its own when the transformation is not arithmetic.
+ *
+ * Each chunk out is `{ [name]: TypedArray }`, every array the same length: the
+ * smallest amount all the inputs have buffered. Inputs that end at different lengths
+ * destroy the stream with an error rather than answering short.
+ */
+export declare class RasterMuxStream extends import('node:stream').Readable {
+  constructor(
+    inputs: Record<string, import('node:stream').Readable>,
+    options?: RasterMuxStreamOptions,
+  )
+}
+
+/** What a `RasterTransform` applies, and as what. */
+export interface RasterTransformOptions {
+  /** Called once per pixel, with one argument per input, in the order they came in. */
+  fn: (...pixels: number[]) => number
+  /** The typed array to write into — a constructor, or a sample type name. */
+  type?: ((length: number) => ArrayBufferView) | string
+}
+
+/**
+ * Applies `fn` to every pixel of a `RasterMuxStream` chunk, one typed array out per
+ * object in. `fn` runs on the JS thread, so this is the expensive half by definition.
+ */
+export declare class RasterTransform extends import('node:stream').Transform {
+  constructor(options: RasterTransformOptions)
+}
+
+/** Options for `calcAsync` — the semantics are `gdal_calc.py`'s. */
+export interface CalcOptions {
+  /**
+   * Read the inputs' missing values as `NaN`, and write the `NaN`s back as the
+   * output band's missing value. The output band needs one set for the second half.
+   */
+  convertNoData?: boolean
+  /**
+   * Convert the inputs to the output's sample type before `fn` sees them. What an
+   * integer output needs for `convertNoData` to have anywhere to put a `NaN`.
+   */
+  convertInput?: boolean
+  /** Called with the fraction done, from 0 to 1. Returning nothing is all it does. */
+  onProgress?: (progress: number) => void
+}
+
+/**
+ * Computes an output band as a pixel-wise function of several input bands — the
+ * `gdal_calc.py` idea, with a JS function rather than an expression string.
+ *
+ * ```js
+ * await gdal.calcAsync(
+ *   { t: temperature, td: dewpoint },
+ *   output.band(0),
+ *   (t, td) => 125 * (t - td),
+ *   { convertNoData: true },
+ * )
+ * ```
+ *
+ * Every band has to be the output's size, and `fn` takes one argument per input, in
+ * the order given. `fn` runs on the JS thread, once per pixel; the reading and the
+ * writing are what goes through the streams.
+ */
+export declare function calcAsync(
+  inputs: Record<string, import('./binding').RasterBand>,
+  output: import('./binding').RasterBand,
+  fn: (...pixels: number[]) => number,
+  options?: CalcOptions,
+): Promise<void>

@@ -83,10 +83,20 @@ error from a closed dataset, never a crash. Materialising, an explicit result sa
 type, and a size check between the two bands are the price of that choice.
 
 Raster **Streams** are in too — `band.createReadStream()` / `band.createWriteStream()`,
-yielding the band's own bytes a strip at a time. They are built in the JavaScript shell
-(`index.js`) over the chunked reads and writes, because napi cannot hand back a Node
-`Readable` / `Writable` from a `#[napi]` class — the same reason a `FeatureCursor` gets
-its `for await` there. `gdal.features().streams` is `true`.
+object mode, yielding typed arrays of the band's own sample type a strip at a time.
+They are built in the JavaScript shell (`index.js`) over the chunked reads and writes,
+because napi cannot hand back a Node `Readable` / `Writable` from a `#[napi]` class —
+the same reason a `FeatureCursor` gets its `for await` there. So are the two pieces
+that sit on them: `RasterMuxStream` reads several streams in lockstep,
+`RasterTransform` applies a function to every pixel, and `calcAsync` is the
+`gdal_calc.py` shape over the two. `gdal.features().streams` is `true`.
+
+`calcAsync` is the one place where the *mechanism* differs rather than the shape: the
+reference runs it through VRT pixel functions, so that GDAL calls the JS function from
+inside its own raster loop. Here the loop is JavaScript's — the streams feed it — which
+is why the pixel function itself is still absent (see below) while the feature it
+exists for is not. The callback option is spelled `onProgress`, this binding's name for
+it, where the reference says `progress_cb`.
 
 Every Tier 3 entry is now built, or recorded as a non-goal below.
 
@@ -118,10 +128,11 @@ Windows keeps the file locked — after `close()`.
 These are **decisions, not omissions**. `gdal.features()` reports the ones with a
 runtime probe.
 
-- **VRT pixel functions** — `addPixelFunc` / `createPixelFunc` / `toPixelFunc`, and
-  `calcAsync`. They need a C callback that GDAL invokes from inside its raster loop;
-  the elementwise arithmetic that would otherwise use them is implemented **eagerly**
-  instead (see Tier 3).
+- **VRT pixel functions** — `addPixelFunc` / `createPixelFunc` / `toPixelFunc`. They
+  need a C callback that GDAL invokes from inside its raster loop; the elementwise
+  arithmetic that would otherwise use them is implemented **eagerly** instead (see Tier
+  3), and the pixel-wise *calc* they are normally reached through is now here under a
+  different mechanism — `calcAsync`, over the streams rather than inside GDAL's loop.
 - **Async getters** — the `xxxAsync` form of every getter. It conflicts with the
   naming rule (sync is `xxxSync()`, async is `xxx()`; no `Async` suffix), and its
   purpose in the reference — not blocking behind a per-dataset I/O queue — does not
