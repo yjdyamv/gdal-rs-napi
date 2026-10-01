@@ -1,56 +1,17 @@
 // The async surface: what the shell adds on top of the generated binding.
 //
-// Two things live here. An async failure carries `err.code` now, because napi
-// pins a `Task`'s error type and the token has to travel in the message otherwise
-// — and the list of methods that get that treatment is checked against the
-// generated declarations rather than trusted. And a cursor is async-iterable, so
-// a paged layer can be read with `for await`.
+// An async failure carries `err.code`, because napi pins a `Task`'s error type
+// and the stable token has to travel in the message otherwise. And a cursor is
+// async-iterable, so a paged layer can be read with `for await`.
+//
+// The declaration-side check — that every async member is exactly one the shell
+// wraps, per class — lives in `types.test.mjs`, where it is held against the
+// runtime rather than against a hand-copied list.
 
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
 import { test } from 'node:test'
 
 import { gdal, tmp } from './helpers.mjs'
-import asyncMethods from '../async-methods.js'
-
-const types = readFileSync(new URL('../binding.d.ts', import.meta.url), 'utf8').split('\n')
-
-/** Module functions whose declared return type is a promise. */
-function declaredFunctions() {
-  const found = []
-  for (const line of types) {
-    if (!line.includes(': Promise<')) continue
-    const match = /^export declare function (\w+)[<(]/.exec(line)
-    if (match) found.push(match[1])
-  }
-  return found
-}
-
-/** Class methods whose declared return type is a promise. */
-function declaredMethods() {
-  const found = []
-  for (const line of types) {
-    if (!line.includes(': Promise<')) continue
-    const match = /^\s+(\w+)\s*[<(]/.exec(line)
-    if (match) found.push(match[1])
-  }
-  return found
-}
-
-test('every async member the binding declares is one the shell wraps', () => {
-  const expectedFunctions = [...asyncMethods.functions].sort()
-  const actualFunctions = [...new Set(declaredFunctions())].sort()
-  assert.deepEqual(actualFunctions, expectedFunctions, 'async module functions')
-
-  const expectedMethods = [
-    ...new Set(Object.values(asyncMethods.methods).flat()),
-  ].sort()
-  const actualMethods = [...new Set(declaredMethods())].sort()
-  assert.deepEqual(actualMethods, expectedMethods, 'async methods')
-
-  // A member that is listed but absent from the binding makes `index.js` throw at
-  // require time, so reaching this point means every listed name exists.
-})
 
 test('an async failure carries err.code, and keeps the prefix in its message', async () => {
   await assert.rejects(
