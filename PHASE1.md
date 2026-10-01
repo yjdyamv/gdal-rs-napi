@@ -18,17 +18,22 @@
 | WS-6 直方图写回 | ✅ 已完成 | `defaultHistogram(force?)` / `setDefaultHistogram()`，与 `statistics()` / `setStatistics()` 对齐 |
 | WS-6 调色板 | ✅ 已完成 | `colorTable` / `paletteInterpretation` / `setColorTable(entries, interpretation?)` —— 分量是无符号 16 位（crate 读成 `i16`，边界处转回），解释随表；MEM / VRT 无损，GTiff 只有 8 位 × 256 项 |
 | WS-6 掩膜波段 | ✅ 已完成 | `mask` / `maskFlags` / `createMask(perDataset?)` —— 掩膜是一条完整 `RasterBand`（读走共享锁）；没掩膜时给隐式"全有效"波段（只读、全 255）；`maskFlags` 区分存储型与派生型（`alpha` / `noData`） |
-| WS-6 其余小工具 | ✅ 已完成 | `gdal.decToDMS(angle, axis, precision?)`（`CPLDecToDMS`）、`gdal.verbose()` / `gdal.quiet()`（把 `CPL_DEBUG` 设成 `ON` / `OFF`）。`wrapVRT` 与 `toDataType` / `fromDataType` **不做**：前者的形状/价值不明确，后者与本绑定"字符串即枚举"的取舍相悖（数字码属于兼容层） |
+| WS-6 其余小工具 | ✅ 已完成 | `gdal.decToDMS(angle, axis, precision?)`（`CPLDecToDMS`）、`gdal.verbose()` / `gdal.quiet()`（把 `CPL_DEBUG` 设成 `ON` / `OFF`）、`toDataType` / `fromDataType`（收/发本绑定的字符串词汇，也接受 GDAL 拼写）、`gdal.bundled`。`wrapVRT` 不另开门：`translate(dest, ['-of','VRT'])` 就是它 |
+| WS-6 GCP / Driver / fs / flush | ✅ 已完成 | `getGCPs`/`setGCPs`/`gcpProjection`/`gcpCount`、`Dataset.getEnvelope()`、`Driver.rename`/`copyFiles`、`fs.clearCurlCache()`、`RasterBand.flush`/`Layer.flush` |
+| WS-1 几何补全 | ✅ 已完成 | `makeValid`/`boundary`/`pointOnSurface`/`unaryUnion`/`concaveHull`/`normalize`/`setPrecision`/`isRing`/`toGML`/`toKML` —— 至此 A5 的整套方法与谓词齐全（类族不做的理由见 A5） |
+| WS-5 CRS 补全 | ✅ 已完成 | `fromESRI`/`morphToESRI`/`morphFromESRI`/`toXML`/`validate`/`cloneGeogCS`/`setWellKnownGeogCS`/`epsgTreatsAsLatLong`/`isGeocentric`/`isLocal`/`isSameGeogCS`/`isSameVertCS`/`getAttrValue`/`autoIdentifyEPSG` |
+| WS-3 波段代数与类型 | ✅ 已完成 | `add`/`sub`/`mul`/`div`/`pow`、`abs`/`sqrt`/`log`/`log10`、比较、逻辑、`ifThenElse`、`asType` —— **eager**（结果是独立的内存波段），不取 VRT 像素函数路线，理由见 A3/A6 |
+| WS-7 流 | ✅ 已完成 | `band.createReadStream()` / `createWriteStream()`（外壳实现，见 A7） |
 | WS-3 图层拷贝 | ✅ 已完成 | `dataset.copyLayer(source, name, options?)` —— `GDALDatasetCopyLayer`，经 `with_two`（锁不可重入，两个句柄必须同源）；**源必须是不同数据集**，自拷贝被明确拒绝而不是死锁 |
 | WS-4 流式读取异步孪生 | ✅ 已完成 | `band.readChunks(options, onChunk)` —— 与 `readChunksSync` 同一条 `read_sync` 逐条走法，搬到线程池；每条经 threadsafe function 交给 JS，返回值即背压；回调不得重入（同 `onProgress`） |
 | B2 特性探测 | ✅ 已完成 | `gdal.apiVersion`、`gdal.features()` |
 | WS-5 常量枚举 | ✅ 已完成 | `gdal.const` —— `DataType`/`FieldType`/`Justification`/`GeometryType`/`ColorInterpretation`/`Resampling`/`OverviewResampling`/`SqlDialect`，纯 JS（`index.js`）+ 逐值对照运行时的测试 |
 | C1 GEOS 决策 | ✅ 已定 | 自行构建 + **静态链接**（`geos_static`，进入 `bundled` 默认开启），见 [`docs/GEOS.md`](./docs/GEOS.md) |
-| WS-1 几何对象模型 | 🟡 进行中 | `gdal.Geometry` 类已落地（`fromWkt`/`fromWkb`/`fromJson`、`toWkt`/`toWkb`/`toJson`、`type`/`isEmpty`/`pointCount`/`area`/`length`/`envelope`、`flattenTo2D`/`segmentize`/`swapXY`/`transform`）；写入端已能收 `Geometry` 或 GeoJSON（`createFeature`/`updateFeature`/`setSpatialFilter`/`Feature.setGeometry`/`rasterize`/`transformGeometry`）；GEOS 谓词与集合运算已写好并带 `has_geos()` 守卫（`intersects`/`contains`/…/`buffer`/`union`…，共 19 个）；按形状的访问器（`x`/`y`/`z`、`points`、`rings`/`exteriorRing`/`interiorRings`、`children`、`coordinates`）；GEOS 已**默认静态链入**（Windows/MSVC 上实测 `features().geos === true`，谓词与集合运算跑通）。**类族不做**（见下）。**待**：其余平台验证 |
+| WS-1 几何对象模型 | ✅ 已完成 | `gdal.Geometry` 类已落地（`fromWkt`/`fromWkb`/`fromJson`、`toWkt`/`toWkb`/`toJson`、`type`/`isEmpty`/`pointCount`/`area`/`length`/`envelope`、`flattenTo2D`/`segmentize`/`swapXY`/`transform`）；写入端已能收 `Geometry` 或 GeoJSON（`createFeature`/`updateFeature`/`setSpatialFilter`/`Feature.setGeometry`/`rasterize`/`transformGeometry`）；GEOS 谓词与集合运算已写好并带 `has_geos()` 守卫（`intersects`/`contains`/…/`buffer`/`union`…，共 19 个）；按形状的访问器（`x`/`y`/`z`、`points`、`rings`/`exteriorRing`/`interiorRings`、`children`、`coordinates`）；GEOS 已**默认静态链入**（Windows/MSVC 上实测 `features().geos === true`，谓词与集合运算跑通）；后续又补了 `makeValid`/`boundary`/`pointOnSurface`/`unaryUnion`/`concaveHull`/`normalize`/`setPrecision`/`isRing`/`toGML`/`toKML`。**类族不做**（见下）。**待**只剩其余平台验证（属发布范围） |
 | WS-2 Driver/Dataset 对象模型 | ✅ 已完成 | `Driver` 对象（+`createCopy`）、`dataset.driver` 对象化、`open({drivers})`、`Dataset.description`/`rasterSize`/`getFileList`、`setProjection` 收 `SpatialRef`。集合类**不做**，见下 |
 | WS-3 Feature/Field 对象模型 | ✅ 已完成 | `layer.field(name)`/`addField`/`deleteField`/`reorderFields`、`FieldInfo` 全量定义、`layer.features()`（异步）、`layer.setSpatialFilter(geom)`、`layer.defn`（`FeatureDefn`）、`layer.getFeature(fid)` → `Feature`（`fields` 直写穿、`geometry`、`defn`、`toObject`） |
-| WS-4 异步人体工学 | 🟡 部分完成 | `FeatureCursor` 已可用 `for await`（外壳加的，读的仍是同一个 `read()`）；异步错误已带 `err.code`（外壳从消息前缀提取）；`CoordinateTransform.transformPoints` 已跑在线程池上（点数组，百万点不必调用方分块，同步版更名 `transformPointsSync`）。**未做**：`Dataset.bands/layers` 的异步迭代、异步 getter、`eventLoopWarning` —— 理由见下 |
-| WS-7 兼容层 | 🟡 进行中 | `gdal-rs-napi/compat` 已落地：1-based 索引、`xxx()`/`xxxAsync()`（含 node 回调形态）、setter 赋值（`noDataValue`/`geoTransform`/`srs`）、`Driver` 与各集合、`Feature`（`fields.toObject`/`toArray`、可赋值 `geometry`）、`SpatialReference`、几何类族（含 `instanceof`、`toWKT`/`toJSON`/`get*`）。**不做**：Streams、MDArray、`calcAsync`、像素函数，以及两个本绑定自己定形状的波段附加物——`colorTable` 与 `mask`（形状在主入口上，不在兼容层包装里）。 |
+| WS-4 异步人体工学 | ✅ 已完成 | `FeatureCursor` 已可用 `for await`（外壳加的，读的仍是同一个 `read()`）；异步错误已带 `err.code`（外壳从消息前缀提取）；`CoordinateTransform.transformPoints` 已跑在线程池上（点数组，百万点不必调用方分块，同步版更名 `transformPointsSync`）；`band.readChunks` 是 `readChunksSync` 的异步孪生。**不做**（非目标，理由见下）：`Dataset.bands/layers` 的异步迭代、异步 getter、`eventLoopWarning` |
+| WS-7 兼容层 | ✅ 已完成 | `gdal-rs-napi/compat` 已落地：1-based 索引、`xxx()`/`xxxAsync()`（含 node 回调形态）、setter 赋值（`noDataValue`/`geoTransform`/`srs`）、`Driver` 与各集合、`Feature`（`fields.toObject`/`toArray`、可赋值 `geometry`）、`SpatialReference`、几何类族（含 `instanceof`、`toWKT`/`toJSON`/`get*`）。**不做**：MDArray、`calcAsync`、像素函数，以及本绑定自己定形状的波段附加物——`colorTable`/`mask`/流（形状在主入口上，不在兼容层包装里）。 |
 
 ### 一个修正：`gdal.const` 应该是字符串词汇，不是 GDAL 数字码
 
@@ -100,88 +105,90 @@ GDAL 的数字码属于兼容层（WS-7），那里 `gdal-async` 的形状才是
 
 ## A. 差距矩阵
 
-> **这是一份点状快照**（写下时对照 `gdal-async` 的分析），其 ✅/🟡/❌ 是**当时**的状态；
-> 此后 WS-1…WS-7 把其中绝大多数 ❌/🟡 补上了（见顶部进度表）。下面的矩阵只在某一项仍
-> **悬而未决**时才当作依据，例如 `Layer.srs` 的 setter —— 结论是**不做**，见该行。
+> **本矩阵已按当前状态刷新**。仍标 ❌ 的只剩两类，且逐条给了理由：**做不到**（GDAL 的 C API
+> 没有那个函数）与**已定案的取舍/非目标**（异步 getter、原生集合对象形态、MDArray、VRT 像素
+> 函数、`eventLoopWarning`）。🟡 表示能力齐、只是形状或拼法与 `gdal-async` 不同（那层形状归
+> `compat`）。
 
-图例：✅ 有；🟡 部分；❌ 无。
+图例：✅ 有；🟡 有但形状不同；❌ 做不到 / 已定案不做。
 
 ### A1. 全局模块
 
 | gdal-async | 我们 | 备注 |
 |---|---|---|
 | `version` | ✅ `version()` | 返回 `{gdal, proj}` |
-| `bundled` | 🟡 `info().build` | 无单一布尔 |
-| `drivers`（集合，`drivers.get('GTiff')`） | 🟡 `drivers()` 只返回 `{name, longName}` | **缺 Driver 对象** |
+| `bundled` | ✅ `gdal.bundled` | 单一布尔 |
+| `drivers`（集合，`drivers.get('GTiff')`） | ✅ `drivers()` / `driver(name)` **返回 `Driver` 对象**；`dataset.driver` 也是对象 | 集合对象形态归 compat |
 | `lastError`（`{number, message, type}`） | ✅ `lastError()`（`{class, number, message}`） | 语义对齐 |
-| `verbose()` / `quiet()` | ❌ | GDAL 日志级别 |
-| `eventLoopWarning` | ❌（我们用全局锁，无此概念） | 见 A8 |
-| `setPROJSearchPaths` | 🟡 `configureDataPaths()` | 行为等价 |
-| 常量枚举（`GDT_*`, `GCI_*`, `OFT_*`, `OLC*`, `DCAP_*`, `wkb*`, `GRA_*`, `CPLE_*`, `DIM_*`…） | 🟡 只有 `DataType`（字符串枚举） | **缺其余全套** |
-| `info` / `infoAsync` | 🟡 `info()` 仅同步 | |
+| `verbose()` / `quiet()` | ✅ | 写 `CPL_DEBUG` |
+| `eventLoopWarning` | ❌ **已定案不做** | 本绑定是一把全局锁，没有"某数据集上还挂着未完成的异步操作"这回事可警告；见 A8 |
+| `setPROJSearchPaths` | ✅ `configureDataPaths()` | 行为等价 |
+| 常量枚举（`GDT_*`, `GCI_*`, `OFT_*`, `OLC*`, `DCAP_*`, `wkb*`, `GRA_*`, `CPLE_*`, `DIM_*`…） | ✅ `gdal.const`（八个**字符串**词汇）+ `toDataType`/`fromDataType` 取数字码 | 数字码词汇属兼容层 |
+| `info` / `infoAsync` | ✅ `info()`；`infoAsync` ❌ **非目标** | 异步 getter，见 A8 |
 
 ### A2. Dataset
 
 | gdal-async | 我们 | 备注 |
 |---|---|---|
-| `open(path, mode, drivers, x, y, bands, type, options)` | ✅ `open(source, options)` | 驱动白名单、创建合一的签名不同 |
+| `open(path, mode, drivers, x, y, bands, type, options)` | ✅ `open(source, options)` | 签名不同：驱动白名单、创建合一 |
 | `openAsync` | ✅ `open()` 返回 Promise | |
-| `bands`（`DatasetBands` 集合） | 🟡 `bands(): RasterBand[]` | 无 `.get()/.count()/.forEach()/.map()`/迭代器 |
-| `layers`（`DatasetLayers` 集合） | 🟡 `layers()`, `layer(i)`, `layerByName()` | 同上 |
-| `rasterSize` / `rasterSizeAsync` | 🟡 `width`/`height` | 无对象、无 async getter |
+| `bands`（`DatasetBands` 集合） | ✅ `bands(): RasterBand[]`、`band(i)`、`bandCount` | 集合**对象**形态归 compat；数组本身已有 `for…of`/`map`/`forEach`/`length` |
+| `layers`（`DatasetLayers` 集合） | ✅ `layers()`、`layer(i)`、`layerByName()`、`layerCount` | 同上 |
+| `rasterSize` / `rasterSizeAsync` | ✅ `rasterSize` 对象；`rasterSizeAsync` ❌ 非目标 | 异步 getter，见 A8 |
 | `geoTransform`（可读写） | ✅ getter + `setGeoTransform()` | 赋值风格不同 |
-| `srs`（getter/setter + `srsAsync`） | 🟡 `spatialRef` getter + `setProjection(wkt)` | **setter 只收 WKT**，不收 `SpatialRef` |
-| `driver` | 🟡 `driver: string` | **是名字，不是 Driver 对象** |
-| `getFileList()` | ❌ | 廉价且实用 |
+| `srs`（getter/setter + `srsAsync`） | ✅ `spatialRef` getter + `setProjection`（收 WKT 或 `SpatialRef`） | |
+| `driver` | ✅ **`Driver` 对象**（`dataset.driver.name` 仍是名字） | |
+| `getFileList()` | ✅ | |
 | `flush` / `flushAsync` | ✅ `flushSync()`/`flush()` | |
-| `close()` | ✅ | |
-| `buildOverviews` | ✅ | |
+| `close()` / `buildOverviews` | ✅ | |
 | `layer` 创建（`layers.create()`） | ✅ `createLayer(options)` | |
-| `layers.copy()` | ❌ | |
-| `root`（`Group`，多维入口） | ❌ | 见 A7 |
+| `layers.copy()` | ✅ `copyLayer(source, name, options?)` | |
+| `root`（`Group`，多维入口） | ❌ 非目标（MDArray） | 见 A7 |
 | `threadSafe` | ✅ | |
-| `description` / `metadata` | 🟡 `metadata(domain)` | 无 `description` |
-| `getEnvelope()` | 🟡 Layer 有 `extent`；Dataset 无 | |
+| `description` / `metadata` | ✅ | |
+| `getEnvelope()` | ✅ `getEnvelope()` | 栅格按 geotransform 四角，矢量按图层 extent 并集 |
 
 ### A3. RasterBand
 
 | gdal-async | 我们 | 备注 |
 |---|---|---|
-| `pixels`（`RasterBandPixels`）| ❌ | 我们有 `readPixels`/`readValues`/`getPixel` 直接挂在 band 上 |
-| `overviews`（集合 + 迭代器） | 🟡 `overviews` 数组 | 无 `.get()/.count()` |
-| `colorTable` / `colorTableAsync` | ❌ | **完全缺失** |
-| `mask` / `maskAsync` | ❌ | mask band |
-| `noDataValue`（可赋值） | 🟡 `noDataValue` + `setNoDataValue()` | |
-| `scale` / `offset` / `unitType` / `description` | 🟡 只读 | **缺 setter** |
-| `categoryNames` | 🟡 只读 | **缺 setter** |
+| `pixels`（`RasterBandPixels`）| ✅ `readPixels`/`readAs`/`writePixels`/`getPixel`/`setPixel`/`readValues`/`writeValues`/`readBlock`/`writeBlock` 直接挂在 band 上；`createReadStream`/`createWriteStream` 也在 | `pixels` **对象**形态归 compat |
+| `overviews`（集合 + 迭代器） | ✅ `overviews` 数组（`index`/`size`/`dataType`/`readSync`/`read`） | |
+| `colorTable` / `colorTableAsync` | ✅ `colorTable`/`paletteInterpretation`/`setColorTable` | |
+| `mask` / `maskAsync` | ✅ `mask`/`maskFlags`/`createMask` | |
+| `noDataValue`（可赋值） | ✅ `noDataValue` + `setNoDataValue()` | |
+| `scale` / `offset` / `unitType` / `description` | ✅ 读写 | setter 齐全 |
+| `categoryNames` | ✅ 读写 | |
+| 波段代数（`add`/`sub`/`mul`/`div`/`pow`/`abs`/`sqrt`/`log`/`log10`/比较/逻辑/`ifThenElse`） | ✅ 逐元素、**eager**（结果落进新内存波段） | 参考实现走惰性 VRT 像素函数，见 A6 |
+| `asType(type)` | ✅ 转成另一种样本类型的波段（eager MEM） | |
 | `colorInterpretation` | ✅ 字符串 | |
 | `dataType` / `blockSize` / `size` | ✅ | |
 | `computeStatistics` | ✅ `statistics()` | |
-| `getStatistics` / `setStatistics` | 🟡 `statistics({force:false})` + `setStatistics()` | |
-| `getHistogram` / `setHistogram` | 🟡 只有读 | **缺写** |
+| `getStatistics` / `setStatistics` | ✅ | |
+| `getHistogram` / `setHistogram` | ✅ `histogram` / `defaultHistogram` / `setDefaultHistogram` | |
 | `checksumImage` | ✅ `checksum()` | |
 | `fill` / `fillNoData` / `sieveFilter` | ✅ | |
 | `rasterize` / `polygonize` / `contourGenerate` | ✅（在 Dataset/Band 上） | |
-| `asMDArray()` | ❌ | 见 A7 |
-| `unitType` 等 async getter | ❌ | |
+| `asMDArray()` | ❌ 非目标（MDArray） | 见 A7 |
+| `unitType` 等 async getter | ❌ 非目标 | 见 A8 |
 
 ### A4. 矢量（Feature / Layer / Field）
 
 | gdal-async | 我们 | 备注 |
 |---|---|---|
-| `Feature` 类（`fields`、`geometry`、`fid`、`defn`） | ❌ | 我们是普通对象 `FeatureRecord` |
-| `FeatureFields`（`.get/.set/.toObject/.toArray/.forEach`） | ❌ | 直接给 `properties` 普通对象 |
-| `FeatureDefn` / `FieldDefn` | ❌ | **无 schema 对象**；`FieldInfo` 只是快照 |
-| `Layer.fields`（可 `add/remove/reorder/alter`） | ❌ | 只能在 `createLayer` 时声明；**无法改已存在图层的 schema** |
-| `Layer.features`（集合：`get/first/last/next/previous/count/forEach/Symbol.iterator/Symbol.asyncIterator`） | 🟡 `featuresSync()` + `openCursor()`（游标已有 `Symbol.asyncIterator`） | 无 `first/last/next/previous` 语法糖；`layer.features` 本身不是集合 |
-| `Layer.getFeature(fid)` | ✅ `feature(fid)` | |
-| `Layer.setSpatialFilter(geom)`（收几何对象） | ❌ | 只有 `setSpatialFilterRect()` |
-| `Layer.srs`（getter/setter） | 🟡 只读 `spatialRef`/`spatialRefWkt` | setter **不做**：GDAL 的 C API 只有 `OGR_L_GetSpatialRef`，没有 setter（C++ 的 `OGRLayer::SetSpatialRef` 是虚函数，C 表面够不到）；走图层定义的几何字段在定义 seal 后被拒（GPKG 报 `not allowed on a sealed object`）。CRS 在 `createLayer({ epsg })` / `{ wkt }` 时给定 |
+| `Feature` 类（`fields`、`geometry`、`fid`、`defn`） | ✅ `layer.getFeature(fid)` → `Feature`（`fields`/`geometry`/`fid`/`defn`/`toObject`）；`FeatureRecord` 普通对象仍在 | |
+| `FeatureFields`（`.get/.set/.toObject/.toArray/.forEach`） | ✅ `Feature.fields`（`get/has/set/names/count/toObject/toArray`） | |
+| `FeatureDefn` / `FieldDefn` | ✅ `layer.defn`（`FeatureDefn`）、`FieldInfo` 即 `FieldDefn` | |
+| `Layer.fields`（可 `add/remove/reorder/alter`） | ✅ `layer.field(name)` / `addField` / `deleteField` / `reorderFields` | |
+| `Layer.features`（集合：`get/first/last/next/previous/count/forEach/Symbol.iterator/Symbol.asyncIterator`） | ✅ 能力齐：`featuresSync()`（同步可迭代数组）、`features()`（Promise）、`openCursor()`（`Symbol.asyncIterator`）、`feature(fid)` | `first/last/next/previous` 与集合**对象**形态归 compat |
+| `Layer.getFeature(fid)` | ✅ `feature(fid)` 与 `getFeature(fid)`（对象形式） | |
+| `Layer.setSpatialFilter(geom)`（收几何对象） | ✅ 收 `Geometry` 或 GeoJSON；`getSpatialFilter()` 是读侧 | |
+| `Layer.srs`（getter/setter） | ❌ setter **做不到** | GDAL 的 C API 只有 `OGR_L_GetSpatialRef`，没有 setter（C++ 的 `OGRLayer::SetSpatialRef` 是虚函数，C 表面够不到）；走图层定义的几何字段在定义 seal 后被拒（GPKG 报 `not allowed on a sealed object`）。CRS 在 `createLayer({ epsg })` / `{ wkt }` 时给定 |
 | `Layer.geomType` / `fidColumn` / `geomColumn` / `testCapability` | ✅ | |
-| `Layer.extent`（可赋值） | 🟡 只读 | |
-| 字段值类型：list 字段、Date/Time/Binary | 🟡 读有；写看驱动 | 已实测四种驱动（GeoJSON/SQLite 真存列表、GPKG 降级为标量、FlatGeobuf 拒绝写），推断坚持逗号连接文本；有测试钉住 |
+| `Layer.extent`（可赋值） | ❌ setter **做不到** | GDAL 的 C API 没有 `OGR_L_SetExtent`；`extent` 只读，`getEnvelope` 同理 |
+| 字段值类型：list 字段、Date/Time/Binary | ✅ 读有；写看驱动 | 已实测四种驱动（GeoJSON/SQLite 真存列表、GPKG 降级为标量、FlatGeobuf 拒绝写），推断坚持逗号连接文本；有测试钉住 |
 
-### A5. Geometry（最大的洞）
+### A5. Geometry
 
 `gdal-async` 有完整类族：`Geometry` 基类 +
 `Point` / `LineString` / `LinearRing` / `Polygon` / `MultiPoint` / `MultiLineString` /
@@ -198,8 +205,14 @@ GDAL 的数字码属于兼容层（WS-7），那里 `gdal-async` 的形状才是
   `disjoint`、`equals`、`distance`、`buffer`、`centroid`、`convexHull`、`simplify`、
   `union`、`intersection`、`difference`、`symDifference`、`isValid`、`isSimple`、`isEmpty`。
 
-**我们目前：** 只有 `geometryTypeOf / geometryToWkt / geometryToWkb / geometryFromWkt /
-geometryFromWkb` + `transformGeometry`（走 GeoJSON `Value`）。**几何是 `any`，没有对象。**
+**现状：** ✅ `gdal.Geometry` 类已落地 —— `fromWkt`/`fromWkb`/`fromJson`、`toWkt`/`toWkb`/`toJson`、
+`type`/`isEmpty`/`pointCount`/`area()`/`length()`/`envelope()`、`flattenTo2D`/`segmentize`/`swapXY`/
+`transform`，以及按形状的访问器（`x`/`y`/`z`、`points()`、`rings()`/`exteriorRing`/`interiorRings`、
+`children()`、`coordinates`）。上列**全部** GEOS 谓词、`distance`、`isValid`/`isSimple` 与集合运算
+都已实现，再加 `makeValid`/`boundary`/`pointOnSurface`/`unaryUnion`/`concaveHull`/`normalize`/
+`setPrecision`/`isRing`/`toGML`/`toKML`。**类族不做**（见「三个已定案的分歧」）：napi 无法表达
+继承，按形状的访问器覆盖同样的能力；类族那层形状（含 `instanceof`）归兼容层。模块级的
+`geometryToWkt` 等仍以 GeoJSON 收发，不变。
 
 ### A6. 算法与工具
 
@@ -208,19 +221,20 @@ geometryFromWkb` + `transformGeometry`（走 GeoJSON `Value`）。**几何是 `a
 | `translate` / `warp` / `vectorTranslate`（+Async） | ✅ |
 | `dem` / `demAsync` | ✅ `demProcess` |
 | `buildVRT` / `buildVRTAsync` | ✅ `buildVrt` |
-| `wrapVRT` | ❌ |
+| `wrapVRT` | ✅ `translate(dest, ['-of', 'VRT'])`（或 `dataset.translateSync('', ['-of','VRT'])`），不另开门 |
 | `reprojectImage` | ✅ |
 | `rasterize` / `polygonize` / `contourGenerate` | ✅ |
 | `sieveFilter` / `fillNodata` / `checksumImage` | ✅ |
 | `suggestedWarpOutput` | ✅ |
-| `calcAsync`（`gdal_calc.py` 替代） | ❌ |
-| `addPixelFunc` / `createPixelFunc` / `toPixelFunc`（VRT 像素函数） | ❌ |
-| `toDataType` / `fromDataType` | 🟡 `DataType` 枚举 + `bytesPerSample` |
-| `decToDMS` | ❌ |
+| `calcAsync`（`gdal_calc.py` 替代） | ❌ **非目标** |
+| `addPixelFunc` / `createPixelFunc` / `toPixelFunc`（VRT 像素函数） | ❌ **非目标**（需要 GDAL 在栅格循环里回调的 C 函数指针；波段代数改为 eager 实现，见 A3） |
+| `toDataType` / `fromDataType` | ✅ 收/发本绑定的字符串词汇（也接受 GDAL 拼写） |
+| `decToDMS` | ✅ |
 
-### A7. 多维模型与流（整块缺失）
+### A7. 多维模型与流
 
-- `MDArray` / `Group` / `Attribute` / `Dimension` 及各自的集合 —— ❌
+- `MDArray` / `Group` / `Attribute` / `Dimension` 及各自的集合 —— ❌ **非目标**（整块子系统，
+  当前使用面用不到；`gdal.features().multidimensional === false`）
 - `RasterReadStream` / `RasterWriteStream` —— ✅ 后由外壳（`index.js`）在分块读写之上补上：
   `band.createReadStream()` / `createWriteStream()`；`RasterMuxStream` / `RasterTransform`
   仍不做
@@ -229,18 +243,16 @@ geometryFromWkb` + `transformGeometry`（走 GeoJSON `Value`）。**几何是 `a
 
 | 能力 | gdal-async | 我们 |
 |---|---|---|
-| 方法级异步 | ✅ `xxxAsync` + callback 双形态 | 🟡 `xxxSync` / `xxx(): Promise` |
-| **异步 getter** | ✅ `rasterSizeAsync`、`srsAsync`、`colorTableAsync`… | ❌ 所有 getter 都是同步的 |
-| **异步迭代器** | ✅ `for await (const f of layer.features)` | ❌ 只有 `openCursor().read()` 手写循环 |
-| 同步迭代器 | ✅ `for (const f of layer.features)` | ❌ |
-| **每数据集 I/O 队列** | 🟡 有 per-dataset mutex（`libuv` 线程池调度） | ❌ **进程级全局 `RwLock`** |
+| 方法级异步 | ✅ `xxxAsync` + callback 双形态 | ✅ `xxxSync()` / `xxx(): Promise`（本绑定的命名约定，不引入 `Async` 后缀） |
+| **异步 getter** | ✅ `rasterSizeAsync`、`srsAsync`、`colorTableAsync`… | ❌ **非目标**：与命名规则冲突；它要解决的问题（per-dataset I/O 队列下读同步 getter 会卡）在这里形态不同——同步 getter 只是等锁 |
+| **异步迭代器** | ✅ `for await (const f of layer.features)` | ✅ `for await (const f of layer.openCursor())`（外壳加的） |
+| 同步迭代器 | ✅ `for (const f of layer.features)` | ✅ `featuresSync()` / `bands()` / `layers()` 返回数组，本来就同步可迭代 |
+| **每数据集 I/O 队列** | 🟡 有 per-dataset mutex（`libuv` 线程池调度） | 🟡 **进程级 `RwLock`**：数据集走独占；`openThreadSafe()` 的读取走共享、真并行；无数据集的调用（CRS / 几何 / `gdal.fs` / 模块自省）也走共享 |
 | 线程安全数据集 | ✅ 打开时 `'rt'` 标志 | ✅ `openThreadSafe()` |
-| 事件循环阻塞告警 | ✅ `eventLoopWarning` | ❌ |
+| 事件循环阻塞告警 | ✅ `eventLoopWarning` | ❌ **非目标**：本绑定没有那个队列可警告 |
 
-**为什么异步 getter 重要：** `gdal-async` 的文档明确说明——不能在同一个 Dataset 上启动 I/O
-之后再去读同步 getter，否则会阻塞事件循环。**我们的问题更严重**：全局锁意味着
-`Promise.all` 下十个 `readPixels()` 仍然是串行的。所以"补异步 getter"对我们不是锦上添花，
-而是与锁模型配套的必需品；否则"异步"这个卖点是空的。
+异步 getter 的取舍记录在 WS-4；每数据集队列与锁模型的关系记录在 Phase 2 与
+[`docs/PARITY.md`](./docs/PARITY.md)。
 
 ---
 

@@ -100,6 +100,19 @@ is `nearestneighbour`; `buildOverviews({ resampling })` takes
 `OverviewResampling`, where it is `nearest` and `rms` / `average_magphase` /
 `none` exist. `none` is not a kernel — it is how a pyramid is deleted.
 
+When a **number** is what is wanted — GDAL's own code — `gdal.toDataType(name)` and
+`gdal.fromDataType(code)` convert:
+
+```js
+gdal.toDataType('Byte')                // 1
+gdal.fromDataType(4)                   // 'Uint32', this binding's spelling
+gdal.bytesPerSample('Float32')         // 4
+```
+
+`fromDataType` answers in *this* binding's spelling, so it matches `band.dataType`
+(`1` is `'Uint8'` here where GDAL would say `'Byte'`) and the pair round-trips;
+`toDataType` accepts either spelling.
+
 ## Configuration and GDAL's last error
 
 `gdal.config` is GDAL's own option store — the same one `--config NAME=VALUE` and the
@@ -298,6 +311,8 @@ dataset.height
 dataset.rasterSize                    // { width, height }, the same pair grouped
 dataset.description                   // for a file, the file name
 dataset.getFileList()                 // what has to ship with it, [] for MEM
+dataset.getEnvelope()                 // { minX, minY, maxX, maxY } — raster corners
+                                      // under the geotransform, or the layers' union
 dataset.bandCount
 dataset.geoTransform                  // [x0, dx, rx, y0, ry, dy] or null
 dataset.projection                    // WKT, or null

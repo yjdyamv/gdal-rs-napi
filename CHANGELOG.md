@@ -6,6 +6,17 @@ First working cut — everything here is new.
 
 ### Binding
 
+- `Dataset.getEnvelope()` is the dataset's bounding box as `{ minX, minY, maxX, maxY }`:
+  a **raster's** four corners under its geotransform — so a rotated raster's box is
+  larger than its own rectangle, which is the honest answer rather than a wrong small
+  one — or, for a **vector** dataset, its layers' extents unioned. `null` when there is
+  nothing to measure.
+- `gdal.toDataType(name)` / `gdal.fromDataType(code)` are GDAL's numeric sample-type
+  codes. `fromDataType` answers in **this** binding's spelling, not GDAL's — `1` is
+  `'Uint8'` where GDAL says `'Byte'`, `4` is `'Uint32'` where GDAL says `'UInt32'` — so
+  it matches `band.dataType` and the pair round-trips. `toDataType` takes either
+  spelling (case is ignored, and `Uint8` is translated to GDAL's `Byte`), and a name
+  GDAL does not know is refused rather than answered `Unknown`.
 - `RasterBand.createReadStream(options?)` and `createWriteStream(options?)` are the
   raster **streams**: a Node `Readable` whose chunks are the band's own bytes, one strip
   at a time, and a `Writable` that consumes them the same way. Both take the window

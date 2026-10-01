@@ -75,6 +75,17 @@ gdal.const.SqlDialect.SQLITE           // 'SQLITE'
 `buildOverviews({ resampling })` 用 `OverviewResampling`，那里是 `nearest`，并且多出
 `rms` / `average_magphase` / `none`。`none` 不是核函数——它是**删除**金字塔的方式。
 
+需要**数字**（GDAL 自己的码）时，用 `gdal.toDataType(name)` / `gdal.fromDataType(code)` 换算：
+
+```js
+gdal.toDataType('Byte')                // 1
+gdal.fromDataType(4)                   // 'Uint32'，本绑定的拼写
+gdal.bytesPerSample('Float32')         // 4
+```
+
+`fromDataType` 返回的是**本绑定**的拼写，所以与 `band.dataType` 一致（`1` 在这里是 `'Uint8'`，
+GDAL 会叫它 `'Byte'`），两者互为逆；`toDataType` 两种拼写都收。
+
 ## 配置与 GDAL 的最后错误
 
 `gdal.config` 是 GDAL 自己的选项存储——也就是 `--config NAME=VALUE` 与 `GDAL_*` /
@@ -259,6 +270,8 @@ dataset.width, dataset.height, dataset.bandCount
 dataset.rasterSize      // { width, height }，同一对值打包
 dataset.description     // 对文件而言就是文件名
 dataset.getFileList()   // 需要一起带走的东西；MEM 是 []
+dataset.getEnvelope()   // { minX, minY, maxX, maxY } —— 栅格按 geotransform 的四角，
+                        // 矢量按各图层 extent 的并集
 dataset.geoTransform    // [x0, dx, rx, y0, ry, dy] 或 null
 dataset.projection      // WKT 或 null
 
