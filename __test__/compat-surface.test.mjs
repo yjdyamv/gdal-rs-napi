@@ -90,6 +90,114 @@ test('CoordinateTransformation takes and answers the reference\'s shapes', () =>
   assert.throws(() => new gdal.CoordinateTransformation({}, {}), /SpatialReference/)
 })
 
+test('metadata, statistics and the mask answer under the reference\'s names', async () => {
+  const path = tmp('compat-surface-alias.tif')
+  const created = native.createSync(path, {
+    driver: 'GTiff',
+    width: 4,
+    height: 4,
+    bandCount: 1,
+    dataType: 'Uint8',
+  })
+  created.band(0).writePixelsSync(Buffer.from(Uint8Array.from({ length: 16 }, (_, index) => index)))
+  created.setMetadataItem('AREA_OR_POINT', 'Area')
+  created.close()
+
+  const dataset = gdal.open(path)
+  assert.deepEqual(dataset.getMetadata(), dataset._native.metadata())
+  dataset.close()
+
+  // `setMetadata` takes an object or an array of `key=value` strings, and answers true.
+  const writable = gdal.open(path, 'r+')
+  assert.equal(writable.setMetadata({ name: 'temporary' }), true)
+  assert.equal(writable.getMetadata().name, 'temporary')
+  assert.equal(writable.setMetadata(['name=other']), true)
+  assert.equal(writable.getMetadata().name, 'other')
+
+  const band = writable.bands.get(1)
+  assert.deepEqual(band.getMetadata(), band._native.metadata())
+  // Writing *band* metadata is a gap in the main entry point rather than in this
+  // adapter — the binding has no `RasterBand.setMetadataItem` — so it is not claimed
+  // here. The dataset and layer halves both write.
+
+  // `computeStatistics(allowApproximation, force)` — two booleans for one options object.
+  const statistics = band.computeStatistics(false, true)
+  assert.equal(statistics.min, 0)
+  assert.equal(statistics.max, 15)
+  assert.equal(typeof (await band.computeStatisticsAsync(false, true)).mean, 'number')
+
+  // The mask, which this adapter does not wrap, is reachable under both spellings.
+  assert.ok(band.getMaskFlags() !== undefined)
+  assert.equal(typeof band.getMaskBand().readPixelsSync, 'function')
+
+  writable.close()
+})
+
+test('SpatialReference answers the reference\'s statics and accessors', () => {
+  const { SpatialReference } = gdal
+
+  // The `from*` family: each name the reference splits out lands on the door that
+  // actually handles it — one `OSRSetFromUserInput` for the URL/URN/WMS/MapInfo forms.
+  assert.equal(SpatialReference.fromEPSG(4326).authCode, 4326)
+  assert.equal(SpatialReference.fromWKT(native.epsgToWkt(4326)).authCode, 4326)
+  // A PROJ string carries no authority of its own. `autoIdentifyEPSG` is the call that
+  // goes looking for one; what it finds — and when it finds nothing — is pinned by this
+  // binding's own CRS tests, so all that is checked here is that the name is wired.
+  const fromProj4 = SpatialReference.fromProj4('+proj=longlat +datum=WGS84 +no_defs')
+  assert.equal(fromProj4.authCode, null)
+  fromProj4.autoIdentifyEPSG()
+  assert.equal(typeof fromProj4.toWKT(), 'string')
+  assert.equal(SpatialReference.fromURN('urn:ogc:def:crs:EPSG::4326').authCode, 4326)
+  assert.equal(SpatialReference.fromUserInput('EPSG:4326').authCode, 4326)
+  assert.equal(SpatialReference.fromURL('EPSG:4326').authCode, 4326)
+  assert.equal(SpatialReference.fromCRSURL('EPSG:4326').authCode, 4326)
+  assert.equal(SpatialReference.fromWMSAUTO('EPSG:4326').authCode, 4326)
+  assert.equal(SpatialReference.fromMICoordSys('EPSG:4326').authCode, 4326)
+  // `fromEPSGA` is the same code read in the authority's axis order.
+  assert.equal(SpatialReference.fromEPSGA(4326).axisMapping, 'authority')
+
+  const wgs84 = SpatialReference.fromEPSG(4326)
+  assert.equal(wgs84.toPrettyWKT().includes('\n'), true)
+  assert.equal(typeof wgs84.toXML(), 'string')
+  assert.equal(wgs84.validate(), true)
+  assert.equal(wgs84.isGeographic, true)
+  assert.equal(wgs84.isProjected, false)
+  assert.equal(wgs84.isGeocentric, false)
+  assert.equal(wgs84.isLocal, false)
+  assert.equal(wgs84.isCompound, false)
+  assert.equal(wgs84.equals(SpatialReference.fromWKT(native.epsgToWkt(4326))), true)
+  assert.equal(wgs84.isSameGeogCS(SpatialReference.fromEPSG(32631)), true)
+  assert.equal(wgs84.cloneGeogCS().authCode, 4326)
+  // What this adapter adds is the *name*; what `getAttrValue` answers is the binding's
+  // own semantics, pinned by the main entry point's CRS tests.
+  assert.equal(typeof wgs84.getAttrValue, 'function')
+  assert.equal(typeof wgs84.getAngularUnits(), 'number')
+
+  const projected = SpatialReference.fromEPSG(32631)
+  assert.equal(projected.isProjected, true)
+  assert.equal(projected.getLinearUnits(), 1)
+
+  const morphed = SpatialReference.fromEPSG(4326)
+  morphed.morphToESRI()
+  morphed.morphFromESRI()
+  assert.equal(morphed.authCode, 4326)
+})
+
+test('deleteDataset removes the file through its own driver', () => {
+  const path = tmp('compat-surface-delete.tif')
+  const created = native.createSync(path, {
+    driver: 'GTiff',
+    width: 2,
+    height: 2,
+    bandCount: 1,
+    dataType: 'Uint8',
+  })
+  created.close()
+
+  gdal.deleteDataset(path)
+  assert.throws(() => gdal.open(path))
+})
+
 test('the re-exports answer what the main entry point answers', () => {
   // Same objects where the main entry point already has one, so there is nothing to
   // keep in step.

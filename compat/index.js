@@ -1014,6 +1014,254 @@ class CoordinateTransformation {
   }
 }
 
+// ---- the reference's names for what these classes already do ------------------
+//
+// Added here rather than in the class bodies above because it is one list, from one
+// source: `scripts/compat-coverage.mjs` reads gdal-async's own tests and reports the
+// members they reach for that this module does not answer — the same method, under
+// the other naming convention. The *shapes* are read off those tests, not assumed.
+
+/** `setMetadata` takes an object or an array of `key=value` strings, and answers true. */
+function setMetadata(target, values, domain) {
+  if (Array.isArray(values)) {
+    for (const entry of values) {
+      const [key, ...rest] = String(entry).split('=')
+      target.setMetadataItem(key, rest.join('='), domain)
+    }
+  } else if (values && typeof values === 'object') {
+    for (const [key, value] of Object.entries(values)) target.setMetadataItem(key, String(value), domain)
+  } else {
+    throw new TypeError('setMetadata takes an object or an array of "key=value" strings')
+  }
+  return true
+}
+
+Object.assign(Dataset.prototype, {
+  /** The same read as `metadata()`, under the reference's name. */
+  getMetadata(domain) {
+    return this._native.metadata(domain)
+  },
+
+  setMetadata(values, domain) {
+    return setMetadata(this._native, values, domain)
+  },
+
+  /** `executeSQL` is how the reference spells it — capitals and all. */
+  executeSQL(sql, dialect) {
+    return this._native.executeSql(sql, dialect)
+  },
+
+  executeSQLAsync(sql, dialect) {
+    return this._native.executeSqlAsync(sql, dialect)
+  },
+
+  /** A getter here, a getter-shaped call there. */
+  getGCPProjection() {
+    return this._native.gcpProjection
+  },
+
+  /** `buildOverviews` blocks in the reference, so both names have to exist. */
+  buildOverviews(options) {
+    return this._native.buildOverviewsSync(options)
+  },
+
+  buildOverviewsAsync(options) {
+    return this._native.buildOverviews(options)
+  },
+})
+
+Object.assign(RasterBand.prototype, {
+  getMetadata(domain) {
+    return this._native.metadata(domain)
+  },
+
+  /**
+   * `computeStatistics(allowApproximation, force)` is **synchronous** in the reference,
+   * with `computeStatisticsAsync` beside it — this class had the promise under the
+   * plain name, which is a shape a port would trip over. Fixed here rather than left
+   * as found, because the whole point of the exercise is that the reference's tests are
+   * the specification.
+   */
+  computeStatistics(allowApproximation, force) {
+    return this._native.statisticsSync({ approx: allowApproximation, force })
+  },
+
+  computeStatisticsAsync(allowApproximation, force) {
+    return this._native.statistics({ approx: allowApproximation, force })
+  },
+
+  // The mask is the one band-shaped thing this adapter deliberately does not wrap (the
+  // notes in WS-7 say why), so these answer the native band — everything a caller does
+  // with a mask band goes to the same native object either way.
+  getMaskBand() {
+    return this._native.mask
+  },
+
+  getMaskFlags() {
+    return this._native.maskFlags
+  },
+
+  createMaskBand(perDataset) {
+    return this._native.createMask(perDataset)
+  },
+})
+
+Object.assign(Layer.prototype, {
+  getMetadata(domain) {
+    return this._native.metadata(domain)
+  },
+})
+
+Object.assign(SpatialReference, {
+  /** `fromEPSG` — the reference's capitalisation of the same door. */
+  fromEPSG(code) {
+    return new SpatialReference(native.SpatialRef.fromEpsg(code))
+  },
+
+  fromWKT(wkt) {
+    return new SpatialReference(native.SpatialRef.fromWkt(wkt))
+  },
+
+  fromProj4(proj4) {
+    return new SpatialReference(native.SpatialRef.fromProj4(proj4))
+  },
+
+  fromESRI(esriWkt) {
+    return new SpatialReference(native.SpatialRef.fromESRI(esriWkt))
+  },
+
+  /** The same code, read in the authority's axis order rather than GIS's. */
+  fromEPSGA(code) {
+    return new SpatialReference(native.SpatialRef.fromEpsg(code).withAxisMapping('authority'))
+  },
+
+  /**
+   * The reference splits the general door into one name per flavour — a URN, a CRS URL,
+   * a WMS `AUTO:` string, a MapInfo coordinate system. They all land on the same
+   * `OSRSetFromUserInput`, which is what `fromDefinition` is, so they are aliases here
+   * rather than five implementations.
+   */
+  fromURN(urn) {
+    return new SpatialReference(native.SpatialRef.fromDefinition(urn))
+  },
+
+  fromURL(url) {
+    return new SpatialReference(native.SpatialRef.fromDefinition(url))
+  },
+
+  fromCRSURL(url) {
+    return new SpatialReference(native.SpatialRef.fromDefinition(url))
+  },
+
+  fromUserInput(definition) {
+    return new SpatialReference(native.SpatialRef.fromDefinition(definition))
+  },
+
+  fromWMSAUTO(definition) {
+    return new SpatialReference(native.SpatialRef.fromDefinition(definition))
+  },
+
+  fromMICoordSys(definition) {
+    return new SpatialReference(native.SpatialRef.fromDefinition(definition))
+  },
+})
+
+Object.assign(SpatialReference.prototype, {
+  /** The unit accessors: this binding reports the unit, the reference its factor. */
+  getAngularUnits() {
+    return this._srs.angularUnit?.factor ?? 1
+  },
+
+  getLinearUnits() {
+    return this._srs.linearUnit?.factor ?? 1
+  },
+
+  toPrettyWKT() {
+    return this._srs.prettyWkt
+  },
+
+  toXML() {
+    return this._srs.toXML()
+  },
+
+  autoIdentifyEPSG() {
+    return this._srs.autoIdentifyEPSG()
+  },
+
+  validate() {
+    return this._srs.validate()
+  },
+
+  equals(other) {
+    return this._srs.equals(other._srs ?? other)
+  },
+
+  isSameGeogCS(other) {
+    return this._srs.isSameGeogCS(other._srs ?? other)
+  },
+
+  isSameVertCS(other) {
+    return this._srs.isSameVertCS(other._srs ?? other)
+  },
+
+  cloneGeogCS() {
+    return new SpatialReference(this._srs.cloneGeogCS())
+  },
+
+  setWellKnownGeogCS(name) {
+    return this._srs.setWellKnownGeogCS(name)
+  },
+
+  getAttrValue(key, child) {
+    return this._srs.getAttrValue(key, child)
+  },
+
+  morphToESRI() {
+    return this._srs.morphToESRI()
+  },
+
+  morphFromESRI() {
+    return this._srs.morphFromESRI()
+  },
+
+  withAxisMapping(mapping) {
+    return new SpatialReference(this._srs.withAxisMapping(mapping))
+  },
+})
+
+// The read-only flags and values are getters on both sides, so they need a forward
+// rather than a rename — and this wrapper is composition rather than inheritance, so
+// without the forward they are simply absent. `isVectical` is not among them: it is a
+// typo in the reference's suite.
+for (const name of [
+  'isGeographic',
+  'isProjected',
+  'isCompound',
+  'isVertical',
+  'isGeocentric',
+  'isLocal',
+  'epsgTreatsAsLatLong',
+  'wkt',
+  'prettyWkt',
+  'proj4',
+  'projJson',
+  'name',
+  'authName',
+  'authCode',
+  'authority',
+  'axisMapping',
+  'areaOfUse',
+  'linearUnit',
+  'angularUnit',
+]) {
+  Object.defineProperty(SpatialReference.prototype, name, {
+    configurable: true,
+    get() {
+      return this._srs[name]
+    },
+  })
+}
+
 let driversCollection = null
 
 const Gdal = {
@@ -1122,6 +1370,25 @@ const Gdal = {
   calcAsync: (inputs, output, fn, options) => native.calcAsync(inputs, output, fn, options),
   RasterMuxStream: native.RasterMuxStream,
   RasterTransform: native.RasterTransform,
+
+  /**
+   * `gdal.deleteDataset(path, driver?)` — the reference's module-level delete. The
+   * driver is what actually does the deleting here, so without a name this asks the
+   * file's own driver, which is the same choice GDAL would make.
+   */
+  deleteDataset(path, driver) {
+    let name = driver
+    if (!name) {
+      // No driver named: the file knows which one it is, so ask it before deleting.
+      const dataset = open(path)
+      try {
+        name = dataset.driver.name
+      } finally {
+        dataset.close()
+      }
+    }
+    native.driver(name).delete(path)
+  },
 
   /** Whether this build is self-contained — the same answer as `bundled` there. */
   get bundled() {

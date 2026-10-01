@@ -270,12 +270,26 @@ if (process.exitCode !== 2) {
   // A member counts as answered when *any* class on our side has it — the reference's
   // tests reach for the same name on different objects, and we do not need to guess
   // which class a name came from to answer "do we have this at all".
+  //
+  // The **whole prototype chain** counts, because that is how the adapter classes are
+  // built: `wrapGeometry` sets a native prototype underneath, so a native method is
+  // reachable on a compat object without appearing in its own property list. Both entry
+  // points are walked, since `compat` re-exports the main one.
+  const native = createRequire(import.meta.url)('..')
   const members = new Set()
-  for (const name of Object.keys(compat)) {
-    const value = compat[name]
-    if (typeof value !== 'function') continue
-    for (const member of Object.getOwnPropertyNames(value.prototype ?? {})) members.add(member)
-    for (const member of Object.getOwnPropertyNames(value)) members.add(member)
+  const addAll = (value) => {
+    if (typeof value === 'function') {
+      for (let prototype = value.prototype; prototype; prototype = Object.getPrototypeOf(prototype)) {
+        for (const member of Object.getOwnPropertyNames(prototype)) members.add(member)
+      }
+      for (const member of Object.getOwnPropertyNames(value)) members.add(member)
+    } else if (value && typeof value === 'object') {
+      // `fs`, `config`, the constant tables: plain objects whose keys are the API.
+      for (const member of Object.getOwnPropertyNames(value)) members.add(member)
+    }
+  }
+  for (const source of [compat, native]) {
+    for (const name of Object.keys(source)) addAll(source[name])
   }
   // The collections and the pixel object are reached through accessors rather than
   // through a class, so what they carry is part of the surface by name.

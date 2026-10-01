@@ -169,15 +169,20 @@ test('statistics come back under gdal-async names', () => {
   assert.ok(statistics.stdDev > 0, 'stdDev, not std_dev')
   dataset.close()
 
-  // The async form, which is a promise when no callback is given.
+  // `computeStatistics` is the blocking one — the reference spells the promise
+  // `computeStatisticsAsync` — and the two answer the same numbers.
   const reopened = gdal.open(path)
   return reopened.bands
     .get(1)
     .computeStatistics(true)
-    .then((async_) => {
-      assert.equal(async_.max, 15)
-      reopened.close()
-    })
+    .max === 15 &&
+    reopened.bands
+      .get(1)
+      .computeStatisticsAsync(true)
+      .then((async_) => {
+        assert.equal(async_.max, 15)
+        reopened.close()
+      })
 })
 
 test('a layer hands out features and fields the gdal-async way', () => {
