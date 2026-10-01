@@ -6,6 +6,20 @@ First working cut — everything here is new.
 
 ### Binding
 
+- The `gdal-rs-napi/compat` layer now reshapes the **multidimensional model** as well:
+  `dataset.root` is a `Group`, with the reference's `arrays` / `groups` / `attributes` /
+  `dimensions` collections (`get`, `count`, `forEach`, `map`, `getNames`, both
+  iterators), and its `MDArray` / `Attribute` / `Dimension` wrappers. An `MDArray` reads
+  as a typed array, `asDataset()` hands back a compat `Dataset` again, and `getMask()` /
+  `getView()` hand back further arrays. `getNames()` is the short name and `description`
+  the full one, which is the pair the reference has.
+- Three compat bugs that the tests above found, all of them places where the layer did
+  not match the shape it exists to provide: `open(path)` with no driver list passed
+  `{ drivers: undefined }`, which napi reads as an array and refuses; `drivers` may be a
+  *string* as well as a list, and `open(path, 'w', …)` is the creation form
+  (`x_size`, `y_size`, `band_count`, `data_type`), neither of which was handled; and a
+  `GDT_*` name went to the native call as GDAL spells it, where this binding's four
+  names differ (`GDT_Byte` is `Uint8` here).
 - `gdal.eventLoopWarning` says so when a blocking call holds the JS thread too long.
   `false` turns the warning off, `true` turns it back on at the default threshold of
   50 ms, and a number sets that threshold in milliseconds (the last is this binding's).

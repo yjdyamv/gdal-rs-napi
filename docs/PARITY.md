@@ -186,7 +186,8 @@ These are **decisions, not omissions**.
   already have `for…of`, `forEach` and `map`, and the singular accessors
   (`band(i)`, `layer(i)`, `field(name)`) are the `.get()`. Wrapping them would either
   change the array returns (a break) or put the shape in JavaScript — where the
-  generated `binding.d.ts` cannot type it. This shape lives in `compat`.
+  generated `binding.d.ts` cannot type it. This shape lives in `compat`, collections
+  and all — including the multidimensional model's.
 - **The geometry subclass family** — `Point` / `Polygon` / `MultiPolygon` / … . napi
   cannot express inheritance, and the generated declarations own the factories'
   return types, so subclass accessors could not be typed. One `Geometry` with
@@ -213,10 +214,12 @@ These are **decisions, not omissions**.
 
 ## 4. Roadmap
 
-1. **Shipped:** Tier 1, Tier 2, and all of Tier 3 — the algebra, the streams and the
-   multidimensional model.
+1. **Shipped:** Tier 1, Tier 2, and all of Tier 3 — the algebra, the streams, the
+   multidimensional model, the pixel functions, `calcAsync`, the async getters and
+   `eventLoopWarning`.
 2. **Remaining:** nothing on the parity side — everything else is a recorded non-goal
-   above. The multidimensional model is not reshaped by `compat`, which is the one
-   open edge there.
+   above (the native collection classes and the geometry subclass family, both of which
+   `compat` carries as shapes). The `compat` layer reshapes the multidimensional model
+   too, which closed the last edge there.
 3. **Publishing** stays *deliberately deferred* — see `ROADMAP.md` Phase 0 and
    `CHANGELOG.md`; nothing here changes that.

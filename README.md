@@ -1941,20 +1941,23 @@ for (const feature of layer.features) {    // iterable, like a collection
   feature.fields.toObject()                // { … }
   feature.geometry instanceof gdal.Point   // the class family, instanceof and all
 }
+
+const root = dataset.root                   // the multidimensional model, reshaped
+root.arrays.get('temperature').read()      // a typed array of the whole array
 ```
 
 `feature.fields.set('population', 11)` writes straight through, and
 `feature.geometry = gdal.fromWKT('POINT (9 9)')` replaces it. The blocking/async
 pair is `xxx()` / `xxxAsync()`, and `xxxAsync` also takes a node-style callback.
 
-What it does **not** cover, so a port does not find out the hard way: multi-dimensional
-arrays, `calcAsync`, the VRT pixel functions, and the two band extras this API spells
-its own way — `colorTable` and `mask` — whose shapes are on the main entry point and
-not on the wrapper. Raster streams are on the main entry point too, as
-`band.createReadStream()` / `createWriteStream()` rather than `band.pixels.…`.
-Everything else
-the native API can do, the adapter can — including the GEOS predicates, since they
-are in the same build. `PHASE1.md` (WS-7) is the full list.
+What it does **not** cover, so a port does not find out the hard way: `calcAsync`, the
+VRT pixel functions, the command-line programs and their `translate`/`warp` family, and
+the two band extras this API spells its own way — `colorTable` and `mask` — whose shapes
+are on the main entry point and not on the wrapper. Raster streams are on the main entry
+point too, as `band.createReadStream()` / `createWriteStream()` rather than
+`band.pixels.…`. Everything else the native API can do, the adapter can — including the
+multidimensional model and the GEOS predicates, since they are in the same build.
+`PHASE1.md` (WS-7) is the full list.
 
 ## Licence
 

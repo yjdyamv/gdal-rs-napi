@@ -20,10 +20,10 @@
 //     = [...]`, `dataset.srs = srs`, where native spells them `setNoDataValue`,
 //     `setGeoTransform`, `setProjection`.
 //
-// Coverage is a subset, and honestly so — see `PHASE1.md` (WS-7) for what is
-// deliberately missing (`calcAsync`, pixel functions) and what is in the native
-// binding but not reshaped here (Streams, the multidimensional model). The
-// test suite in `__test__/compat.test.mjs` is what claims what works.
+// Coverage is a subset, and honestly so — see `PHASE1.md` (WS-7) for what is in the
+// native binding but not reshaped here (the raster streams, `calcAsync`, the pixel
+// functions, and the command-line programs and their `translate`/`warp` family). The
+// test suite in `__test__/compat*.test.mjs` is what claims what works.
 
 const native = require('../index.js')
 
@@ -109,15 +109,24 @@ const TYPED_ARRAY_BY_CODE = {
   14: Int8Array,
 }
 
-/** A gdal-async data type — a code, or the `gdal.GDT_*` name — as the native string. */
+/**
+ * A gdal-async data type — a code, or the `gdal.GDT_*` name — as the native string.
+ *
+ * GDAL spells four of them differently from this binding (`Byte` is `Uint8` here), and
+ * the native API takes *this* binding's spelling, so a `GDT_*` name goes through the
+ * code table rather than being passed along.
+ */
 function dataTypeName(value) {
   if (value === undefined || value === null) return undefined
-  if (typeof value === 'string') {
-    if (value.startsWith('GDT_')) return value.slice(4)
-    return value
+  if (typeof value === 'number') {
+    const name = NAME_BY_CODE[value]
+    if (name === undefined) throw new Error(`unknown data type ${value}`)
+    return name
   }
-  const name = NAME_BY_CODE[value]
-  if (name === undefined) throw new Error(`unknown data type ${value}`)
+  const name = value.startsWith('GDT_') ? value.slice(4) : value
+  if (CODE_BY_NAME[name] !== undefined) return name
+  const code = GDT[`GDT_${name}`]
+  if (code !== undefined && NAME_BY_CODE[code] !== undefined) return NAME_BY_CODE[code]
   return name
 }
 
@@ -668,6 +677,25 @@ class Dataset {
     this._native.setGeoTransform(value)
   }
 
+  /**
+   * The root group of the multidimensional model, or `null` when the file has none.
+   *
+   * The model only exists on a dataset opened for it, so this opens the same path a
+   * second time in that mode the first time it is asked for, and keeps that handle —
+   * `close()` releases it too.
+   */
+  get root() {
+    if (this._model === undefined) {
+      try {
+        this._model = native.openSync(this._native.path, { multidimensional: true })
+      } catch {
+        this._model = null
+      }
+    }
+    const root = this._model?.root
+    return root ? new Group(root, this._model) : null
+  }
+
   getFileList() {
     return this._native.getFileList()
   }
@@ -681,19 +709,246 @@ class Dataset {
   }
 
   close() {
+    this._model?.close()
+    this._model = undefined
     this._native.close()
+  }
+}
+
+// ---------------------------------------------------------------------------
+// The multidimensional model
+//
+// gdal-async's Group / MDArray / Attribute / Dimension, and the six collections that
+// hang off them. GDAL only builds the model when a dataset is opened *for* it, so
+// `Dataset.root` opens the same path a second time in that mode and keeps that handle
+// alive for as long as the wrappers are used.
+
+/** The typed array an array's samples come back as — the read is a byte buffer. */
+function typedArrayFor(dataType) {
+  const ctor = TYPED_ARRAY_BY_CODE[CODE_BY_NAME[dataType]]
+  if (!ctor) throw new TypeError(`${dataType} has no typed array to read into`)
+  return ctor
+}
+
+/** Copy first: bytes from the binding are not aligned for a 2-, 4- or 8-byte view. */
+function typedOf(bytes, ctor) {
+  const copy = Uint8Array.from(bytes)
+  return new ctor(copy.buffer, copy.byteOffset, copy.byteLength / ctor.BYTES_PER_ELEMENT)
+}
+
+/** A collection of named things — the shape all six of them share. */
+class NamedCollection extends Collection {
+  constructor(items, names) {
+    super(items)
+    this.names = names
+  }
+
+  get(nameOrIndex) {
+    if (typeof nameOrIndex === 'number') return this._items[nameOrIndex - 1] ?? null
+    return this._items.find((item) => item.name === nameOrIndex) ?? null
+  }
+
+  getNames() {
+    return [...this.names]
+  }
+
+  map(callback) {
+    return this._items.map((item, index) => callback(item, index + 1))
+  }
+
+  async *[Symbol.asyncIterator]() {
+    for (const item of this._items) yield item
+  }
+}
+
+class GroupArrays extends NamedCollection {}
+class GroupGroups extends NamedCollection {}
+class GroupAttributes extends NamedCollection {}
+class GroupDimensions extends NamedCollection {}
+class ArrayAttributes extends NamedCollection {}
+class ArrayDimensions extends NamedCollection {}
+
+class Attribute {
+  constructor(native) {
+    this._native = native
+  }
+
+  /** The attribute's own name, which is what the collection looks it up by. */
+  get name() {
+    return this._native.name
+  }
+
+  get description() {
+    return this._native.name
+  }
+
+  get dataType() {
+    return this._native.dataType
+  }
+
+  get value() {
+    return this._native.value
+  }
+}
+
+class Dimension {
+  constructor(native) {
+    this._native = native
+  }
+
+  get name() {
+    return this._native.name
+  }
+
+  get description() {
+    return this._native.name
+  }
+
+  get size() {
+    return this._native.size
+  }
+
+  get type() {
+    return this._native.typeName
+  }
+
+  get direction() {
+    return this._native.direction
+  }
+}
+
+class MDArray {
+  constructor(native, dataset) {
+    this._native = native
+    this.ds = dataset
+    this.attributes = new ArrayAttributes(
+      native.attributes().map((attribute) => new Attribute(attribute)),
+      native.attributes().map((attribute) => attribute.name),
+    )
+    this.dimensions = new ArrayDimensions(
+      native.dimensions().map((dimension) => new Dimension(dimension)),
+      native.dimensions().map((dimension) => dimension.name),
+    )
+  }
+
+  /** The array's own name; `description` is the full one, e.g. `/group/Band1`. */
+  get name() {
+    return this._native.name
+  }
+
+  get description() {
+    return this._native.fullName
+  }
+
+  get dataType() {
+    return this._native.dataType
+  }
+
+  /** How many samples the whole array holds, over every dimension. */
+  get length() {
+    return this._native.shape.reduce((total, size) => total * size, 1)
+  }
+
+  get noDataValue() {
+    return this._native.noDataValue
+  }
+
+  get offset() {
+    return this._native.offset
+  }
+
+  get scale() {
+    return this._native.scale
+  }
+
+  get unitType() {
+    return this._native.unit
+  }
+
+  get srs() {
+    return wrapSrs(this._native.srs)
+  }
+
+  /** A hyperslab, as a typed array of the array's own type. */
+  read(start, count) {
+    const bytes = this._native.read({
+      start: start ? Array.from(start) : undefined,
+      count: count ? Array.from(count) : undefined,
+    })
+    return typedOf(bytes, typedArrayFor(this._native.dataType))
+  }
+
+  asDataset() {
+    return new Dataset(this._native.asDataset())
+  }
+
+  getMask() {
+    return new MDArray(this._native.getMask(), this.ds)
+  }
+
+  getView(expression) {
+    return new MDArray(this._native.getView(expression), this.ds)
+  }
+}
+
+class Group {
+  constructor(native, dataset) {
+    this._native = native
+    this.ds = dataset
+    const arrayNames = native.arrayNames()
+    const groupNames = native.groupNames()
+    this.arrays = new GroupArrays(
+      arrayNames.map((name) => new MDArray(native.openArray(name), dataset)),
+      arrayNames,
+    )
+    this.groups = new GroupGroups(
+      groupNames.map((name) => new Group(native.openGroup(name), dataset)),
+      groupNames,
+    )
+    this.attributes = new GroupAttributes(
+      native.attributes().map((attribute) => new Attribute(attribute)),
+      native.attributes().map((attribute) => attribute.name),
+    )
+    this.dimensions = new GroupDimensions(
+      native.dimensions().map((dimension) => new Dimension(dimension)),
+      native.dimensions().map((dimension) => dimension.name),
+    )
+  }
+
+  get name() {
+    return this._native.name
+  }
+
+  get description() {
+    return this._native.fullName
   }
 }
 
 // ---------------------------------------------------------------------------
 // Module
 
-function open(path, mode = 'r', drivers) {
-  const options = { drivers }
+function open(path, mode = 'r', drivers, xSize, ySize, bandCount, dataType, creationOptions) {
+  // gdal-async takes one driver name or a list of them, and it creates in `"w"`.
+  const list = typeof drivers === 'string' ? [drivers] : drivers
+  if (mode === 'w') {
+    return new Dataset(
+      native.createSync(path, {
+        driver: list?.[0],
+        width: xSize,
+        height: ySize,
+        bandCount,
+        dataType: dataTypeName(dataType),
+        options: creationOptions,
+      }),
+    )
+  }
   if (mode === 'rs' || mode === 'rt') {
     return new Dataset(native.openThreadSafeSync(path))
   }
-  if (mode === 'r+' || mode === 'w') {
+  // The key is *omitted* rather than set to `undefined` when there is no driver list:
+  // napi reads a present-but-undefined option as an array and refuses it.
+  const options = list === undefined ? {} : { drivers: list }
+  if (mode === 'r+') {
     options.update = true
   }
   return new Dataset(native.openSync(path, options))
@@ -706,7 +961,10 @@ function openAsync(...args) {
   const opened =
     mode === 'rs' || mode === 'rt'
       ? Promise.resolve(native.openThreadSafeSync(path))
-      : native.open(path, { update: mode === 'r+' || mode === 'w', drivers })
+      : native.open(path, {
+          update: mode === 'r+' || mode === 'w',
+          ...(drivers === undefined ? {} : { drivers }),
+        })
 
   return withCallback(
     opened.then((dataset) => new Dataset(dataset)),
@@ -762,6 +1020,18 @@ const Gdal = {
   MultiPolygon,
   GeometryCollection,
   SpatialReference,
+
+  // The multidimensional model and its collections.
+  Group,
+  MDArray,
+  Attribute,
+  Dimension,
+  GroupArrays,
+  GroupGroups,
+  GroupAttributes,
+  GroupDimensions,
+  ArrayAttributes,
+  ArrayDimensions,
 
   /** gdal-async's `geometryFromWKT`-style helpers, spelled as they are there. */
   geometryFromWKT: geometryFactories.fromWKT,

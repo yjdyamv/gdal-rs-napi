@@ -1650,17 +1650,20 @@ for (const feature of layer.features) {    // 可迭代，和集合一样
   feature.fields.toObject()                // { … }
   feature.geometry instanceof gdal.Point   // 类族，`instanceof` 成立
 }
+
+const root = dataset.root                   // 多维模型，同样被重包装
+root.arrays.get('temperature').read()      // 整个数组的类型化数组
 ```
 
 `feature.fields.set('population', 11)` 直接写穿；`feature.geometry =
 gdal.fromWKT('POINT (9 9)')` 直接替换。阻塞/异步成对为 `xxx()` / `xxxAsync()`，
 `xxxAsync` 也接受 node 风格回调。
 
-**不覆盖**的部分（免得迁移时才发现）：多维数组、`calcAsync`、VRT 像素函数，以及两个由本绑定
-自己定形状的波段附加物——`colorTable` 与 `mask`（形状在主入口上，不在兼容层包装里）。栅格流也在
-主入口上，拼作 `band.createReadStream()` / `createWriteStream()`，而不是 `band.pixels.…`。
-原生 API 能做的其余一切，适配层都能做 —— 包括 GEOS 谓词，因为它们在同一个构建里。
-完整清单见 `PHASE1.md`（WS-7）。
+**不覆盖**的部分（免得迁移时才发现）：`calcAsync`、VRT 像素函数、命令行程序及其
+`translate`/`warp` 家族，以及两个由本绑定自己定形状的波段附加物——`colorTable` 与 `mask`
+（形状在主入口上，不在兼容层包装里）。栅格流也在主入口上，拼作 `band.createReadStream()` /
+`createWriteStream()`，而不是 `band.pixels.…`。其余原生 API 能做的，适配器都能做 ——
+包括多维模型与 GEOS 谓词，因为它们就在同一个构建里。完整清单见 `PHASE1.md`（WS-7）。
 
 ## 许可证
 

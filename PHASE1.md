@@ -33,7 +33,7 @@
 | WS-2 Driver/Dataset 对象模型 | ✅ 已完成 | `Driver` 对象（+`createCopy`）、`dataset.driver` 对象化、`open({drivers})`、`Dataset.description`/`rasterSize`/`getFileList`、`setProjection` 收 `SpatialRef`。集合类**不做**，见下 |
 | WS-3 Feature/Field 对象模型 | ✅ 已完成 | `layer.field(name)`/`addField`/`deleteField`/`reorderFields`、`FieldInfo` 全量定义、`layer.features()`（异步）、`layer.setSpatialFilter(geom)`、`layer.defn`（`FeatureDefn`）、`layer.getFeature(fid)` → `Feature`（`fields` 直写穿、`geometry`、`defn`、`toObject`） |
 | WS-4 异步人体工学 | ✅ 已完成 | `FeatureCursor` 已可用 `for await`（外壳加的，读的仍是同一个 `read()`）；异步错误已带 `err.code`（外壳从消息前缀提取）；`CoordinateTransform.transformPoints` 已跑在线程池上（点数组，百万点不必调用方分块，同步版更名 `transformPointsSync`）；`band.readChunks` 是 `readChunksSync` 的异步孪生；只读 getter 的异步孪生也补齐了（19 个 `xxxAsync`）。**不做**（非目标，理由见下）：`Dataset.bands/layers` 的异步迭代、`eventLoopWarning` |
-| WS-7 兼容层 | ✅ 已完成 | `gdal-rs-napi/compat` 已落地：1-based 索引、`xxx()`/`xxxAsync()`（含 node 回调形态）、setter 赋值（`noDataValue`/`geoTransform`/`srs`）、`Driver` 与各集合、`Feature`（`fields.toObject`/`toArray`、可赋值 `geometry`）、`SpatialReference`、几何类族（含 `instanceof`、`toWKT`/`toJSON`/`get*`）。**不做**：本绑定自己定形状的波段附加物——`colorTable`/`mask`/流（形状在主入口上，不在兼容层包装里）。多维模型、`calcAsync` 与 VRT 像素函数也已在主入口落地，但 compat **没有**给它们做重包装。 |
+| WS-7 兼容层 | ✅ 已完成 | `gdal-rs-napi/compat` 已落地：1-based 索引、`xxx()`/`xxxAsync()`（含 node 回调形态）、setter 赋值（`noDataValue`/`geoTransform`/`srs`）、`Driver` 与各集合、`Feature`（`fields.toObject`/`toArray`、可赋值 `geometry`）、`SpatialReference`、几何类族（含 `instanceof`、`toWKT`/`toJSON`/`get*`）。**不做**：本绑定自己定形状的波段附加物——`colorTable`/`mask`/流（形状在主入口上，不在兼容层包装里）。多维模型、`calcAsync` 与 VRT 像素函数也已在主入口落地；多维模型另在 compat 里做了 `Group`/`MDArray`/`Attribute`/`Dimension` 与六个集合的重包装，`calcAsync` 与像素函数则不在。 |
 
 ### 一个修正：`gdal.const` 应该是字符串词汇，不是 GDAL 数字码
 
