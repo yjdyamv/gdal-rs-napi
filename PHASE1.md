@@ -15,6 +15,9 @@
 | WS-6 直方图写回 | ✅ 已完成 | `defaultHistogram(force?)` / `setDefaultHistogram()`，与 `statistics()` / `setStatistics()` 对齐 |
 | WS-6 调色板 | ✅ 已完成 | `colorTable` / `paletteInterpretation` / `setColorTable(entries, interpretation?)` —— 分量是无符号 16 位（crate 读成 `i16`，边界处转回），解释随表；MEM / VRT 无损，GTiff 只有 8 位 × 256 项 |
 | WS-6 掩膜波段 | ✅ 已完成 | `mask` / `maskFlags` / `createMask(perDataset?)` —— 掩膜是一条完整 `RasterBand`（读走共享锁）；没掩膜时给隐式"全有效"波段（只读、全 255）；`maskFlags` 区分存储型与派生型（`alpha` / `noData`） |
+| WS-6 其余小工具 | ✅ 已完成 | `gdal.decToDMS(angle, axis, precision?)`（`CPLDecToDMS`）、`gdal.verbose()` / `gdal.quiet()`（把 `CPL_DEBUG` 设成 `ON` / `OFF`）。`wrapVRT` 与 `toDataType` / `fromDataType` **不做**：前者的形状/价值不明确，后者与本绑定"字符串即枚举"的取舍相悖（数字码属于兼容层） |
+| WS-3 图层拷贝 | ✅ 已完成 | `dataset.copyLayer(source, name, options?)` —— `GDALDatasetCopyLayer`，经 `with_two`（锁不可重入，两个句柄必须同源）；**源必须是不同数据集**，自拷贝被明确拒绝而不是死锁 |
+| WS-4 流式读取异步孪生 | ✅ 已完成 | `band.readChunks(options, onChunk)` —— 与 `readChunksSync` 同一条 `read_sync` 逐条走法，搬到线程池；每条经 threadsafe function 交给 JS，返回值即背压；回调不得重入（同 `onProgress`） |
 | B2 特性探测 | ✅ 已完成 | `gdal.apiVersion`、`gdal.features()` |
 | WS-5 常量枚举 | ✅ 已完成 | `gdal.const` —— `DataType`/`FieldType`/`Justification`/`GeometryType`/`ColorInterpretation`/`Resampling`/`OverviewResampling`/`SqlDialect`，纯 JS（`index.js`）+ 逐值对照运行时的测试 |
 | C1 GEOS 决策 | ✅ 已定 | 自行构建 + **静态链接**（`geos_static`，进入 `bundled` 默认开启），见 [`docs/GEOS.md`](./docs/GEOS.md) |
@@ -94,6 +97,10 @@ GDAL 的数字码属于兼容层（WS-7），那里 `gdal-async` 的形状才是
 
 ## A. 差距矩阵
 
+> **这是一份点状快照**（写下时对照 `gdal-async` 的分析），其 ✅/🟡/❌ 是**当时**的状态；
+> 此后 WS-1…WS-7 把其中绝大多数 ❌/🟡 补上了（见顶部进度表）。下面的矩阵只在某一项仍
+> **悬而未决**时才当作依据，例如 `Layer.srs` 的 setter —— 结论是**不做**，见该行。
+
 图例：✅ 有；🟡 部分；❌ 无。
 
 ### A1. 全局模块
@@ -166,7 +173,7 @@ GDAL 的数字码属于兼容层（WS-7），那里 `gdal-async` 的形状才是
 | `Layer.features`（集合：`get/first/last/next/previous/count/forEach/Symbol.iterator/Symbol.asyncIterator`） | 🟡 `featuresSync()` + `openCursor()`（游标已有 `Symbol.asyncIterator`） | 无 `first/last/next/previous` 语法糖；`layer.features` 本身不是集合 |
 | `Layer.getFeature(fid)` | ✅ `feature(fid)` | |
 | `Layer.setSpatialFilter(geom)`（收几何对象） | ❌ | 只有 `setSpatialFilterRect()` |
-| `Layer.srs`（getter/setter） | 🟡 只读 `spatialRef`/`spatialRefWkt` | |
+| `Layer.srs`（getter/setter） | 🟡 只读 `spatialRef`/`spatialRefWkt` | setter **不做**：GDAL 的 C API 只有 `OGR_L_GetSpatialRef`，没有 setter（C++ 的 `OGRLayer::SetSpatialRef` 是虚函数，C 表面够不到）；走图层定义的几何字段在定义 seal 后被拒（GPKG 报 `not allowed on a sealed object`）。CRS 在 `createLayer({ epsg })` / `{ wkt }` 时给定 |
 | `Layer.geomType` / `fidColumn` / `geomColumn` / `testCapability` | ✅ | |
 | `Layer.extent`（可赋值） | 🟡 只读 | |
 | 字段值类型：list 字段、Date/Time/Binary | 🟡 读有；写看驱动 | 已实测四种驱动（GeoJSON/SQLite 真存列表、GPKG 降级为标量、FlatGeobuf 拒绝写），推断坚持逗号连接文本；有测试钉住 |

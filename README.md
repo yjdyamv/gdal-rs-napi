@@ -123,6 +123,10 @@ Worth knowing:
   distinction is why this reads the C function rather than the crate's wrapper, which
   folds the two together.
 
+`gdal.verbose()` and `gdal.quiet()` turn GDAL's own debug logging on and off — they set
+`CPL_DEBUG` to `ON` / `OFF`, the switch `--debug` flips, which `config.get('CPL_DEBUG')`
+reads straight back. Both are process-global, like `config.set`.
+
 `gdal.lastError()` reports GDAL's most recent error — `class`, `number`, `message` —
 or `null`:
 
@@ -420,18 +424,27 @@ these return bytes, for the reason above.
 And to walk a band that does not fit in memory, one strip at a time:
 
 ```js
-const strips = band.readChunksSync({ rows: 64 }, (chunk) => {
+// Off the event loop: strips are handed to the callback from the JS thread, and
+// the walk reads the next only once this one has come back.
+const strips = await band.readChunks({ rows: 64 }, (chunk) => {
   consume(chunk.data, chunk.x, chunk.y, chunk.width, chunk.height)
   return true          // `false` stops the walk
 })
+
+// The same walk on the calling thread.
+band.readChunksSync({ rows: 64 }, onChunk)
 ```
 
 `rows` defaults to the band's block height, which is the strip GDAL reads anyway, and
-every strip arrives whole. The callback runs on the event loop, between reads, and its
-answer is the backpressure — so a walk long enough to matter belongs in a worker. (A
-band cannot be async-iterable — napi cannot put `Symbol.asyncIterator` on a generated
-class — which is why this one is synchronous. A layer's cursor can, because the shell
-adds it; see *Reading in batches*.)
+every strip arrives whole. `readChunks` runs the walk on the thread pool, so a raster
+larger than memory does not have to hold the event loop; the callback still runs on the
+JS thread, and the worker holds the GDAL lock while it waits for the answer — so, like
+`onProgress`, the callback must not call back into this library. `readChunksSync` reads
+between callbacks on the calling thread, which is the right shape when the caller is
+already a worker. Both take the same answer as backpressure. (A band is not
+async-*iterable* — napi cannot put `Symbol.asyncIterator` on a generated class — which
+is why the streaming form is a callback; a layer's cursor can be, because the shell adds
+it; see *Reading in batches*.)
 
 Writing and creating:
 
@@ -678,6 +691,10 @@ await toMercator.transformPoints(hugeArray) // the same, on the thread pool
 toMercator.transformGeometry(polygon) // GeoJSON in, GeoJSON out
 toMercator.transformBounds([13.0, 52.0, 13.8, 53.0])
 ```
+
+`gdal.decToDMS(angle, axis, precision?)` renders a decimal degree the way `gdalinfo`
+prints one — `decToDMS(45.5, 'Lat')` is `45d30' 0.00"N`; the axis label picks the
+hemisphere letter and `precision` is the decimal places on the seconds (default 2).
 
 **Coordinates are longitude,latitude here. Read this before passing any.**
 
@@ -949,6 +966,24 @@ an unknown property rather than adding a column, and treats a `null` geometry as
 `deleteLayer(name)` a whole layer *by name* — deleting shifts every later index, so
 a name is the safe handle. Not every driver can do either: GeoPackage can, an ESRI
 Shapefile cannot, and GDAL says so.
+
+`dataset.copyLayer(sourceLayer, name, options?)` copies a whole layer — schema and
+features both — into **this** dataset under a new name: GDAL's `GDALDatasetCopyLayer`,
+the way a layer moves between two datasets without re-reading it feature by feature. The
+source has to be a *different* dataset; a self-copy is refused rather than deadlocking,
+because both handles would have to be held at once and GDAL's per-dataset mutex is not
+reentrant.
+
+```js
+const source = gdal.openSync('places.geojson')
+const target = gdal.createVectorSync('places.gpkg', 'GPKG')
+target.copyLayer(source.layer(0), 'places')  // features, fields and all
+```
+
+A layer's CRS is set where the layer is made — `createLayer({ epsg })` or `{ wkt }` —
+and cannot be changed afterwards: GDAL's C API exposes `OGR_L_GetSpatialRef` and no
+setter, so there is nothing here to call. The dataset's own CRS is still writable with
+`setProjection`.
 
 ### Declaring the schema
 
@@ -1318,6 +1353,25 @@ What it costs, and what it does not do:
 
 `close()` behaves as it does everywhere else: later reads fail, and a read already
 in flight finishes against a handle that is still alive.
+
+### Resources: handles, descriptors and streaming
+
+Three things worth knowing together, because they are all about *how much* a process
+holds open:
+
+- **`close()` is the release.** It is idempotent, and it runs `GDALClose`; a `RasterBand`
+  or `Layer` holds the dataset's handle rather than a GDAL pointer of its own, so closing
+  the dataset invalidates every object derived from it — a later call throws instead of
+  touching freed memory.
+- **`openThreadSafe()` can cost file descriptors.** Most drivers are not natively
+  thread-safe, so GDAL *reopens the file per thread* for those; GTiff and COG (libtiff)
+  do not, and are the cheap case. Raise `UV_THREADPOOL_SIZE` for more overlap and
+  `ulimit -n` with it. A plain `open()` dataset is one handle whatever the concurrency.
+- **Streaming, when a raster is bigger than memory.** `readChunks` / `readChunksSync`
+  hand over one strip at a time (see *Raster*), and `readPixels({ into })` writes into a
+  buffer you already own — no allocation and no copy, which is what a tile loop wants.
+  The ordinary window reader allocates the window and nothing more, so
+  `readPixels({ window })` is already bounded by the window's size.
 
 ### Error codes
 

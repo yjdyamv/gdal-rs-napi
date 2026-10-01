@@ -96,6 +96,10 @@ gdal.config.set('GDAL_NUM_THREADS', null)       // 清掉
   `null`，或者是你传进去的默认值。正因如此，这里用的是 C 函数，而不是那层会把两者合并的
   封装。
 
+`gdal.verbose()` 与 `gdal.quiet()` 打开/关闭 GDAL 自己的调试日志 —— 就是把 `CPL_DEBUG` 设成
+`ON` / `OFF`，也就是 `--debug` 拨的那个开关，之后 `config.get('CPL_DEBUG')` 能原样读回来。两个都
+和 `config.set` 一样是进程级的。
+
 `gdal.lastError()` 返回 GDAL 最近一次错误——`class`、`number`、`message`——没有则 `null`：
 
 ```js
@@ -367,16 +371,22 @@ band.writeBlock(300, 200, bytes)
 要处理大到放不进内存的栅格，就一条一条地走：
 
 ```js
-const strips = band.readChunksSync({ rows: 64 }, (chunk) => {
+// 在事件循环之外：每一条从 JS 线程交给回调，前一条回来后才会读下一条。
+const strips = await band.readChunks({ rows: 64 }, (chunk) => {
   consume(chunk.data, chunk.x, chunk.y, chunk.width, chunk.height)
   return true          // 返回 false 就停下
 })
+
+// 同一个走法，在调用线程上。
+band.readChunksSync({ rows: 64 }, onChunk)
 ```
 
 `rows` 默认取该带的块高 —— 也就是 GDAL 反正要读的那一条；每一条都是完整的，不会是半条。
-回调在事件循环上、两次读之间执行，它的返回值就是背压 —— 所以真正耗时的走法应该放进 worker。
-（波段没法做成可异步迭代：napi 无法给生成的类挂 `Symbol.asyncIterator`，所以这里就是同步的。
-图层的游标可以，因为那是外壳加的 —— 见「按批读取」。）
+`readChunks` 把整个走法放到线程池上，所以大到放不进内存的栅格也不必占住事件循环；回调仍在
+JS 线程上执行，而 worker 在等答案时持有 GDAL 锁 —— 所以和 `onProgress` 一样，回调里
+**不得再调回本库**。`readChunksSync` 在调用线程上、两次回调之间读，适合调用方本身就在 worker
+里的情形。两者都把返回值当背压。（波段没法做成可异步*迭代*：napi 无法给生成的类挂
+`Symbol.asyncIterator`，所以流式形态是回调；图层的游标可以，因为那是外壳加的 —— 见「按批读取」。）
 
 写入、创建、地理参考：
 
@@ -563,6 +573,10 @@ await toMercator.transformPoints(hugeArray) // 同一件事，跑在线程池上
 toMercator.transformGeometry(polygon) // 进 GeoJSON，出 GeoJSON
 toMercator.transformBounds([13.0, 52.0, 13.8, 53.0])
 ```
+
+`gdal.decToDMS(angle, axis, precision?)` 把十进制度数渲染成 `gdalinfo` 那种度分秒 ——
+`decToDMS(45.5, 'Lat')` 得到 `45d30' 0.00"N`；axis 标签决定半球字母，`precision` 是秒的小数位
+（默认 2）。
 
 **这里的坐标是 经度,纬度。传参之前请先读这一段。**
 
@@ -793,6 +807,21 @@ dataset.close()
 （而不是加列），`geometry` 传 `null` 表示保持原样。`deleteFeature(fid)` 删掉一条要素，
 `deleteLayer(name)` 按名字删掉整个图层（删除会让索引位移，所以名字才是安全的句柄）。
 并非所有驱动都支持删除：GeoPackage 可以，Shapefile 不行，GDAL 会直接告诉你。
+
+`dataset.copyLayer(sourceLayer, name, options?)` 把整个图层 —— schema 连同要素 —— 拷进**当前**
+数据集并改个新名字：GDAL 的 `GDALDatasetCopyLayer`，也就是让一个图层在两个数据集之间搬家而不必
+逐条重读。源必须是**另一个**数据集；对自己的拷贝会被拒绝而不是死锁，因为那要同时持有两个句柄，
+而 GDAL 的每数据集互斥锁不可重入。
+
+```js
+const source = gdal.openSync('places.geojson')
+const target = gdal.createVectorSync('places.gpkg', 'GPKG')
+target.copyLayer(source.layer(0), 'places')  // 要素、字段一并带过去
+```
+
+图层的 CRS 在创建时给定 —— `createLayer({ epsg })` 或 `{ wkt }` —— 之后无法更改：GDAL 的 C API
+只暴露 `OGR_L_GetSpatialRef`，没有 setter，这里没有可调用的东西。数据集自己的 CRS 仍可用
+`setProjection` 写回。
 
 ### 声明式 schema
 
@@ -1108,6 +1137,20 @@ node scripts/bench-parallel.mjs big.tif --concurrency 4 [--min-speedup 1.5]
 `close()` 的行为与其它地方一致：之后的读取会失败，而**已经在进行中**的读取会在仍然存活的句柄上
 正常跑完。
 
+### 资源：句柄、描述符与流式读取
+
+三件放在一起看的事，都是关于一个进程**同时**开着多少东西：
+
+- **`close()` 就是释放。** 它幂等，并且真正执行 `GDALClose`；`RasterBand` / `Layer` 持有的是
+  数据集的句柄，而不是自己的 GDAL 指针，所以关掉数据集会让由它派生的一切对象失效 —— 之后再调用
+  会报错，而不是去读已经释放的内存。
+- **`openThreadSafe()` 可能消耗文件描述符。** 多数驱动并非原生线程安全，GDAL 会**每线程重开一次
+  文件**；GTiff / COG（libtiff）不会，是最省的那类。要更多重叠就同时调大 `UV_THREADPOOL_SIZE`
+  与 `ulimit -n`。普通 `open()` 出来的数据集，无论并发多少都只占一个句柄。
+- **大到放不进内存时的流式读取。** `readChunks` / `readChunksSync` 一次交出一条（见「光栅」），
+  `readPixels({ into })` 则写进你自己已经拥有的缓冲区 —— 不分配、不拷贝，正是瓦片循环想要的。
+  普通的窗口读只分配那个窗口，所以 `readPixels({ window })` 的开销本来就被窗口大小限定。
+
 ### 错误码
 
 同步失败会把 `err.code` 设成稳定的记号（`GDAL_CPL_FAILURE`、`GDAL_BAD_ARGUMENT`、
@@ -1311,6 +1354,11 @@ GDAL 的读取位置在图层上，所以同一图层同时只能有一个读取
 `setCategoryNames`，以及 `defaultHistogram` / `setDefaultHistogram`），与 `setStatistics()` 对齐。
 唯一的不对称是 `scale` 与 `offset` 没有“清除”：GDAL 的 setter 只收数字，所以 `0` 就是一个普通
 取值。
+
+图层的 CRS 只能在创建时设定：GDAL 的 C API 只暴露 `OGR_L_GetSpatialRef`，没有 setter —— C++ 的
+`OGRLayer::SetSpatialRef` 是 C 表面够不到的虚函数，而走图层定义的几何字段在定义被 seal 之后会被
+拒绝（GPKG 的回答是 `OGRGeomFieldDefn::SetSpatialRef() not allowed on a sealed object`）。所以
+CRS 在 `createLayer({ epsg })` / `{ wkt }` 时给出；事后 `setProjection` 能改的是数据集自己的 CRS。
 
 Intel macOS 与 32 位目标未构建。
 

@@ -25,7 +25,7 @@
 ### 需要正视的问题
 
 1. **分发方式不是主流。** 用户必须 `npm install <github release url>`，无法 `npm install gdal-rs-napi`，也没有版本范围/镜像/审计链。
-2. **文档与代码漂移。** `CHANGELOG.md` 的 Known gaps 仍写"geometries are not transformed"，但 `transformGeometry` 已实现且有测试通过。
+2. ~~**文档与代码漂移。**~~ 已修：`CHANGELOG.md` 的 Known gaps 逐条对过代码，`transformGeometry` 等既已实现就从缺口里移出；`__test__/types.test.mjs` 也从"对照硬编码清单"改成真正拿 `binding.d.ts` 与运行时互校，让声明漂移在测试里就失败（见 Phase 3）。
 3. ~~**`open` 失败信息丢失。**~~ 已修：加 `GDAL_OF_VERBOSE_ERROR` 后，失败会带上 GDAL 的原始原因（见 Phase 0）。
 4. **代码集中。** `dataset.rs` 2108 行、`band.rs` 1573、`vector.rs` 1382，审阅与扩展成本在上升。
 5. **musl 两个 leg 仍是 `experimental`**，`all_drivers` 的 vendored HDF5/netCDF/curl/libpq 是脆弱点。
@@ -114,10 +114,10 @@ MDArray、Node Streams、`calcAsync` 明确不做，记为设计取舍。
 > 目标：把"异步只解放事件循环"升级为"可预测的并行"。
 
 - [x] **削弱全局锁**：PoC 的结论是**前提已经过时** —— GDAL ≥3.10 的 last-error 是线程局部的（每线程一个 `CPLErrorContext`），`OGRSpatialReference` 的 PROJ context 来自 `OSRGetProjTLSContext()`，GEOS 则是每次调用一个 context。于是**无数据集**的调用（CRS / `CoordinateTransform`、几何 / GEOS、`gdal.fs`）改走共享锁、真正并发；数据集与进程级配置仍走独占（同一个 dataset 跨线程不安全，部分驱动本身也不安全）。实测 4 个并发 40 万点变换：**1.03x → 2.93x**。证据写进 `src/runtime.rs`，前提由 Rust 测试 `gdals_last_error_is_thread_local` 钉住，收益由 `scripts/bench-parallel.mjs` 量出。
-- [ ] **扩大 `openThreadSafe` 覆盖面**：现状限只读栅格；评估更多驱动与读路径。矢量的线程安全如实测不可行，就在文档里写死。（上一项 PoC 的补充结论：把**普通**数据集也放成并发，不能只靠"错误状态已解耦"就放开，得经 GDAL 的 `GDALGetThreadSafeDataset` 或逐驱动判断。）读路径本身已放宽一格：只读访问器（尺寸、geotransform、projection、元数据、band/overview 查询）与 `checksum` 都走共享锁，判据是"是否只查看已有状态、是否会让 GDAL 把算出来的结果存下"；实测 4 并发读中夹 39 轮访问器：**22.2 ms 串行 vs 8.1 ms 并发（2.75x）**。数据集之外的**模块级自省**（`version` / `info` / `diagnostics` / `lastError` / `epsgToWkt`、`geometry*`、`drivers()` / `driver(name)` 及其 `Driver` 方法）也已并到共享锁——它们本来就不含数据集；同一把锁上实测 146 轮自省：**空闲 79.5 ms vs 四个变换在飞时 90.7 ms（1.14x，若排队应为 2.34x）**。剩下的仍是写、矢量侧与 programs；唯一的例外读是 `config.get`，它必须留在独占侧——`CPLGetConfigOption` 返回指向配置表内部的指针并随即放手，并发的 `config.set` 会 use-after-free。
+- [x] **扩大 `openThreadSafe` 覆盖面**：现状限只读栅格；评估更多驱动与读路径。**结论：矢量线程安全不可行** —— GDAL 的 thread-safe dataset 只读且仅栅格，已写死在两个 README 与 CHANGELOG 里；只读访问器、`checksum`、`overview` 与模块级自省都走共享锁（见上一项 PoC 的补充结论：把**普通**数据集也放成并发，不能只靠"错误状态已解耦"就放开，得经 GDAL 的 `GDALGetThreadSafeDataset` 或逐驱动判断）。剩下的仍是写、矢量侧与 programs；唯一的例外读是 `config.get`，它必须留在独占侧。
 - [x] **零拷贝**：`readPixels` / `readAs` 的 options 增加 `into: Buffer`，GDAL 直接写进调用方内存（`GDALRasterIOEx`，传裸指针而不是 `&mut [T]`——JS 的 `Buffer` 不保证对齐），**不分配、不拷贝**；长度必须精确匹配，返回值就是传入的那个对象（同步与异步都是）。写路径拒绝 `into` 而不是忽略。跨距/子区域填充（gdal-async 的 `buffer_width`/`line_space`）**不做**：那要自己铺开 RasterIO 的行跨距，等真有需求再说。
 - [x] **基准进 CI**：`scripts/bench-parallel.mjs` 新增 `--min-speedup <x>`，门槛卡的是**比值**而不是绝对耗时 —— 四个不碰数据集的变换"一起发出 vs 一个个发"（共享侧约 3x，一旦挪回独占侧就掉到约 1x），同一台机器上两次测量的比值换台慢机器依然成立。CI 在 linux-x64-gnu 腿以 `--min-speedup 1.5` 跑（实测 3.0–3.6x，门槛留足余量），无论成败都**归档**整份输出：该次运行的 summary + `bench.log` artifact。顺带收敛 workflow：顶层 `permissions: contents: read`（只有 release job 自己申请 `contents: write`）、`concurrency` 取消同 ref 的旧运行（tag 除外）。
-- [ ] **资源语义**：句柄/文件描述符/内存的上限与释放路径文档化；大栅格的流式读取模式统一。
+- [x] **资源语义**：句柄 / 文件描述符 / 内存的上限与释放路径已写进两个 README 的「资源」小节（`close()` 幂等且执行 `GDALClose`、band/layer 只持句柄、`openThreadSafe` 每线程重开文件故需 `ulimit -n`、普通 `open` 一个句柄）；大栅格的流式读取统一到 `readChunks` / `readChunksSync` —— 之前只有同步版，现在补了异步孪生（走线程池、回调即背压），加上 `readPixels({ into })` 的零拷贝，三种形态的取舍写在同一处。
 
 **验收**：并发读吞吐随 `UV_THREADPOOL_SIZE` 线性增长的区间有实测数据支撑。
 
@@ -127,7 +127,7 @@ MDArray、Node Streams、`calcAsync` 明确不做，记为设计取舍。
 
 - [ ] **文档站**：typedoc 生成 API reference；README 拆分（快速开始 / 迁移 / FAQ）。
 - [ ] **教程**：COG 生成流水线、Serverless 冷启动实测、并行瓦片读取、坐标系踩坑。
-- [ ] **类型保障**：`binding.d.ts` 与运行时一致性测试（已有 `types.test.mjs`，扩展覆盖）。
+- [x] **类型保障**：`binding.d.ts` 与运行时一致性测试 —— `types.test.mjs` 已重写为**双向对照运行时**：模块级导出双向集合相等、每个类的方法与静态成员逐一核对、namespace 函数核对、异步成员按类与 `async-methods.js` 对齐（不再 flatten，错挂类也能抓）、并覆盖手写外壳（`gdal.const`、`FeatureCursor[Symbol.asyncIterator]`）。
 - [ ] **API 冻结**：确定稳定面，写弃用策略与 `CHANGELOG` 规范（Keep a Changelog + semver）。
 - [ ] **可选平台**：Intel macOS（`macos-13` leg）、Windows arm64；明确 32 位不支持。
 - [ ] **许可与供应链**：`SBOM`（GDAL/PROJ/OpenSSL/HDF5/netCDF/libpq 清单）、license 白名单校验、provenance。

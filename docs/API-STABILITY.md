@@ -183,5 +183,7 @@ exactly that reason.
 ## Changing this document
 
 These rules are meant to be checked, not admired. `__test__/types.test.mjs`
-already asserts that the generated declarations match what the runtime actually
-exposes; a rule added here that cannot be tested should say so explicitly.
+holds the generated declarations against the **runtime**, both ways — every
+declared module export and class member must exist, and every runtime one must be
+declared — and the async members are checked per class against `async-methods.js`.
+A rule added here that cannot be tested should say so explicitly.

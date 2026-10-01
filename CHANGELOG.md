@@ -6,6 +6,29 @@ First working cut — everything here is new.
 
 ### Binding
 
+- `RasterBand.readChunks(options, onChunk)` is the async twin of `readChunksSync`:
+  the same strip walk, run on the thread pool so a raster larger than memory does
+  not hold the event loop either. Each strip is handed to `onChunk` from the JS
+  thread, and the walk reads the next only once that call has come back — return
+  `false` to stop, exactly as the sync form does — resolving to the number of strips
+  handed out. The window is still checked before the first strip, which on this side
+  is a rejection rather than a throw. The callback runs on the JS thread while the
+  worker holds the process-wide GDAL lock, so, like `onProgress`, it must not call
+  back into this library.
+- `Dataset.copyLayer(sourceLayer, name, options?)` copies a whole layer — schema,
+  features and all — into this dataset under a new name: GDAL's
+  `GDALDatasetCopyLayer`, the way a layer moves between two datasets without
+  re-reading it feature by feature. The source has to be a **different** dataset; a
+  self-copy is refused with a message, because the two handles would have to be held
+  at once and GDAL's per-dataset mutex is not reentrant. `options` are GDAL's own
+  layer-creation options, as elsewhere.
+- `gdal.decToDMS(angle, axis, precision?)` renders a decimal degree as
+  degrees/minutes/seconds — `CPLDecToDMS`, the string `gdalinfo` prints. `axis` is
+  GDAL's own label (`'Lat'` / `'Long'`) and drives the hemisphere letter;
+  `precision` is the decimal places on the seconds, default 2.
+- `gdal.verbose()` / `gdal.quiet()` turn GDAL's own debug logging on and off —
+  `CPL_DEBUG=ON` / `OFF`, the switch `--debug` flips. They are process-global
+  configuration, so they take the exclusive side of the lock, as `config.set` does.
 - `RasterBand` gains the writers that go with its metadata getters:
   `setScale`, `setOffset`, `setUnitType`, `setDescription` and
   `setCategoryNames`. `GDALSetRasterScale` and `GDALSetRasterOffset` take a number
@@ -663,6 +686,14 @@ First working cut — everything here is new.
 
 ### Testing
 
+- `__test__/types.test.mjs` holds the generated `binding.d.ts` against the
+  **runtime** rather than against a hand-copied list: module-level exports are
+  compared both ways (a declaration nothing exports, or an export nothing declares,
+  fails), every class member — instance and static — is checked to exist on both
+  sides, each namespace's functions likewise, and the async members are compared per
+  class against `async-methods.js`, so a promise method filed under the wrong class
+  is caught where a flattened list would have missed it. `async-surface.test.mjs`
+  keeps the runtime half (the `err.code` lift and the cursor's `for await`).
 - `scripts/bench-parallel.mjs` measures the thread-safe path against the serialised
   one: the same concurrent workload, on real data, with the numbers and their
   spread printed. It measures a batch of reads with the read-only accessors asked
@@ -705,9 +736,13 @@ First working cut — everything here is new.
   `Error` carries only `code` and `cause`, and only the async path goes through the
   shell at all, so fields on every synchronous error would mean wrapping the whole
   exported surface. `docs/API-STABILITY.md` states the rule.
-- Histograms can be read and written (`histogram()`, `defaultHistogram()`,
-  `setDefaultHistogram()`), so the pair now matches `statistics()` /
-  `setStatistics()`.
+- A layer's CRS can be read but not changed after the layer exists. GDAL's C API
+  offers `OGR_L_GetSpatialRef` and no setter — the C++ `OGRLayer::SetSpatialRef` is
+  a virtual the C surface does not reach, and going through the layer definition's
+  geometry field is refused once the definition is sealed (GPKG answers
+  `OGRGeomFieldDefn::SetSpatialRef() not allowed on a sealed object`). So the CRS is
+  set where the layer is created: `createLayer({ epsg })` or `{ wkt }`. The dataset's
+  own CRS is still writable with `setProjection`.
 - `buildOverviews({ bands })` is passed through, but GTiff — the only writable
   overview driver compiled in — refuses anything short of every band.
 - No terrain algorithms beyond the ones `gdaldem` itself offers.
