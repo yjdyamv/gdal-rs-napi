@@ -938,8 +938,9 @@ raster.rasterizeSync([Geometry.fromWkt(box), geojsonBox], { burnValues: [1, 2] }
 predicates (`intersects`, `contains`, `within`, `crosses`, `touches`, `overlaps`,
 `disjoint`, `equals`), `distance`, `isValid` / `isSimple`, and the set algebra
 `buffer`, `centroid`, `convexHull`, `simplify`, `simplifyPreserveTopology`,
-`union`, `intersection`, `difference` and `symDifference`, plus `makeValid` and
-`boundary`:
+`union`, `intersection`, `difference` and `symDifference`; the repair and reshape
+`makeValid`, `boundary`, `pointOnSurface`, `unaryUnion`, `concaveHull`, `normalize`
+and `setPrecision`:
 
 ```js
 if (gdal.features().geos) {

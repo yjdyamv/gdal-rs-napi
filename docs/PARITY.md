@@ -39,6 +39,7 @@ Ordered by tier. Tier 1 is what this batch ships.
 | `band.hasArbitraryOverviews` | **parity** | same name |
 | `geometry.makeValid` / `boundary` / `simplifyPreserveTopology` / `isRing` | **parity** | same names (GEOS-gated where the reference is) |
 | `geometry.toGML` / `toKML` | **parity** | `toGML()` / `toKML(altitudeMode?)` |
+| `geometry.pointOnSurface` / `unaryUnion` / `concaveHull` / `normalize` / `setPrecision` | **parity** | same names, GEOS-gated (`OGR_G_RemoveRepeatedPoints` is not bound) |
 | `gdal.bundled` | **parity** | one boolean |
 
 ### Tier 2 — done

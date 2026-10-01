@@ -788,8 +788,9 @@ raster.rasterizeSync([Geometry.fromWkt(box), geojsonBox], { burnValues: [1, 2] }
 `Geometry` 也带上了 GDAL 通过 GEOS 实现的那些操作 —— 谓词（`intersects`、`contains`、
 `within`、`crosses`、`touches`、`overlaps`、`disjoint`、`equals`）、`distance`、
 `isValid` / `isSimple`，以及集合运算 `buffer`、`centroid`、`convexHull`、`simplify`、
-`simplifyPreserveTopology`、`union`、`intersection`、`difference`、`symDifference`，
-再加上 `makeValid` 与 `boundary`：
+`simplifyPreserveTopology`、`union`、`intersection`、`difference`、`symDifference`；
+修复与重塑的 `makeValid`、`boundary`、`pointOnSurface`、`unaryUnion`、`concaveHull`、
+`normalize`、`setPrecision`：
 
 ```js
 if (gdal.features().geos) {

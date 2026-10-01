@@ -39,6 +39,13 @@ First working cut — everything here is new.
   `isRing`, and the two XML encodings `toGML()` and `toKML(altitudeMode?)`. The
   first three are GEOS-gated and answer "this build has no GEOS" without it, as the
   rest do; `isRing`, `toGML` and `toKML` need no GEOS.
+- `Geometry` gains five more of the GEOS operations: `pointOnSurface()` — a point
+  guaranteed to lie *on* the shape, which `centroid` does not promise —
+  `unaryUnion()` (the union of a collection's own parts, with no second operand),
+  `concaveHull(ratio, allowHoles?)` (`convexHull`'s tighter cousin), `normalize()`
+  (the canonical form, so two geometries can be compared as written) and
+  `setPrecision(gridSize)` (snap to a grid). All GEOS-gated;
+  `OGR_G_RemoveRepeatedPoints` is the one geometry call the bindings do not carry.
 - `gdal.bundled` is the one-line answer to "is this self-contained": `true` for the
   bundled build that compiled GDAL and PROJ from source and linked them statically,
   `false` for one that linked a system GDAL. It is `gdal-async`'s `bundled`.
