@@ -819,6 +819,38 @@ impl JsRasterBand {
         })
     }
 
+    /// Write one metadata item on the band itself.
+    ///
+    /// The read side (`metadata()`) has been here all along; the write side was missing,
+    /// and the reference's own tests walk straight into the hole — they set a band's
+    /// metadata and read it back. `domain` defaults to GDAL's default domain.
+    #[napi]
+    pub fn set_metadata_item(
+        &self,
+        key: String,
+        value: String,
+        domain: Option<String>,
+    ) -> Result<()> {
+        let key = optional_c_string(Some(key), "a metadata key")?
+            .ok_or_else(|| bad_argument("a metadata item needs a key"))?;
+        let value = optional_c_string(Some(value), "a metadata value")?
+            .ok_or_else(|| bad_argument("a metadata item needs a value"))?;
+        let domain = optional_c_string(domain, "a metadata domain")?;
+        self.dataset.with_mut(|dataset| {
+            with_band(dataset, self.kind, |band| {
+                unsafe {
+                    gdal_sys::GDALSetMetadataItem(
+                        band.c_rasterband() as gdal_sys::GDALMajorObjectH,
+                        key.as_ptr(),
+                        value.as_ptr(),
+                        domain.as_ref().map_or(std::ptr::null(), |domain| domain.as_ptr()),
+                    );
+                }
+                Ok(())
+            })
+        })
+    }
+
     /// Whether this band cannot be written.
     ///
     /// A band has no access mode of its own, so this follows how its dataset was

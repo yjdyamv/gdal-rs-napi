@@ -1076,6 +1076,15 @@ Object.assign(RasterBand.prototype, {
   },
 
   /**
+   * The read side has always been here; the write side needed a binding addition
+   * (`RasterBand.setMetadataItem`, which the reference's tests use and this binding did
+   * not have), so this is the reference's name over a call that now exists.
+   */
+  setMetadata(values, domain) {
+    return setMetadata(this._native, values, domain)
+  },
+
+  /**
    * `computeStatistics(allowApproximation, force)` is **synchronous** in the reference,
    * with `computeStatisticsAsync` beside it — this class had the promise under the
    * plain name, which is a shape a port would trip over. Fixed here rather than left
@@ -1441,6 +1450,51 @@ Object.assign(Feature.prototype, {
     this.geometry = geometry
   },
 })
+
+// The operations that build a new geometry have to be re-wrapped, because the adapter's
+// own classes are **not** in the native chain: `wrapGeometry` is applied at the
+// factories, so a result that came out of an operation would be tagged as the main
+// entry point's class rather than this layer's — `buffer(1) instanceof gdal.Polygon`
+// was false, and only `fromWKT(...)` was true. One list, the same one the main entry
+// point re-tags, so the two layers agree about which shapes exist.
+const maybeWrapGeometry = (value) =>
+  Array.isArray(value) ? value.map(wrapGeometry) : wrapGeometry(value)
+
+for (const name of [
+  'boundary',
+  'buffer',
+  'centroid',
+  'children',
+  'clone',
+  'concaveHull',
+  'convexHull',
+  'difference',
+  'flattenTo2D',
+  'intersection',
+  'makeValid',
+  'normalize',
+  'pointOnSurface',
+  'segmentize',
+  'setPrecision',
+  'simplify',
+  'simplifyPreserveTopology',
+  'swapXY',
+  'symDifference',
+  'transform',
+  'unaryUnion',
+  'union',
+  'unionCascaded',
+]) {
+  const original = nativeGeometry[name]
+  if (typeof original !== 'function') continue
+  Object.defineProperty(Geometry.prototype, name, {
+    configurable: true,
+    writable: true,
+    value(...args) {
+      return maybeWrapGeometry(original.apply(this, args))
+    },
+  })
+}
 
 let driversCollection = null
 

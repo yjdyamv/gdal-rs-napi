@@ -251,16 +251,12 @@ test('geometries carry the class family and gdal-async method names', () => {
   assert.ok(polygon instanceof gdal.Polygon)
   assert.equal(polygon.getArea(), 16)
   assert.equal(polygon.getLength(), 16)
-  assert.deepEqual(polygon.getEnvelope(), {
-    minX: 0,
-    minY: 0,
-    maxX: 4,
-    maxY: 4,
-    minx: 0,
-    miny: 0,
-    maxx: 4,
-    maxy: 4,
-  })
+  // An `Envelope` object, which is the reference's shape for this — the native call
+  // underneath answers a plain bounds object, and the adapter is what turns it into a
+  // class with the reference's rules for merging and intersecting.
+  const envelope = polygon.getEnvelope()
+  assert.ok(envelope instanceof gdal.Envelope)
+  assert.deepEqual([envelope.minX, envelope.minY, envelope.maxX, envelope.maxY], [0, 0, 4, 4])
 
   // A Multi* gets its own class, and the base class is what a plain geometry is.
   assert.ok(gdal.fromJSON({ type: 'MultiPoint', coordinates: [[0, 0]] }) instanceof gdal.MultiPoint)

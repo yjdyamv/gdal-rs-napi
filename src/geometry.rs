@@ -768,6 +768,17 @@ impl JsGeometry {
         unsafe { adopt(gdal_sys::OGR_G_UnaryUnion(self.handle())) }
     }
 
+    /// The union of every polygon in this geometry — OGR's `UnionCascaded`, which is
+    /// what a `MULTIPOLYGON` wants and is cheaper than folding `union()` over the parts.
+    /// The reference exposes it under this name. Needs GEOS.
+    #[napi]
+    pub fn union_cascaded(&self) -> Result<JsGeometry> {
+        require_geos()?;
+        ensure_initialized();
+        let _guard = lock_gdal_shared();
+        unsafe { adopt(gdal_sys::OGR_G_UnionCascaded(self.handle())) }
+    }
+
     /// A concave hull around the geometry: the tight shape `convexHull` is too
     /// generous to be. `ratio` runs from 0 (tightest) to 1 (the convex hull);
     /// `allowHoles` defaults to false. Needs GEOS.

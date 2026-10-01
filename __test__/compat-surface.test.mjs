@@ -116,9 +116,10 @@ test('metadata, statistics and the mask answer under the reference\'s names', as
 
   const band = writable.bands.get(1)
   assert.deepEqual(band.getMetadata(), band._native.metadata())
-  // Writing *band* metadata is a gap in the main entry point rather than in this
-  // adapter — the binding has no `RasterBand.setMetadataItem` — so it is not claimed
-  // here. The dataset and layer halves both write.
+  // Writing band metadata needed a binding addition — `RasterBand.setMetadataItem` is
+  // one of the holes the reference's own tests found, and it is closed now.
+  assert.equal(band.setMetadata({ BAND: 'yes' }), true)
+  assert.equal(band.getMetadata().BAND, 'yes')
 
   // `computeStatistics(allowApproximation, force)` — two booleans for one options object.
   const statistics = band.computeStatistics(false, true)
@@ -298,6 +299,15 @@ test('a feature answers getGeometry and setGeometry', () => {
   feature.setGeometry(gdal.fromWKT('POINT (9 9)'))
   assert.equal(feature.getGeometry().toWKT(), 'POINT (9 9)')
   dataset.close()
+})
+
+test('unionCascaded is the native operation under the reference\'s name', () => {
+  // Two squares sharing an edge: cascaded union merges them into one polygon where
+  // folding `union()` over the parts would have to be written out by hand.
+  const geometry = gdal.fromWKT('MULTIPOLYGON (((0 0, 1 0, 1 1, 0 1, 0 0)), ((1 0, 2 0, 2 1, 1 1, 1 0)))')
+  const merged = geometry.unionCascaded()
+  assert.ok(merged instanceof gdal.Polygon)
+  assert.ok(Math.abs(merged.area() - 2) < 1e-9, `area ${merged.area()}`)
 })
 
 test('the numeric vocabularies come from the headers this build links', () => {
