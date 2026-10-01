@@ -286,7 +286,11 @@ pub struct FeatureSupport {
     /// The multidimensional data model (`MDArray`, `Group`, `Attribute`,
     /// `Dimension`). Not implemented, so always `false`.
     pub multidimensional: bool,
-    /// Node.js `Stream`s over raster data. Not implemented, so always `false`.
+    /// Node.js `Stream`s over raster data — `band.createReadStream()` and
+    /// `band.createWriteStream()`. They are built in the JavaScript shell
+    /// (`index.js`) over the chunked reads, because napi cannot hand back a Node
+    /// `Readable`/`Writable` from a `#[napi]` class; they are part of the shipped
+    /// surface all the same, so this is `true`.
     pub streams: bool,
 }
 
@@ -297,7 +301,7 @@ pub fn features() -> FeatureSupport {
         geos: gdal::version::VersionInfo::has_geos(),
         thread_safe: cfg!(gd_thread_safe),
         multidimensional: false,
-        streams: false,
+        streams: true,
     }
 }
 

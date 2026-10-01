@@ -132,4 +132,26 @@ declare module './binding' {
   interface FeatureCursor {
     [Symbol.asyncIterator](): AsyncIterator<FeatureRecord>
   }
+
+  /**
+   * Raster streams, also added by the shell — napi cannot hand back a Node
+   * `Readable` or `Writable` from a `#[napi]` class either. Reading yields the band's
+   * own bytes a strip at a time; writing consumes them the same way.
+   */
+  interface RasterBand {
+    createReadStream(options?: RasterStreamOptions): import('node:stream').Readable
+    createWriteStream(options?: RasterStreamOptions): import('node:stream').Writable
+  }
+}
+
+/**
+ * The window and strip a raster stream works on. Every field is optional: the whole
+ * band, in strips the height of its own block.
+ */
+export interface RasterStreamOptions {
+  x?: number
+  y?: number
+  width?: number
+  height?: number
+  rows?: number
 }

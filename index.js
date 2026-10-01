@@ -185,4 +185,95 @@ binding.FeatureCursor.prototype[Symbol.asyncIterator] = async function* () {
   }
 }
 
+// Raster streams. napi cannot hand back a Node `Readable` or `Writable` from a
+// `#[napi]` class, so — like the cursor's iterator above — they are built here over
+// the native reads and writes. A chunk is the band's own bytes; `rows` is the strip
+// size and defaults to the band's block height, the strip GDAL reads anyway.
+const { Readable, Writable } = require('node:stream')
+
+/** The window and strip a raster stream works on: the whole band by default. */
+function rasterStreamWindow(band, options) {
+  const [bandWidth, bandHeight] = band.size
+  const [, blockHeight] = band.blockSize
+  const x = options.x ?? 0
+  const y = options.y ?? 0
+  const width = options.width ?? bandWidth - x
+  const height = options.height ?? bandHeight - y
+  const rows = options.rows ?? blockHeight
+  return { x, y, width, height, rows }
+}
+
+binding.RasterBand.prototype.createReadStream = function createReadStream(options = {}) {
+  const band = this
+  const { x, y, width, height, rows } = rasterStreamWindow(band, options)
+  let next = y
+  return new Readable({
+    read() {
+      if (next >= y + height) {
+        this.push(null)
+        return
+      }
+      const strip = Math.min(rows, y + height - next)
+      try {
+        this.push(band.readValues(x, next, width, strip))
+      } catch (error) {
+        this.destroy(error)
+        return
+      }
+      next += strip
+    },
+  })
+}
+
+binding.RasterBand.prototype.createWriteStream = function createWriteStream(options = {}) {
+  const band = this
+  const { x, y, width, height, rows } = rasterStreamWindow(band, options)
+  const rowBytes = width * binding.bytesPerSample(band.dataType)
+  if (!(rowBytes > 0) || !(rows > 0)) {
+    throw new Error('a raster write stream needs a width and a strip of at least one row')
+  }
+  const stripBytes = rowBytes * rows
+  let pending = Buffer.alloc(0)
+  let next = y
+  return new Writable({
+    write(chunk, _encoding, callback) {
+      try {
+        pending = pending.length === 0 ? Buffer.from(chunk) : Buffer.concat([pending, chunk])
+        while (pending.length >= stripBytes && next < y + height) {
+          const strip = Math.min(rows, y + height - next)
+          const bytes = rowBytes * strip
+          band.writeValues(x, next, width, strip, pending.subarray(0, bytes))
+          pending = pending.subarray(bytes)
+          next += strip
+        }
+        if (pending.length > 0 && next >= y + height) {
+          // The window is full: anything left would be dropped, so it is refused.
+          callback(new Error('a raster write stream cannot write past its window'))
+          return
+        }
+        callback()
+      } catch (error) {
+        callback(error)
+      }
+    },
+    final(callback) {
+      try {
+        if (pending.length > 0) {
+          if (pending.length % rowBytes !== 0) {
+            throw new Error(
+              `a raster stream writes whole rows: ${pending.length} bytes left over for rows of ${rowBytes}`,
+            )
+          }
+          const strip = pending.length / rowBytes
+          band.writeValues(x, next, width, strip, pending)
+          next += strip
+        }
+        callback()
+      } catch (error) {
+        callback(error)
+      }
+    },
+  })
+}
+
 module.exports = binding

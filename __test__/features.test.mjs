@@ -15,7 +15,11 @@ test('apiVersion names the binding, and features() probes what it can do', () =>
   assert.equal(features.geos, gdal.diagnostics().geosAvailable)
   assert.equal(typeof features.threadSafe, 'boolean')
 
-  // The two that are deliberately absent, and are reported rather than missing.
+  // `multidimensional` is the one deliberately absent, and is reported rather than
+  // missing.
   assert.equal(features.multidimensional, false)
-  assert.equal(features.streams, false)
+  // Raster streams are in — built in the JavaScript shell, but part of the surface.
+  assert.equal(features.streams, true)
+  assert.equal(typeof gdal.RasterBand.prototype.createReadStream, 'function')
+  assert.equal(typeof gdal.RasterBand.prototype.createWriteStream, 'function')
 })

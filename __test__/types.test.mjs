@@ -20,6 +20,15 @@ const SHELL_ADDITIONS = new Set(['const'])
 /** `Function`'s own properties, which are not members anyone declares. */
 const FUNCTION_BUILTINS = new Set(['length', 'name', 'arguments', 'caller', 'prototype'])
 
+/**
+ * Class members the JavaScript shell adds, which `binding.d.ts` therefore does not
+ * declare — they are declared in the hand-written `index.d.ts` instead, and checked
+ * by the shell test below.
+ */
+const SHELL_MEMBERS = new Map([
+  ['RasterBand', new Set(['createReadStream', 'createWriteStream'])],
+])
+
 const sorted = (names) => [...names].sort()
 
 /**
@@ -124,8 +133,11 @@ test('every class member the binding declares exists at runtime, and the reverse
     const klass = gdal[name]
     assert.equal(typeof klass, 'function', `${name} is exported and callable`)
 
+    const shell = SHELL_MEMBERS.get(name) ?? new Set()
     const actualInstance = sorted(
-      Object.getOwnPropertyNames(klass.prototype).filter((member) => member !== 'constructor'),
+      Object.getOwnPropertyNames(klass.prototype).filter(
+        (member) => member !== 'constructor' && !shell.has(member),
+      ),
     )
     const actualStatic = sorted(
       Object.getOwnPropertyNames(klass).filter((member) => !FUNCTION_BUILTINS.has(member)),
@@ -200,4 +212,17 @@ test('the hand-written shell is reflected at runtime and declared too', () => {
   const index = readFileSync(new URL('../index.d.ts', import.meta.url), 'utf8')
   assert.match(index, /as const/)
   assert.match(index, /Symbol\.asyncIterator/)
+
+  // The shell's own prototype members, checked both ways: present at runtime, and
+  // declared here rather than in the generated file.
+  for (const [className, members] of SHELL_MEMBERS) {
+    for (const member of members) {
+      assert.equal(
+        typeof gdal[className].prototype[member],
+        'function',
+        `${className}.${member} is a function`,
+      )
+      assert.ok(index.includes(member), `${className}.${member} is declared in index.d.ts`)
+    }
+  }
 })
