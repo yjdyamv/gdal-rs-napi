@@ -217,6 +217,43 @@ These are **decisions, not omissions**.
 
 ---
 
+### How much of it the `compat` layer answers, measured
+
+`compat` was written from the reference's documentation, so its coverage of what its
+users *actually do* was an assumption. `scripts/compat-coverage.mjs` replaces the
+assumption with a count: it reads the reference's own ~60 TypeScript test files, extracts
+every `gdal.<name>` they use, and reports which of those `compat` answers.
+
+```sh
+node scripts/compat-coverage.mjs /path/to/node-gdal-async
+# [coverage] gdal.*: 64 answered, 72 missing
+```
+
+The largest single item that run found was not a name but a *usage*:
+`assert.instanceOf(dataset, gdal.Dataset)` appears 262 times across the suite, and an
+adapter whose objects are instances of nothing *named* fails every one of them. `compat`
+now exports the classes it was already building objects from (`Dataset`, `RasterBand`,
+`Layer`, `Feature`, the collections, `RasterBandPixels`, `Driver`), plus the re-exports
+whose shape was never in doubt (`config`, `fs`, `info` / `infoAsync`, `toDataType` /
+`fromDataType`, the pixel functions, `calcAsync`, the stream classes) — 64 answered,
+against 35 before.
+
+The 72 left are four families rather than 72 unknowns:
+
+| family | what the tests use | what closing it needs |
+|---|---|---|
+| **Numeric constant tables** | `OFTString` (39), `OFTInteger` (18), `wkbPoint` (16), `GRA_Bilinear`, `GCI_RedBand`, `OLCCreateField`, `ODrCCreateDataSource`, `DIM_TEMPORAL`, `CPLE_*` … | the values, taken from `gdal_sys` — never written out by hand |
+| **`vsimem`** | `gdal.vsimem.set` / `.release` / `.copy` … (81 uses) | the reference's memory-FS object, over the `fs` calls that already exist |
+| **The programs as module functions** | `translate`, `warp`, `dem`, `buildVRT`, `rasterize`, `polygonize`, `sieveFilter`, `fillNodata`, `checksumImage`, `reprojectImage`, `suggestedWarpOutput`, `contourGenerate` and their `…Async` forms | their signatures are **objects** (`gdal.polygonize({ … })`), not this binding's argument lists — each has to be read, not renamed |
+| **Classes and capabilities we do not have** | `FieldDefn` (68), `Envelope` (28), `Envelope3D` (25), `ColorTable` (9), `FeatureDefn` (7), and the curve geometries (`CircularString`, `CompoundCurve`, `SimpleCurve`, `MultiCurve` — 47 uses) | real work: the definitions exist natively but are not objects here, and the curves are not in the binding at all |
+
+The member-level report the same run prints (153 names) is a **lead, not a measurement** —
+a bare `.name` cannot say which class it was reached on, so the suite's own helpers and
+any gdal-ish local land in it too. It is still how a whole family of forgotten accessors
+shows up: `points` (359 uses), `rings` (59), `children` (20) and the
+`SpatialReference.from*` statics are all reachable in this binding and were missing from
+the adapter.
+
 ## 3. Conventions map (so a port knows what to change)
 
 | concern | `gdal-async` | here |

@@ -6,6 +6,26 @@ First working cut — everything here is new.
 
 ### Binding
 
+- **`compat` grew the names `gdal-async`'s own test suite reaches for**, and the list is
+  derived rather than guessed: `scripts/compat-coverage.mjs` reads the reference's ~60
+  TypeScript test files and reports every `gdal.<name>` they use that the adapter does
+  not answer. The largest item it found was not a name but a *usage* —
+  `assert.instanceOf(dataset, gdal.Dataset)` appears 262 times, and an object that is an
+  instance of nothing *named* fails every one of them — so the classes `compat` was
+  already building objects from are now exported under the reference's names
+  (`Dataset`, `RasterBand`, `Layer`, `Feature`, `FeatureFields`, `LayerFeatures`,
+  `LayerFields`, `DatasetBands`, `DatasetLayers`, `RasterBandPixels`,
+  `RasterBandOverviews`, `GDALDrivers`, `Driver`), beside the re-exports whose shape was
+  never in doubt (`config`, `fs`, `info` / `infoAsync`, `toDataType` / `fromDataType`,
+  the pixel functions, `calcAsync`, `RasterMuxStream` / `RasterTransform`, and
+  `eventLoopWarning` in both directions).
+  `CoordinateTransformation` is the one that is new rather than renamed, and its shapes
+  were read off the reference's tests rather than assumed: `transformPoint` takes either
+  an `{ x, y }` object or `x, y, z` arguments and answers `{ x, y, z }`, and
+  `transformGeometry` answers a geometry object where the call it wraps answers GeoJSON.
+  Module-level coverage of that suite: **35 → 64 names**, with the remaining 72
+  categorized in `docs/PARITY.md` (numeric constant tables, `vsimem`, the programs as
+  module functions, and the classes this binding does not have — curves included).
 - **A dataset operation no longer holds up every other dataset.** The process-wide
   `RwLock` now takes its *write* side for **process-global state only** — driver
   registration and `configureDataPaths`, `config`, writes through `gdal.fs`, the

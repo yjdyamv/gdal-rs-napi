@@ -984,6 +984,36 @@ function openAsync(...args) {
   )
 }
 
+/**
+ * gdal-async's `CoordinateTransformation`: built from two `SpatialReference`s and
+ * asked for a point or a geometry.
+ *
+ * Two words against the main entry point's one — `CoordinateTransform` — and this is
+ * the layer where the reference's names live, so both are reachable; the work is the
+ * same native transform underneath. The *shapes* are the reference's, read off its own
+ * tests rather than guessed: `transformPoint` takes either an `{ x, y }` object or
+ * `x, y, z` arguments and answers `{ x, y, z }`, and `transformGeometry` answers a
+ * geometry object, where the call it wraps answers GeoJSON.
+ */
+class CoordinateTransformation {
+  constructor(source, target) {
+    if (!(source instanceof SpatialReference) || !(target instanceof SpatialReference)) {
+      throw new TypeError('a CoordinateTransformation needs two SpatialReference objects')
+    }
+    this._native = new native.CoordinateTransform(source._srs, target._srs)
+  }
+
+  transformPoint(x, y, z) {
+    const point = typeof x === 'object' && x !== null ? x : { x, y, z }
+    const [tx, ty, tz] = this._native.transformPoint(point.x, point.y)
+    return { x: tx, y: ty, z: tz }
+  }
+
+  transformGeometry(geometry) {
+    return wrapGeometry(native.Geometry.fromJson(this._native.transformGeometry(unwrapGeometry(geometry))))
+  }
+}
+
 let driversCollection = null
 
 const Gdal = {
@@ -1049,6 +1079,63 @@ const Gdal = {
   geometryFromWKT: geometryFactories.fromWKT,
   geometryFromWKB: geometryFactories.fromWKB,
   geometryFromJSON: geometryFactories.fromJSON,
+
+  // ---- what the reference's own test suite reaches for -------------------------
+  //
+  // Derived, not guessed: `scripts/compat-coverage.mjs` reads gdal-async's ~60 test
+  // files and reports every `gdal.<name>` they use that this module does not answer.
+  // The class constructors are the half that matters most, because
+  // `assert.instanceOf(dataset, gdal.Dataset)` is how those tests ask "did I get the
+  // right kind of thing" — 262 times across the suite — and an adapter whose objects
+  // are not instances of anything *named* fails every one of them. These are the
+  // classes this module already builds objects from, exported under the reference's
+  // names; the collections and the pixel object are renamed rather than new.
+  Dataset,
+  RasterBand,
+  Layer,
+  Feature,
+  FeatureFields,
+  LayerFeatures,
+  LayerFields: FieldCollection,
+  DatasetBands: RasterBandCollection,
+  DatasetLayers: LayerCollection,
+  RasterBandPixels: BandPixels,
+  RasterBandOverviews: OverviewCollection,
+  GDALDrivers: DriverCollection,
+  /** `dataset.driver` is the native object here rather than a wrapper, so this is it. */
+  Driver: native.Driver,
+  CoordinateTransformation,
+
+  // Re-exports: the main entry point already answers these, under its own name or the
+  // same one. Nothing is reimplemented here.
+  config: native.config,
+  fs: native.fs,
+  info: () => native.info(),
+  infoAsync: () => native.infoAsync(),
+  toDataType: (value) => native.toDataType(value),
+  fromDataType: (value) => native.fromDataType(value),
+  wrapVRT: (descriptor) => native.wrapVRT(descriptor),
+  addPixelFunc: (name, fn) => native.addPixelFunc(name, fn),
+  toPixelFunc: (fn) => native.toPixelFunc(fn),
+  createPixelFunc: (fn) => native.createPixelFunc(fn),
+  createPixelFuncWithArgs: (fn) => native.createPixelFuncWithArgs(fn),
+  calcAsync: (inputs, output, fn, options) => native.calcAsync(inputs, output, fn, options),
+  RasterMuxStream: native.RasterMuxStream,
+  RasterTransform: native.RasterTransform,
+
+  /** Whether this build is self-contained — the same answer as `bundled` there. */
+  get bundled() {
+    return native.bundled
+  },
+
+  /** The blocking-call warning, forwarded in both directions. */
+  get eventLoopWarning() {
+    return native.eventLoopWarning
+  },
+
+  set eventLoopWarning(value) {
+    native.eventLoopWarning = value
+  },
 }
 
 module.exports = Gdal

@@ -109,7 +109,12 @@ per-dataset queue leaves implicit.
   adapter for a port that wants `gdal-async`'s spelling, and the main entry point now
   takes the reference's containers and geometry classes as well. A migration can be one
   `require` change, or a slow one-file-at-a-time rewrite, and both land on the same
-  native implementation.
+  native implementation. How much of the reference the adapter answers is **counted**
+  rather than claimed: `scripts/compat-coverage.mjs` reads gdal-async's own ~60 test
+  files and reports every `gdal.<name>` they use — 64 of 136 as of this writing, with the
+  remainder grouped into four families in [`PARITY.md`](./PARITY.md). Reading their suite
+  is also what turned up the biggest single usage pattern, `assert.instanceOf(dataset,
+  gdal.Dataset)` (262 times), which is the kind of thing documentation does not tell you.
 
 ## 5. Weaknesses, honestly
 
