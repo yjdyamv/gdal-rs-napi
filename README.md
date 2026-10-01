@@ -202,6 +202,13 @@ drivers like COG that implement it and not `Create`:
 gdal.driver('COG').createCopySync('out.tif', source, { COMPRESS: 'DEFLATE' })
 ```
 
+`Driver.delete(path)`, `rename(newName, oldName)` and `copyFiles(newName, oldName)`
+are the driver's own file operations: `delete` removes what GDAL considers the dataset
+(several files for a shapefile, one for a GeoPackage), and `rename` / `copyFiles` move
+them — **new name first**, as GDAL's C API spells it. GDAL's `rename` / `copyFiles`
+open the source as a *raster*, so a vector-only dataset (a bare `.gpkg`) is not
+recognized; that is GDAL's answer, not a restriction added here.
+
 ## Files — memory, and the virtual file system
 
 Every GDAL path already goes through a virtual file system, and `gdal.fs` is the
@@ -225,6 +232,7 @@ gdal.fs.rename('/vsimem/a.tif', '/vsimem/b.tif')
 gdal.fs.copyFile('/vsimem/b.tif', '/tmp/b.tif')
 gdal.fs.rmdirRecursive('/vsimem/out')           // rm -rf
 gdal.fs.isLocal('/vsicurl/https://host/a.tif')  // false
+gdal.fs.clearCurlCache()                        // drop what /vsicurl/ has fetched
 ```
 
 These are synchronous, and deliberately so: every call is a memory copy or a local

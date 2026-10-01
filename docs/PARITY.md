@@ -41,21 +41,28 @@ Ordered by tier. Tier 1 is what this batch ships.
 | `geometry.toGML` / `toKML` | **parity** | `toGML()` / `toKML(altitudeMode?)` |
 | `gdal.bundled` | **parity** | one boolean |
 
-### Tier 2 — the CRS extras shipped; the rest open
+### Tier 2 — done
 
-The `SpatialReference` extras are done: `fromESRI`, `morphToESRI` / `morphFromESRI`,
-`toXML`, `validate`, `cloneGeogCS`, `setWellKnownGeogCS`, `epsgTreatsAsLatLong`.
-`fromURN` and `fromUserInput` need nothing of their own — `SpatialRef.fromDefinition`
-already routes through `OSRSetFromUserInput`, which takes a URN, an `AUTH:CODE`, WKT
-and PROJJSON alike.
+The `SpatialReference` extras: `fromESRI`, `morphToESRI` / `morphFromESRI`, `toXML`,
+`validate`, `cloneGeogCS`, `setWellKnownGeogCS`, `epsgTreatsAsLatLong`. And
+`Driver.rename` / `Driver.copyFiles` (`GDALRenameDataset` / `GDALCopyDatasetFiles`),
+plus `gdal.fs.clearCurlCache()`.
 
-Still open:
+Three of the reference's items need nothing of their own, and are recorded here rather
+than filled with a second door:
 
-| `gdal-async` | note |
-|---|---|
-| `gdal.fs`: `vsimem.set` / `release`, `clearCurlCache` | `clearCurlCache` is a one-liner (`VSICurlClearCache`); the `vsimem` pair is not — `VSIFileFromMemBuffer` wants to take ownership of a `CPLMalloc`'d buffer, which a napi `Buffer` is not, so it needs a copy and a lifetime decision first |
-| `wrapVRT` | wraps a source as an in-memory VRT; `buildVrt` covers the file case today |
-| `Driver.copyFiles` / `rename` | `GDALRenameDataset` is bound and `rename` is a small add; `GDALCopyFiles` is **not** in the generated bindings, so `copyFiles` would need its own declaration |
+- **`fromURN` / `fromUserInput`** — `SpatialRef.fromDefinition` already routes through
+  `OSRSetFromUserInput`, which takes a URN, an `AUTH:CODE`, WKT and PROJJSON alike.
+- **`wrapVRT`** — `translate(dest, ['-of', 'VRT'])`, or the method form on an open
+  dataset (`dataset.translateSync('', ['-of', 'VRT'])`), already wraps a source as an
+  in-memory VRT. The `translate` program is the general door.
+- **`fs.vsimem.set` / `release`** — `fs.writeFile('/vsimem/…', bytes)` and `fs.unlink`
+  express both. What the reference's `set` adds is a zero-copy wrap of the caller's
+  buffer, which a napi `Buffer` cannot offer — it is not memory GDAL may take
+  ownership of — so a copy is the price, and `writeFile` already pays it.
+
+One caveat GDAL hands down rather than us: `rename` / `copyFiles` open the source as a
+**raster**, so a vector-only dataset (a bare `.gpkg`) is not recognized.
 
 ### Tier 3 — needs a decision first (shape forks)
 

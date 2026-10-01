@@ -6,6 +6,13 @@ First working cut — everything here is new.
 
 ### Binding
 
+- `Driver` gains `rename` and `copyFiles` — `GDALRenameDataset` and
+  `GDALCopyDatasetFiles`, the driver's own multi-file operations (a shapefile is
+  several files, a GeoPackage is one). Both take the **new** name first. One caveat
+  GDAL hands down rather than us: its default implementation opens the source as a
+  *raster*, so a vector-only dataset (a bare `.gpkg`) is not recognized.
+- `gdal.fs.clearCurlCache()` drops the cache GDAL keeps of what it has already fetched
+  from `/vsicurl/`, `/vsiaz/` and the rest — a no-op when nothing was fetched.
 - `SpatialRef` gains the serializers and morphs `gdal-async` has: `fromESRI` (the
   `.prj` dialect ArcGIS writes), `morphToESRI()` / `morphFromESRI()`, `toXML()`,
   `validate()`, `cloneGeogCS()`, `setWellKnownGeogCS(name)` and the

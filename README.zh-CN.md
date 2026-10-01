@@ -171,6 +171,12 @@ gdal.driver('GeoJSON').openSync('features.geojson')          // 同一种限定
 gdal.driver('COG').createCopySync('out.tif', source, { COMPRESS: 'DEFLATE' })
 ```
 
+`Driver.delete(path)`、`rename(newName, oldName)` 和 `copyFiles(newName, oldName)` 是驱动自己的
+文件操作：`delete` 删掉 GDAL 认为属于该数据集的东西（Shapefile 是多个文件，GeoPackage 是一个），
+`rename` / `copyFiles` 把它们搬走，**新名字在前**（GDAL C API 的顺序）。GDAL 的
+`rename` / `copyFiles` 会把源当作**栅格**打开，所以纯矢量的数据集（一个裸 `.gpkg`）认不出来 ——
+那是 GDAL 的答案，不是这里加的规则。
+
 ## 文件 —— 内存与虚拟文件系统
 
 GDAL 的每个路径本来就走一层虚拟文件系统，`gdal.fs` 就是够到它的那几个 `VSI*` 调用：
@@ -194,6 +200,7 @@ gdal.fs.rename('/vsimem/a.tif', '/vsimem/b.tif')
 gdal.fs.copyFile('/vsimem/b.tif', '/tmp/b.tif')
 gdal.fs.rmdirRecursive('/vsimem/out')           // 相当于 rm -rf
 gdal.fs.isLocal('/vsicurl/https://host/a.tif')  // false
+gdal.fs.clearCurlCache()                        // 丢掉 /vsicurl/ 已抓取的内容
 ```
 
 这一组是同步的，而且是刻意的：每次调用要么是内存拷贝，要么是本地系统调用。例外是
