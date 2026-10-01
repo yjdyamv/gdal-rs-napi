@@ -392,7 +392,7 @@ compat 层用测试锁住形状即可。它的价值是——**让 `gdal-async` 
 后面时会只拿到尾部（gdal crate 的 `FeatureIterator` 只在 drop 时倒带）——现在它们**先倒带**，
 "整层读取"名副其实；读完仍把位置留在末尾（位置只有一个），之后那个游标会从头接着读。
 
-**WS-4 · 异步人体工学** —— 🟡 部分完成
+**WS-4 · 异步人体工学** —— ✅ 已完成（下面标 ❌ 的都是**已定案的非目标**）
 - ✅ `FeatureCursor` 的 `Symbol.asyncIterator`：napi 给不了生成类这个属性（`AsyncGenerator`
   够不到，见 CHANGELOG），所以由**外壳**（`index.js`）加上，读的仍是同一个 `read()`，
   以空批次为终点 —— 两种读法不可能不一致。`Dataset.bands/layers` 的异步迭代**不做**：
