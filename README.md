@@ -731,6 +731,13 @@ Worth knowing:
 - **`fromDefinition` takes anything** `gdalinfo` would accept as a CRS:
   `EPSG:4326`, a WKT string, PROJJSON, or a PROJ string. `fromEpsg`, `fromWkt` and
   `fromProj4` are the specific doors.
+- **A CRS has more than one spelling.** `fromESRI` reads ESRI's `.prj` dialect,
+  `toXML()` is a third serialization beside `wkt` and `projJson`, `validate()` says
+  whether the definition hangs together, `cloneGeogCS()` is the WGS 84 (or NAD27, …)
+  underneath a projected CRS, `morphToESRI()` / `morphFromESRI()` convert it to and
+  from ESRI's dialect in place, and `setWellKnownGeogCS(name)` resets its geographic
+  component. `epsgTreatsAsLatLong` is the order the *EPSG authority* reads it in —
+  separate from `axisMapping`, which is the order in force here.
 - **`equals` compares the definitions, not the spelling**: two differently written
   WKTs for WGS 84 are equal.
 - **`identifyEpsg` returns a promise** because it searches the CRS database. A

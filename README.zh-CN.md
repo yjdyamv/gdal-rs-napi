@@ -609,6 +609,11 @@ GDAL 3 把 `EPSG:4326` 读作 **纬度,经度**，而调用本身完全看不出
 
 - **`fromDefinition` 什么都能收** —— 凡是 `gdalinfo` 认的 CRS 描述都行：`EPSG:4326`、WKT 字符串、
   PROJJSON、PROJ 串。`fromEpsg` / `fromWkt` / `fromProj4` 只是更明确的入口。
+- **一个 CRS 有多种写法。** `fromESRI` 读 ESRI 的 `.prj` 方言；`toXML()` 是除 `wkt` 与
+  `projJson` 之外的第三种序列化；`validate()` 判断定义本身是否自洽；`cloneGeogCS()` 是投影 CRS
+  底下那个地理 CRS（WGS 84、NAD27……）；`morphToESRI()` / `morphFromESRI()` 在原地与 ESRI 方言
+  互转；`setWellKnownGeogCS(name)` 重置它的地理分量。`epsgTreatsAsLatLong` 是 **EPSG 权威**读它
+  的顺序 —— 与 `axisMapping`（本绑定实际采用的顺序）是两回事。
 - **`equals` 比较的是定义本身，不是写法**：同一个 WGS 84 的两种 WKT 写法相等。
 - **`identifyEpsg` 返回 Promise**，因为它要查 CRS 数据库。无法解析的描述会抛错；
   能解析但匹配不到的返回 `null`。

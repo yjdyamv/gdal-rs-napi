@@ -6,6 +6,13 @@ First working cut — everything here is new.
 
 ### Binding
 
+- `SpatialRef` gains the serializers and morphs `gdal-async` has: `fromESRI` (the
+  `.prj` dialect ArcGIS writes), `morphToESRI()` / `morphFromESRI()`, `toXML()`,
+  `validate()`, `cloneGeogCS()`, `setWellKnownGeogCS(name)` and the
+  `epsgTreatsAsLatLong` getter. `fromURN` / `fromUserInput` need nothing of their own:
+  `fromDefinition` already routes through `OSRSetFromUserInput`, which accepts a URN,
+  an `AUTH:CODE`, WKT and PROJJSON alike. `cloneGeogCS` round-trips through WKT,
+  because the `gdal` crate keeps `from_c_hsrs` private and hands back a raw handle.
 - `Dataset` gains the **ground-control-point** path — the other way to georeference a
   raster, beside the affine `geoTransform`. `dataset.getGCPs()` returns
   `[{ id, info, pixel, line, x, y, z }]`, `setGCPs(gcps, projection?)` writes them
