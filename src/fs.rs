@@ -42,6 +42,101 @@ const MODE_MASK: u32 = 0o170000;
 const MODE_DIRECTORY: u32 = 0o040000;
 const MODE_FILE: u32 = 0o100000;
 
+/// The buffer `VSIStatL` fills in, and the reason it is not simply
+/// `gdal_sys::VSIStatBufL` everywhere.
+///
+/// `VSIStatBufL` is not one C type. GDAL's `port/cpl_vsi.h` says
+/// `typedef struct VSI_STAT64_T VSIStatBufL;`, and what `VSI_STAT64_T` is
+/// depends on the platform, so the Rust type behind it differs per target:
+///
+/// | target | GDAL's `VSI_STAT64_T` | [`StatBuf`] |
+/// |---|---|---|
+/// | `x86_64-pc-windows-msvc` / `-gnu` | `_stat64` | `gdal_sys::VSIStatBufL` |
+/// | `aarch64-apple-darwin` | `stat` — forced | `libc::stat` |
+/// | `x86_64-unknown-linux-gnu` / `-musl` | `stat64` (large-file) | `libc::stat64` |
+///
+/// The Apple row is GDAL overriding itself. `port/cpl_vsil_unix_stdio_64.cpp`
+/// sets `VSI_STAT64_T` to `stat64` when large-file support is on, and then
+/// `port/cpl_config_extras.h`, inside `#if defined(__APPLE__)`, deliberately
+/// takes it back:
+///
+/// ```c
+/// #undef VSI_STAT64
+/// #undef VSI_STAT64_T
+/// #define VSI_STAT64 stat
+/// #define VSI_STAT64_T stat
+/// #endif  // APPLE
+///
+/// So macOS has no `stat64` at all — not in GDAL's typedef and not in `libc`,
+/// which has `stat64` for Linux and no `stat64` anywhere under `unix/bsd`. A
+/// `windows` / `not(windows)` split therefore cannot be right in either
+/// direction: it sends macOS to a type that does not exist, and that is what
+/// `error[E0425]: cannot find type 'stat64' in crate 'libc'` was.
+///
+/// On Unix the buffer is `libc`'s own struct rather than the typedef because
+/// bindgen declares GDAL's `stat64` opaque there — `struct stat64 { _unused:
+/// [u8; 0] }` in the prebuilt Linux binding — since GDAL's headers only typedef
+/// the name and never dereference it where bindgen can see. There is nothing to
+/// read in that type. Windows keeps `gdal_sys::VSIStatBufL` because bindgen
+/// emitted the full `_stat64` there, and `libc` has no 64-bit-time `stat` to
+/// substitute — its `libc::stat` is the 32-bit-time struct, a different one.
+///
+/// These must follow GDAL's typedef rather than "whichever libc type has the
+/// field names I need": on Linux `libc::stat` also has `st_size`, `st_mode` and
+/// `st_mtime`, so the compiler is perfectly happy with it while GDAL writes a
+/// `stat64` into the buffer. Checking that mapping is the only thing standing
+/// between this and a silent read of the wrong offsets.
+#[cfg(windows)]
+type StatBuf = gdal_sys::VSIStatBufL;
+#[cfg(all(not(windows), target_vendor = "apple"))]
+type StatBuf = libc::stat;
+#[cfg(all(not(windows), not(target_vendor = "apple")))]
+type StatBuf = libc::stat64;
+
+/// `VSIStatL` wants a `*mut VSIStatBufL`; we may hold a [`StatBuf`].
+///
+/// # Safety
+///
+/// On Windows this is the identity. On Unix, [`StatBuf`] is the `libc` struct
+/// for the platform and `VSIStatBufL` is bindgen's opaque stand-in for the same
+/// C struct, so the cast preserves the layout GDAL writes into. The buffer must
+/// be correctly aligned and at least `size_of::<VSIStatBufL>()` bytes; on Unix it
+/// is a `StatBuf`, which is that struct.
+#[cfg(not(windows))]
+#[allow(clippy::ptr_as_ptr)]
+unsafe fn as_vsi_stat_buf(stat: *mut StatBuf) -> *mut gdal_sys::VSIStatBufL {
+    stat as *mut gdal_sys::VSIStatBufL
+}
+
+#[cfg(windows)]
+#[allow(clippy::ptr_as_ptr, unused_variables)]
+unsafe fn as_vsi_stat_buf(stat: *mut StatBuf) -> *mut gdal_sys::VSIStatBufL {
+    stat
+}
+
+/// The mode bits of a [`StatBuf`], widened to `u32` so [`MODE_MASK`] and the
+/// `MODE_*` constants can be compared against them.
+///
+/// The cast is load-bearing on some targets and redundant on others, which is
+/// the one thing about this line that is not obvious:
+///
+/// | target | `st_mode` is | so the cast is |
+/// |---|---|---|
+/// | `x86_64-pc-windows-msvc` / `-gnu` | `c_ushort` | needed — `u16` to `u32` |
+/// | `aarch64-apple-darwin` | `u16` (`mode_t`) | needed — `u16` to `u32` |
+/// | `x86_64-unknown-linux-gnu` / `-musl` | `u32` (`mode_t`) | **redundant**, and clippy says so |
+///
+/// `#![deny(clippy::all)]` turns that last row into a build failure
+/// (`unnecessary_cast`), so the cast cannot simply be dropped — and `u32::from`
+/// is no escape either, since that trips `useless_conversion` on the same
+/// target. The allow lives here, on the single line that has to be conditional,
+/// rather than on the `#[napi]` function where it would also suppress it for
+/// every other cast in the body.
+#[allow(clippy::unnecessary_cast)]
+fn mode_of(stat: &StatBuf) -> u32 {
+    stat.st_mode as u32
+}
+
 /// `SEEK_END` and `SEEK_SET`, which `VSIFSeekL` takes as plain ints.
 const SEEK_SET: c_int = 0;
 const SEEK_END: c_int = 2;
@@ -146,10 +241,11 @@ pub fn exists(path: String) -> bool {
 #[napi(namespace = "fs")]
 pub fn stat(path: String) -> Option<FileStat> {
     let (_, stat) = stat_of(&path)?;
+    let mode = mode_of(&stat);
     Some(FileStat {
         size: stat.st_size as f64,
-        is_directory: stat.st_mode as u32 & MODE_MASK == MODE_DIRECTORY,
-        is_file: stat.st_mode as u32 & MODE_MASK == MODE_FILE,
+        is_directory: mode & MODE_MASK == MODE_DIRECTORY,
+        is_file: mode & MODE_MASK == MODE_FILE,
         modified_ms: stat.st_mtime as f64 * 1000.0,
     })
 }
@@ -387,13 +483,13 @@ fn vsi_failure(method_name: &'static str) -> Error<GdalErrorCode> {
 }
 
 /// Stat a path behind the lock. `None` means nothing is there.
-fn stat_of(path: &str) -> Option<(CString, gdal_sys::VSIStatBufL)> {
+fn stat_of(path: &str) -> Option<(CString, StatBuf)> {
     ensure_initialized();
     let _guard = lock_gdal_shared();
 
     let path = c_path(path).ok()?;
-    let mut stat: gdal_sys::VSIStatBufL = unsafe { std::mem::zeroed() };
-    if unsafe { gdal_sys::VSIStatL(path.as_ptr(), &mut stat) } != 0 {
+    let mut stat: StatBuf = unsafe { std::mem::zeroed() };
+    if unsafe { gdal_sys::VSIStatL(path.as_ptr(), as_vsi_stat_buf(&mut stat)) } != 0 {
         return None;
     }
     Some((path, stat))

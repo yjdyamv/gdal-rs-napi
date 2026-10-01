@@ -53,7 +53,7 @@ pub fn numeric_constants() -> HashMap<String, u32> {
         ("GDT_CFloat32", GDALDataType::GDT_CFloat32),
         ("GDT_CFloat64", GDALDataType::GDT_CFloat64),
     ] {
-        add(name, value as u32);
+        add(name, value);
     }
 
     // Field types — `OFT_*`.
@@ -73,7 +73,7 @@ pub fn numeric_constants() -> HashMap<String, u32> {
         ("OFTInteger64", OGRFieldType::OFTInteger64),
         ("OFTInteger64List", OGRFieldType::OFTInteger64List),
     ] {
-        add(name, value as u32);
+        add(name, value);
     }
 
     // Geometry types — `wkb*`. The Z / M / ZM forms are **not** here: GDAL spells most
@@ -88,7 +88,10 @@ pub fn numeric_constants() -> HashMap<String, u32> {
         ("wkbMultiPoint", OGRwkbGeometryType::wkbMultiPoint),
         ("wkbMultiLineString", OGRwkbGeometryType::wkbMultiLineString),
         ("wkbMultiPolygon", OGRwkbGeometryType::wkbMultiPolygon),
-        ("wkbGeometryCollection", OGRwkbGeometryType::wkbGeometryCollection),
+        (
+            "wkbGeometryCollection",
+            OGRwkbGeometryType::wkbGeometryCollection,
+        ),
         ("wkbCircularString", OGRwkbGeometryType::wkbCircularString),
         ("wkbCompoundCurve", OGRwkbGeometryType::wkbCompoundCurve),
         ("wkbCurvePolygon", OGRwkbGeometryType::wkbCurvePolygon),
@@ -96,11 +99,14 @@ pub fn numeric_constants() -> HashMap<String, u32> {
         ("wkbMultiSurface", OGRwkbGeometryType::wkbMultiSurface),
         ("wkbCurve", OGRwkbGeometryType::wkbCurve),
         ("wkbSurface", OGRwkbGeometryType::wkbSurface),
-        ("wkbPolyhedralSurface", OGRwkbGeometryType::wkbPolyhedralSurface),
+        (
+            "wkbPolyhedralSurface",
+            OGRwkbGeometryType::wkbPolyhedralSurface,
+        ),
         ("wkbTIN", OGRwkbGeometryType::wkbTIN),
         ("wkbTriangle", OGRwkbGeometryType::wkbTriangle),
     ] {
-        add(name, value as u32);
+        add(name, value);
     }
 
     // Colour interpretations, palette interpretations and resampling.
@@ -126,7 +132,10 @@ pub fn numeric_constants() -> HashMap<String, u32> {
         ("GPI_RGB", GDALPaletteInterp::GPI_RGB),
         ("GPI_CMYK", GDALPaletteInterp::GPI_CMYK),
         ("GPI_HLS", GDALPaletteInterp::GPI_HLS),
-        ("GRA_NearestNeighbour", GDALResampleAlg::GRA_NearestNeighbour),
+        (
+            "GRA_NearestNeighbour",
+            GDALResampleAlg::GRA_NearestNeighbour,
+        ),
         ("GRA_Bilinear", GDALResampleAlg::GRA_Bilinear),
         ("GRA_Cubic", GDALResampleAlg::GRA_Cubic),
         ("GRA_CubicSpline", GDALResampleAlg::GRA_CubicSpline),
@@ -134,7 +143,7 @@ pub fn numeric_constants() -> HashMap<String, u32> {
         ("GRA_Average", GDALResampleAlg::GRA_Average),
         ("GRA_Mode", GDALResampleAlg::GRA_Mode),
     ] {
-        add(name, value as u32);
+        add(name, value);
     }
 
     // Justifications, error classes and extended data type classes.
@@ -151,7 +160,7 @@ pub fn numeric_constants() -> HashMap<String, u32> {
         ("GEDTC_STRING", GDALExtendedDataTypeClass::GEDTC_STRING),
         ("GEDTC_COMPOUND", GDALExtendedDataTypeClass::GEDTC_COMPOUND),
     ] {
-        add(name, value as u32);
+        add(name, value);
     }
 
     table

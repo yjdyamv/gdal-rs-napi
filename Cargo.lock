@@ -258,6 +258,7 @@ dependencies = [
  "gdal",
  "gdal-src",
  "gdal-sys",
+ "libc",
  "napi",
  "napi-build",
  "napi-derive",

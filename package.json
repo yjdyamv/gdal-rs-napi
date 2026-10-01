@@ -49,12 +49,17 @@
     "lgpl": "node scripts/lgpl-geos.mjs",
     "smoke": "node scripts/smoke-install.mjs",
     "test": "node --test",
+    "lint": "cargo fmt --all --check",
+    "lint:fix": "cargo fmt --all",
+    "clippy": "cargo clippy --release --all-targets -- -D warnings",
     "gdalinfo": "node examples/gdalinfo.mjs",
     "to-cog": "node examples/to-cog.mjs",
-    "to-vector": "node examples/convert-vector.mjs"
+    "to-vector": "node examples/convert-vector.mjs",
+    "prepare": "husky"
   },
   "devDependencies": {
-    "@napi-rs/cli": "3.10.5"
+    "@napi-rs/cli": "3.10.5",
+    "husky": "^9.1.7"
   },
   "repository": {
     "type": "git",

@@ -1,0 +1,16 @@
+# The formatting gate, and only that.
+#
+# `cargo fmt --check` is the one check cheap enough (about 0.8s with a warm
+# target/, and it needs no build at all) to be worth running on every commit.
+# It is also the check CI runs on exactly one leg — `ci.yml` gates
+# `cargo fmt --all --check` on `x86_64-unknown-linux-gnu` — so the five other
+# legs never see it. Without this hook a formatting slip is invisible locally
+# and turns the whole workflow red only when that one leg runs.
+#
+# **Why clippy is not here.** It is the other half of the same CI step, and
+# `npm run lint` runs it on demand, but it compiles the whole addon first:
+# 6s against a warm `target/`, and a cold one means building GDAL and PROJ
+# from source — tens of minutes. A gate that occasionally blocks a commit for
+# twenty minutes is a gate people learn to defeat with `--no-verify`, which
+# costs more than the slip it catches. So: fmt here, clippy before you push.
+npm run lint

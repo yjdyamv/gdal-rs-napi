@@ -843,7 +843,9 @@ impl JsRasterBand {
                         band.c_rasterband() as gdal_sys::GDALMajorObjectH,
                         key.as_ptr(),
                         value.as_ptr(),
-                        domain.as_ref().map_or(std::ptr::null(), |domain| domain.as_ptr()),
+                        domain
+                            .as_ref()
+                            .map_or(std::ptr::null(), |domain| domain.as_ptr()),
                     );
                 }
                 Ok(())

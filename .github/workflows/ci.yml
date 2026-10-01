@@ -26,6 +26,15 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  # A CI runner never commits, so the husky `prepare` hook has nothing to guard.
+  # Without this it still runs, and in the musl container — where `/work` is a
+  # bind mount with no `.git` — it prints
+  #
+  #     fatal: not in a git directory
+  #
+  # into the middle of an otherwise clean build log, where it reads like the
+  # build failed.
+  HUSKY: "0"
 
 jobs:
   build:
@@ -126,6 +135,18 @@ jobs:
         if: matrix.target == 'x86_64-unknown-linux-gnu'
         run: cargo clippy --release --target ${{ matrix.target }} --all-targets -- -D warnings
 
+      # The StatBuf mapping changes three times (Windows/Linux/macOS), and bugs in it
+      # do not type-check on the one platform you develop on. `cargo check` for each
+      # target compiles the type arms without linking or a system GDAL, which is a
+      # cheap way to catch a wrong mapping before a 40-minute source build runs.
+      - name: Type-check StatBuf arms across targets
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        run: |
+          rustup target add aarch64-apple-darwin x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu
+          cargo check --target aarch64-apple-darwin --lib 2>&1 | tail -1
+          cargo check --target x86_64-unknown-linux-gnu --lib 2>&1 | tail -1
+          cargo check --target aarch64-unknown-linux-gnu --lib 2>&1 | tail -1
+
       # Pure-function unit tests (option handling, sample-type dispatch, the
       # geometry/field-type name maps). They need no GDAL runtime and are cheap;
       # one platform is enough to cover them.
@@ -160,29 +181,15 @@ jobs:
       # builds on a runner of its own architecture, but a container or a cross
       # toolchain could still turn out a host build, so assert the label before
       # anything else runs.
+      #
+      # The triple-to-label mapping is in `scripts/platform.mjs`, which the two
+      # packing scripts read too — so it is written down once rather than once
+      # here and once in there. The script also exports `PLATFORM` to the
+      # runner itself; doing that in Node rather than through a shell pipeline
+      # keeps it working on the PowerShell legs, where `$GITHUB_ENV` is not a
+      # variable and `tee` is not `tee(1)`.
       - name: Check the built platform
-        shell: bash
-        run: |
-          case "${{ matrix.target }}" in
-            x86_64-pc-windows-msvc)    expected=win32-x64-msvc ;;
-            aarch64-apple-darwin)      expected=darwin-arm64 ;;
-            x86_64-unknown-linux-gnu)  expected=linux-x64-gnu ;;
-            aarch64-unknown-linux-gnu) expected=linux-arm64-gnu ;;
-            x86_64-unknown-linux-musl) expected=linux-x64-musl ;;
-            aarch64-unknown-linux-musl) expected=linux-arm64-musl ;;
-            *) echo "no expected platform known for ${{ matrix.target }}" >&2; exit 1 ;;
-          esac
-
-          actual=$(basename "$(ls ./*.node)" .node)
-          actual=${actual#gdal-rs-napi.}
-          echo "target=${{ matrix.target }} expected=$expected actual=$actual"
-          ls -l ./*.node
-          echo "PLATFORM=$actual" >> "$GITHUB_ENV"
-
-          if [ "$actual" != "$expected" ]; then
-            echo "::error::the binary is labelled $actual but ${{ matrix.target }} should give $expected"
-            exit 1
-          fi
+        run: node scripts/check-platform.mjs --target ${{ matrix.target }}
 
       # The runner's Node is a glibc binary and napi links musl dynamically (it
       # appends `-C target-feature=-crt-static` for any musl target), so a musl
@@ -256,8 +263,26 @@ jobs:
       # The claim this package makes is "nothing on the host", so prove it: install
       # the artifact into an empty directory and use it. A CI runner is a clean
       # machine, which is exactly the machine the claim is about.
+      #
+      # The musl leg has to do this inside the container, like `Build` and `Test`
+      # above. Running it on the host instead fails the install outright:
+      #
+      #     npm error code EBADPLATFORM
+      #     npm error notsup Unsupported platform for gdal-rs-napi@0.1.0:
+      #     wanted {"os":"linux","cpu":"x64","libc":"musl"}
+      #     (current: {"os":"linux","cpu":"x64","libc":"glibc"})
+      #
+      # because a musl build cannot be installed on a glibc host, whatever its
+      # contents. That is npm refusing the combination, not a defect in the
+      # tarball — which is exactly why this step has to run where the libc is the
+      # one the tarball was built for.
       - name: Smoke-test the packed tarball
+        if: ${{ !matrix.musl_container }}
         run: npm run smoke
+
+      - name: Smoke-test the packed tarball (musl)
+        if: matrix.musl_container
+        run: docker run --rm -v "$PWD:/work" -w /work gdal-rs-napi-musl npm run smoke
 
       # GEOS is LGPL-2.1 and is linked statically into the `.node`, so LGPL-2.1 §6
       # asks this release for the means to relink it against a modified GEOS:

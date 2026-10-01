@@ -15,6 +15,8 @@ import { spawnSync } from 'node:child_process'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
+import { npmPlatformFields } from './platform.mjs'
+
 const repoRoot = dirname(dirname(fileURLToPath(import.meta.url)))
 const pkg = JSON.parse(readFileSync(join(repoRoot, 'package.json'), 'utf8'))
 const binaryName = pkg.napi?.binaryName ?? pkg.name
@@ -35,15 +37,6 @@ if (bindings.length !== 1) {
 }
 const [binary] = bindings
 const platform = binary.slice(binaryName.length + 1, -'.node'.length)
-
-/** `npm`'s os / cpu / libc fields, derived from the platform triple. */
-function npmPlatformFields(platform) {
-  const [os, cpu, ...rest] = platform.split('-')
-  const abi = rest.join('-')
-  const fields = { os: [os], cpu: [cpu] }
-  if (os === 'linux') fields.libc = [abi === 'musl' ? 'musl' : 'glibc']
-  return fields
-}
 
 const packageName = `${pkg.name}-${platform}`
 const staging = join(repoRoot, 'npm', platform)

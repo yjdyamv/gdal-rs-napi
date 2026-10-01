@@ -22,6 +22,12 @@ gdal-sys = "0.12"
 gdal-src = { version = "0.3", optional = true, default-features = false }
 proj-sys = "0.27"
 serde_json = "1"
+# `gdal_sys::VSIStatBufL` is a platform-dependent typedef — `_stat64` on
+# Windows, the POSIX `stat64` on Linux and macOS — and the two do not have the
+# same fields. `libc` is where the cross-platform accessors for that struct
+# live (`st_size` / `st_mode` / `st_mtime`), which is what `fs::stat` reads
+# through. It is already in the tree transitively; this makes it direct.
+libc = "0.2"
 
 # The curl-backed drivers (WMS, WMTS, WCS, OGCAPI, PLMOSAIC, Carto,
 # Elasticsearch, NGW, AmigoCloud, DAAS, EEDA) need libcurl with TLS. On the four
