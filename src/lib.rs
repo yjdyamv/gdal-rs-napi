@@ -345,3 +345,58 @@ fn set_debug_logging(value: &str) {
     let value = CString::new(value).expect("a literal has no NUL byte");
     unsafe { gdal_sys::CPLSetConfigOption(key.as_ptr(), value.as_ptr()) };
 }
+
+/// GDAL's numeric sample-type code for a name — `toDataType('Byte')` is `1`.
+///
+/// This binding speaks **names** (`band.dataType === 'Float32'`); the number is for the
+/// corners that want GDAL's own code. A name GDAL does not know is refused rather than
+/// answered `Unknown`. `Uint8` — this binding's spelling of the one type GDAL calls
+/// `Byte` — is accepted too, so `toDataType(band.dataType)` always works; note that
+/// `fromDataType` answers GDAL's spelling, so that one round-trips as `Byte`.
+#[napi]
+pub fn to_data_type(name: String) -> crate::error::Result<u32> {
+    runtime::ensure_initialized();
+    let _guard = lock_gdal_shared();
+    // GDAL ignores case, so only the one real spelling difference is translated. It has
+    // no `Uint8`: that type is `Byte` there.
+    let gdal_name = if name.eq_ignore_ascii_case("Uint8") {
+        "Byte"
+    } else {
+        name.as_str()
+    };
+    let name_c = CString::new(gdal_name)
+        .map_err(|_| crate::error::bad_argument("a data type name cannot contain a NUL byte"))?;
+    let code = unsafe { gdal_sys::GDALGetDataTypeByName(name_c.as_ptr()) };
+    // GDAL answers `Unknown` (0) for a name it does not know — which is also the honest
+    // answer for the literal `'Unknown'`, so only the literal gets the silent treatment.
+    if code == gdal_sys::GDALDataType::GDT_Unknown && !name.eq_ignore_ascii_case("unknown") {
+        return Err(crate::error::bad_argument(format!(
+            "unknown data type name {name:?}; GDAL's own are Byte, Int8, UInt16, Int16, \
+             UInt32, Int32, UInt64, Int64, Float32, Float64 and Unknown"
+        )));
+    }
+    Ok(code as u32)
+}
+
+/// The binding's name for GDAL's numeric sample-type code — `fromDataType(6)` is
+/// `'Float32'`, and `0` is `'Unknown'`.
+///
+/// The answer is this binding's spelling, not GDAL's, so it matches `band.dataType` and
+/// round-trips with `toDataType`: `fromDataType(1)` is `'Uint8'` where GDAL would say
+/// `'Byte'`, and `4` is `'Uint32'` where GDAL says `'UInt32'`.
+#[napi]
+pub fn from_data_type(code: u32) -> crate::error::Result<String> {
+    runtime::ensure_initialized();
+    let _guard = lock_gdal_shared();
+    let name = runtime::c_string(unsafe {
+        gdal_sys::GDALGetDataTypeName(code as gdal_sys::GDALDataType::Type)
+    });
+    Ok(match name.as_str() {
+        // The four types this binding spells differently from GDAL.
+        "Byte" => "Uint8".to_string(),
+        "UInt16" => "Uint16".to_string(),
+        "UInt32" => "Uint32".to_string(),
+        "UInt64" => "Uint64".to_string(),
+        other => other.to_string(),
+    })
+}

@@ -251,3 +251,30 @@ test('a driver renames and copies a dataset, files and all', () => {
   assert.equal(reopened.band(0).getPixel(0, 0), 3)
   reopened.close()
 })
+
+test('getEnvelope reports the bounding box a dataset covers', () => {
+  // A raster's is its four corners under the geotransform.
+  const raster = gdal.createSync('', {
+    driver: 'MEM',
+    width: 4,
+    height: 6,
+    bandCount: 1,
+    dataType: 'Uint8',
+  })
+  raster.setGeoTransform([100, 2, 0, 200, 0, -3])
+  assert.deepEqual(raster.getEnvelope(), { minX: 100, minY: 182, maxX: 108, maxY: 200 })
+  raster.close()
+
+  // A vector one's is the union of its layers' extents.
+  const vector = gdal.createVectorSync(tmp('envelope.gpkg'), 'GPKG')
+  const layer = vector.createLayer({ name: 'things', geometryType: 'Point', epsg: 4326 })
+  layer.createFeature({ type: 'Point', coordinates: [1, 2] }, { n: 1 })
+  layer.createFeature({ type: 'Point', coordinates: [5, 8] }, { n: 2 })
+
+  const box = vector.getEnvelope()
+  assert.ok(Math.abs(box.minX - 1) < 1e-9, `minX ${box.minX}`)
+  assert.ok(Math.abs(box.minY - 2) < 1e-9, `minY ${box.minY}`)
+  assert.ok(Math.abs(box.maxX - 5) < 1e-9, `maxX ${box.maxX}`)
+  assert.ok(Math.abs(box.maxY - 8) < 1e-9, `maxY ${box.maxY}`)
+  vector.close()
+})

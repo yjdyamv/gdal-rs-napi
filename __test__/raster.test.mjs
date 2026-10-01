@@ -103,6 +103,28 @@ test('bytesPerSample covers the sample types', () => {
   assert.equal(gdal.bytesPerSample('Float64'), 8)
 })
 
+test('toDataType and fromDataType are each other inverse', () => {
+  // GDAL's own numeric codes, for the corners that want them.
+  assert.equal(gdal.toDataType('Byte'), 1)
+  assert.equal(gdal.toDataType('Float32'), 6)
+  assert.equal(gdal.fromDataType(6), 'Float32')
+  assert.equal(gdal.fromDataType(0), 'Unknown')
+
+  // `fromDataType` answers in *this* binding's spelling, so it matches `band.dataType`
+  // and the pair round-trips: `1` is `Uint8` here where GDAL would say `Byte`.
+  assert.equal(gdal.fromDataType(1), 'Uint8')
+  assert.equal(gdal.fromDataType(4), 'Uint32')
+  for (const name of ['Uint8', 'Int16', 'Uint32', 'Float64']) {
+    assert.equal(gdal.fromDataType(gdal.toDataType(name)), name)
+  }
+
+  // GDAL's spellings are accepted on the way in too.
+  assert.equal(gdal.toDataType('UInt32'), 4)
+
+  // A name GDAL does not know is refused, not answered `Unknown`.
+  assert.throws(() => gdal.toDataType('Nope'), /unknown data type name/)
+})
+
 test('creates a GTiff, writes it, and reads back identical bytes', () => {
   const path = tmp('roundtrip.tif')
   const expected = ramp(4, 4)

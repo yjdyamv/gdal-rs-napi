@@ -29,7 +29,7 @@ use crate::band::JsRasterBand;
 use crate::driver::JsDriver;
 use crate::dtype::DataType;
 use crate::error::{GdalErrorCode, IntoGdalResult, Result, bad_argument, into_status_error, split};
-use crate::geometry::JsGeometry;
+use crate::geometry::{GeometryEnvelope, JsGeometry};
 use crate::programs;
 use crate::progress::{JsProgressSink, ProgressCallback, ProgressUpdate};
 use crate::raster_io::{
@@ -739,6 +739,68 @@ impl JsDataset {
     #[napi]
     pub fn get_file_list(&self) -> Result<Vec<String>> {
         self.dataset.with(file_list)
+    }
+
+    /// The dataset's bounding box as `{ minX, minY, maxX, maxY }`, or `null` when
+    /// there is nothing to measure.
+    ///
+    /// A **raster's** envelope is its four corners under the geotransform, so the
+    /// bounding box of a rotated raster is larger than the raster's own rectangle —
+    /// which is the honest answer rather than a wrong small one. A **vector**
+    /// dataset's is what its layers cover between them, the union of their extents.
+    #[napi]
+    pub fn get_envelope(&self) -> Result<Option<GeometryEnvelope>> {
+        ensure_initialized();
+        self.dataset.with_exclusive(|dataset| {
+            if let Ok(transform) = dataset.geo_transform() {
+                let (width, height) = dataset.raster_size();
+                let (width, height) = (width as f64, height as f64);
+                let mut envelope: Option<GeometryEnvelope> = None;
+                for (pixel, line) in [(0.0, 0.0), (width, 0.0), (0.0, height), (width, height)] {
+                    let x = transform[0] + pixel * transform[1] + line * transform[2];
+                    let y = transform[3] + pixel * transform[4] + line * transform[5];
+                    envelope = Some(match envelope {
+                        None => GeometryEnvelope {
+                            min_x: x,
+                            min_y: y,
+                            max_x: x,
+                            max_y: y,
+                        },
+                        Some(seen) => GeometryEnvelope {
+                            min_x: seen.min_x.min(x),
+                            min_y: seen.min_y.min(y),
+                            max_x: seen.max_x.max(x),
+                            max_y: seen.max_y.max(y),
+                        },
+                    });
+                }
+                return Ok(envelope);
+            }
+
+            // No geotransform, so this is the vector side: what the layers cover.
+            let mut envelope: Option<GeometryEnvelope> = None;
+            for index in 0..dataset.layer_count() {
+                let layer = dataset.layer(index).gdal()?;
+                let Some(extent) = layer.try_get_extent().gdal()? else {
+                    continue;
+                };
+                envelope = Some(match envelope {
+                    None => GeometryEnvelope {
+                        min_x: extent.MinX,
+                        min_y: extent.MinY,
+                        max_x: extent.MaxX,
+                        max_y: extent.MaxY,
+                    },
+                    Some(seen) => GeometryEnvelope {
+                        min_x: seen.min_x.min(extent.MinX),
+                        min_y: seen.min_y.min(extent.MinY),
+                        max_x: seen.max_x.max(extent.MaxX),
+                        max_y: seen.max_y.max(extent.MaxY),
+                    },
+                });
+            }
+            Ok(envelope)
+        })
     }
 
     /// Raster width in pixels.
