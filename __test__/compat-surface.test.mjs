@@ -310,6 +310,23 @@ test('unionCascaded is the native operation under the reference\'s name', () => 
   assert.ok(Math.abs(merged.area() - 2) < 1e-9, `area ${merged.area()}`)
 })
 
+test('Geometry has the reference\'s static doors', () => {
+  const point = { type: 'Point', coordinates: [1, 2] }
+
+  // The WKT / WKB door under the reference's capitalisation.
+  assert.equal(gdal.Geometry.fromWKT('POINT (1 2)').toWKT(), 'POINT (1 2)')
+  assert.equal(gdal.Geometry.fromWKB(native.geometryToWkb(point)).toWKT(), 'POINT (1 2)')
+
+  // ... and GeoJSON, as an object or as the bytes a file read hands back.
+  const fromObject = gdal.Geometry.fromGeoJson(point)
+  assert.ok(fromObject instanceof gdal.Point)
+  assert.deepEqual(fromObject.toJSON(), point)
+
+  const fromBuffer = gdal.Geometry.fromGeoJsonBuffer(Buffer.from(JSON.stringify(point)))
+  assert.ok(fromBuffer instanceof gdal.Point)
+  assert.equal(fromBuffer.toWKT(), 'POINT (1 2)')
+})
+
 test('the numeric vocabularies come from the headers this build links', () => {
   // The values are read out of `gdal_sys` in `src/constants.rs`, never written out by
   // hand. What is pinned here are GDAL's own ABI values, so a table wired to the wrong

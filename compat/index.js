@@ -1420,6 +1420,19 @@ class Envelope3D extends Envelope {
   }
 }
 
+// The reference's static doors on `Geometry` itself. Its tests call
+// `gdal.Geometry.fromWKB(...)` and `fromGeoJson(...)`, where this binding spells the
+// same work `fromWkb` / `fromJson`; `fromGeoJsonBuffer` is the same thing with the
+// GeoJSON arriving as bytes, which is the shape a file read hands back. Each answers a
+// wrapped geometry, so `instanceof gdal.Point` holds like it does at the factories.
+Object.assign(Geometry, {
+  fromWKT: (wkt) => geometryFactories.fromWKT(wkt),
+  fromWKB: (wkb) => geometryFactories.fromWKB(wkb),
+  fromGeoJson: (json) => wrapGeometry(native.Geometry.fromJson(json)),
+  fromGeoJsonBuffer: (buffer) =>
+    wrapGeometry(native.Geometry.fromJson(JSON.parse(Buffer.from(buffer).toString('utf8')))),
+})
+
 // A geometry's envelope is the other half of the class above: the reference answers an
 // `Envelope` object, this binding a flat array. `nativeGeometry` is the prototype the
 // adapter is chained to, so calling *through* it is what reaches the real method
