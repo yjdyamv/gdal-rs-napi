@@ -6,6 +6,15 @@ First working cut — everything here is new.
 
 ### Binding
 
+- `SpatialRef` gains the last of the parity checks and helpers: `isGeocentric`,
+  `isLocal`, `isSameGeogCS(other)` / `isSameVertCS(other)`, `getAttrValue(name,
+  child?)` and `autoIdentifyEPSG()`. The last is GDAL's own identification: it sets the
+  code where GDAL can place the CRS and leaves it alone where it cannot — a
+  hand-written WGS 84 GEOGCS is *not* identified here — rather than failing.
+- `RasterBand.flush()` / `flushSync()` and `Layer.flush()` / `flushSync()` are the
+  per-band and per-layer forms of the dataset's `flush()` — `GDALFlushRasterCache` and
+  `OGR_L_SyncToDisk`. Both are writes, so the band one is refused on a read-only
+  thread-safe dataset and the layer one wherever the dataset refuses a write.
 - `Driver` gains `rename` and `copyFiles` — `GDALRenameDataset` and
   `GDALCopyDatasetFiles`, the driver's own multi-file operations (a shapefile is
   several files, a GeoPackage is one). Both take the **new** name first. One caveat

@@ -474,6 +474,11 @@ out.close()
 tests. A write must supply at least `width * height` samples of the band's own
 type — a short buffer is rejected rather than silently zero-filled.
 
+`flushSync()` / `await flush()` exist at all three scopes GDAL writes at: the
+**dataset** (`GDALFlushCache`), a **band** (`GDALFlushRasterCache`) and a **layer**
+(`OGR_L_SyncToDisk`). `close()` flushes too, so they matter when writing for a long
+time without closing — a bulk insert into one layer wants `layer.flush()`.
+
 Georeferencing and creation options:
 
 ```js
@@ -746,6 +751,10 @@ Worth knowing:
   from ESRI's dialect in place, and `setWellKnownGeogCS(name)` resets its geographic
   component. `epsgTreatsAsLatLong` is the order the *EPSG authority* reads it in —
   separate from `axisMapping`, which is the order in force here.
+  `isGeocentric` / `isLocal` classify it, `isSameGeogCS(other)` compares just the
+  geographic basis rather than the whole definition, `getAttrValue('PROJCS')` reaches
+  a WKT node by name, and `autoIdentifyEPSG()` fills in the code where GDAL can place
+  the CRS (and leaves it alone where it cannot).
 - **`equals` compares the definitions, not the spelling**: two differently written
   WKTs for WGS 84 are equal.
 - **`identifyEpsg` returns a promise** because it searches the CRS database. A

@@ -41,6 +41,8 @@ Ordered by tier. Tier 1 is what this batch ships.
 | `geometry.toGML` / `toKML` | **parity** | `toGML()` / `toKML(altitudeMode?)` |
 | `geometry.pointOnSurface` / `unaryUnion` / `concaveHull` / `normalize` / `setPrecision` | **parity** | same names, GEOS-gated (`OGR_G_RemoveRepeatedPoints` is not bound) |
 | `gdal.bundled` | **parity** | one boolean |
+| `SpatialReference.isGeocentric` / `isLocal` / `isSameGeogCS` / `isSameVertCS` / `getAttrValue` / `autoIdentifyEPSG` | **parity** | same names |
+| `band.flush` / `layer.flush` | **parity** | `flush()` / `flushSync()` on each, beside the dataset's |
 
 ### Tier 2 — done
 

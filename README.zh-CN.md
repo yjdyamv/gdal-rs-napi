@@ -425,6 +425,10 @@ out.gcpProjection // 上面那段 WKT —— 点所在的 CRS，不是栅格自�
 `gdalwarp -tps` 走的那条路，也是只有 GCP、没有 `geoTransform` 的源能提供的东西。格式能存什么
 是格式自己的回答：GTiff 会存点的 id 和坐标，但不存 `info`。
 
+`flushSync()` / `await flush()` 存在于 GDAL 会写入的三个层级：**数据集**（`GDALFlushCache`）、
+**波段**（`GDALFlushRasterCache`）和**图层**（`OGR_L_SyncToDisk`）。`close()` 也会 flush，所以它们
+在不关闭、长时间写入时才有意义 —— 往一个图层里批量插入想要的就是 `layer.flush()`。
+
 创建选项的名字是 **GDAL 自己的**，各驱动不同：GTiff 分块用 `BLOCKXSIZE`/`BLOCKYSIZE`，
 而 COG 用 `BLOCKSIZE`。GDAL 对不认识的选项只会打一条 warning 然后忽略。
 
@@ -620,7 +624,9 @@ GDAL 3 把 `EPSG:4326` 读作 **纬度,经度**，而调用本身完全看不出
   `projJson` 之外的第三种序列化；`validate()` 判断定义本身是否自洽；`cloneGeogCS()` 是投影 CRS
   底下那个地理 CRS（WGS 84、NAD27……）；`morphToESRI()` / `morphFromESRI()` 在原地与 ESRI 方言
   互转；`setWellKnownGeogCS(name)` 重置它的地理分量。`epsgTreatsAsLatLong` 是 **EPSG 权威**读它
-  的顺序 —— 与 `axisMapping`（本绑定实际采用的顺序）是两回事。
+  的顺序 —— 与 `axisMapping`（本绑定实际采用的顺序）是两回事。`isGeocentric` / `isLocal` 给它
+  分类；`isSameGeogCS(other)` 只比较地理基准而非整个定义；`getAttrValue('PROJCS')` 按名字取 WKT
+  节点；`autoIdentifyEPSG()` 在 GDAL 认得出时补上代码（认不出则原样不动）。
 - **`equals` 比较的是定义本身，不是写法**：同一个 WGS 84 的两种 WKT 写法相等。
 - **`identifyEpsg` 返回 Promise**，因为它要查 CRS 数据库。无法解析的描述会抛错；
   能解析但匹配不到的返回 `null`。
