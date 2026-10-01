@@ -726,6 +726,40 @@ test('readChunksSync walks a band in strips, and the answer stops it', () => {
   dataset.close()
 })
 
+test('readChunks is the same walk off the event loop, and the same backpressure', async () => {
+  const path = tmp('chunks-async.tif')
+  const dataset = gdal.createSync(path, {
+    driver: 'GTiff',
+    width: 4,
+    height: 6,
+    bandCount: 1,
+    dataType: 'Uint8',
+  })
+  const band = dataset.band(0)
+  band.writeValues(0, 0, 4, 6, bytesOf(ramp(4, 6)))
+
+  // The strips the sync walk would hand over, read on the thread pool instead.
+  const seen = []
+  const count = await band.readChunks({ rows: 2 }, (chunk) => {
+    seen.push([chunk.y, chunk.height, chunk.width, Array.from(chunk.data)])
+    return true
+  })
+  assert.equal(count, 3)
+  assert.deepEqual(seen, [
+    [0, 2, 4, [0, 1, 2, 3, 4, 5, 6, 7]],
+    [2, 2, 4, [8, 9, 10, 11, 12, 13, 14, 15]],
+    [4, 2, 4, [16, 17, 18, 19, 20, 21, 22, 23]],
+  ])
+
+  // The answer is the backpressure here too: `false` ends the walk.
+  assert.equal(await band.readChunks({ rows: 1 }, () => false), 1)
+
+  // A window that does not fit fails, and on the async side that is a rejection.
+  await assert.rejects(band.readChunks({ x: 3, width: 4 }, () => true), /falls outside the band/i)
+
+  dataset.close()
+})
+
 test('a band lists its overview levels, and each one reads whole', async () => {
   const path = tmp('overview-levels.tif')
   const dataset = gdal.createSync(path, {

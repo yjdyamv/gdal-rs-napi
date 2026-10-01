@@ -9,11 +9,13 @@
 
 use std::collections::HashMap;
 use std::ffi::{CString, c_char, c_int};
+use std::sync::{Arc, Condvar, Mutex};
 
 use gdal::Dataset as GdalDataset;
 use gdal::Metadata;
 use gdal::raster::{ColorEntry, ColorTable, PaletteInterpretation, RasterBand};
 use napi::bindgen_prelude::*;
+use napi::threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode};
 use napi_derive::napi;
 
 use crate::dataset::{DatasetRef, with_two};
@@ -1535,6 +1537,28 @@ impl JsRasterBand {
         Ok(handed_out)
     }
 
+    /// The async twin of `readChunksSync`: the same strip walk, run on the thread pool
+    /// so a raster larger than memory does not have to hold the event loop either.
+    ///
+    /// Each strip is handed to `onChunk` and the walk reads the next only once that
+    /// call has come back — return `false` to stop, exactly as the sync form does. The
+    /// callback runs on the JS thread while the worker holds the process-wide GDAL
+    /// lock, so, like `onProgress`, it must not call back into this library. Resolves
+    /// to the number of strips handed out.
+    #[napi(ts_return_type = "Promise<number>")]
+    pub fn read_chunks(
+        &self,
+        options: Option<ChunkOptions>,
+        on_chunk: ThreadsafeFunction<Chunk, bool, Chunk, Status, false>,
+    ) -> AsyncTask<ChunkStreamTask> {
+        AsyncTask::new(ChunkStreamTask {
+            dataset: self.dataset.clone(),
+            kind: self.kind,
+            options: options.unwrap_or_default(),
+            on_chunk,
+        })
+    }
+
     /// This band's overview levels, as they were built — `[]` when there are none.
     ///
     /// Indexing the array is the `overviews.get(i)` of the GDAL API. A level is not a
@@ -1754,7 +1778,7 @@ fn read_overview_bytes(band: &mut RasterBand<'_>, level: usize) -> Result<Vec<u8
     Ok(bytes)
 }
 
-/// One strip of a band, as `readChunksSync` hands it over.
+/// One strip of a band, as `readChunksSync` / `readChunks` hands it over.
 #[napi(object)]
 pub struct Chunk {
     /// The band's samples, in its own type: `width * height` of them.
@@ -1764,6 +1788,43 @@ pub struct Chunk {
     pub y: u32,
     pub width: u32,
     pub height: u32,
+}
+
+/// The callback `readChunks` takes: one strip per call, and its return value read as
+/// "carry on?" — the same backpressure contract `readChunksSync` and `onProgress` have.
+pub type ChunkCallback = ThreadsafeFunction<Chunk, bool, Chunk, Status, false>;
+
+/// Hand one strip to the JS callback and wait for its answer.
+///
+/// Blocking mode only waits for the JS turn to *start*, so the return value has to be
+/// caught and handed back through a slot — the same reason the progress sink does it.
+/// `false` stops the walk. A call that never reached the JS thread (a torn-down loop)
+/// stops it too, rather than reading strips nobody can receive.
+fn deliver_chunk(callback: &ChunkCallback, chunk: Chunk) -> bool {
+    let answer = Arc::new((Mutex::new(None), Condvar::new()));
+    let slot = Arc::clone(&answer);
+
+    let status = callback.call_with_return_value(
+        chunk,
+        ThreadsafeFunctionCallMode::Blocking,
+        move |result, _env| {
+            let keep_going = !matches!(result, Ok(false));
+            *slot.0.lock().unwrap() = Some(keep_going);
+            slot.1.notify_all();
+            Ok(())
+        },
+    );
+
+    if !matches!(status, Status::Ok) {
+        return false;
+    }
+
+    let (value, signal) = &*answer;
+    let mut answer = value.lock().unwrap();
+    while answer.is_none() {
+        answer = signal.wait(answer).unwrap();
+    }
+    answer.unwrap_or(true)
 }
 
 /// What `readChunksSync` takes for its window and its strips.
@@ -1825,6 +1886,36 @@ impl JsRasterBand {
             bottom: (top + height) as u32,
             rows: rows.max(1) as u32,
         })
+    }
+
+    /// The `readChunksSync` walk, as a body the thread pool can run: the same plan, the
+    /// same `read_sync` per strip, the same `false`-stops-it backpressure — only the
+    /// callback's thread differs (see `deliver_chunk`).
+    fn stream_chunks(&self, options: &ChunkOptions, on_chunk: &ChunkCallback) -> Result<u32> {
+        let plan = self.chunk_plan(options)?;
+
+        let mut handed_out = 0;
+        let mut next_row = plan.top;
+        while next_row < plan.bottom {
+            let rows = plan.rows.min(plan.bottom - next_row);
+            let bytes = self.read_sync(None, &window(plan.left, next_row, plan.width, rows))?;
+            handed_out += 1;
+            let keep_going = deliver_chunk(
+                on_chunk,
+                Chunk {
+                    data: bytes.into(),
+                    x: plan.left,
+                    y: next_row,
+                    width: plan.width,
+                    height: rows,
+                },
+            );
+            if !keep_going {
+                break;
+            }
+            next_row += rows;
+        }
+        Ok(handed_out)
     }
 }
 
@@ -2150,6 +2241,30 @@ impl Task for ContourGenerateTask {
                 contour_generate(band, &mut target, request)
             })
         })))
+    }
+
+    fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
+        output.map_err(|(code, reason)| into_status_error(code, reason))
+    }
+}
+
+/// The thread-pool half of `readChunks`: the strip walk runs off the event loop, and
+/// each strip is handed to the JS callback through a threadsafe function.
+pub struct ChunkStreamTask {
+    dataset: DatasetRef,
+    kind: BandKind,
+    options: ChunkOptions,
+    on_chunk: ChunkCallback,
+}
+
+impl Task for ChunkStreamTask {
+    type Output = OpResult<u32>;
+    type JsValue = u32;
+
+    fn compute(&mut self) -> napi::Result<Self::Output> {
+        // `data_type` only matters when writing; this path never does.
+        let band = JsRasterBand::from_kind(self.dataset.clone(), self.kind, DataType::Unknown);
+        Ok(op(band.stream_chunks(&self.options, &self.on_chunk)))
     }
 
     fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {

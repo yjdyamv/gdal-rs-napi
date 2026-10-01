@@ -52,6 +52,7 @@ const methods = {
     'histogram',
     'polygonize',
     'readAs',
+    'readChunks',
     'readPixels',
     'sieveFilter',
     'statistics',
