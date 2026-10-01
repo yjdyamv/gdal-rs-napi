@@ -45,14 +45,22 @@ aspirational.
 1. **Verbs first, one name per operation.** A blocking call is `xxxSync()`; the
    same call on the thread pool is `xxx()`, returning a `Promise`. There is no
    `Async` suffix — the absence of `Sync` is what says "async".
-2. **Cheap getters carry no suffix.** `band.blockSize`, `layer.fields`,
+2. **The exception is a getter, which has no call to rename.** `band.dataType` is a
+   property, so a `band.dataType()` cannot exist beside it, and the rule above has
+   nothing to apply to. Its thread-pool twin is therefore `band.dataTypeAsync`, a
+   property that hands back a promise — which is the reference's spelling too.
+   These exist for the *wait*, not for the work: a getter takes the process-wide
+   lock, and while an async read holds it a synchronous getter would stop the event
+   loop until the read finished.
+3. **Cheap getters carry no async twin.** `band.blockSize`, `layer.fields`,
    `band.getPixel(x, y)` and `band.defaultHistogram()` never touch the disk, so
-   there is nothing to wait for and nothing to name.
-3. **Properties read, methods write.** `band.noDataValue` is a getter;
+   there is nothing to wait for beyond that lock — and only the ones that report
+   what the dataset already knows have one.
+4. **Properties read, methods write.** `band.noDataValue` is a getter;
    `setNoDataValue()` is the writer. A property that can be assigned
    (`band.noDataValue = x`) is *not* the style here: a setter that throws is
    harder to miss than an assignment that silently does nothing.
-4. **Namespaces group free functions**: `gdal.config.get`, `gdal.fs.readFile`.
+5. **Namespaces group free functions**: `gdal.config.get`, `gdal.fs.readFile`.
 
 ## Indexing
 
@@ -155,7 +163,7 @@ not change:
 | | here | `gdal-async` |
 |---|---|---|
 | Index base | 0-based | 1-based |
-| Async naming | `xxxSync()` / `xxx()` | `xxx()` / `xxxAsync()` |
+| Async naming | `xxxSync()` / `xxx()`, and `xxxAsync` for a getter's twin | `xxx()` / `xxxAsync()` |
 | Assignment | `setNoDataValue(x)` | `band.noDataValue = x` |
 
 A separate adapter entry point is the intended home for that shape, so a port is

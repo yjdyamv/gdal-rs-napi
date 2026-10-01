@@ -6,6 +6,19 @@ First working cut — everything here is new.
 
 ### Binding
 
+- Every read-only property of a `RasterBand` and a `Dataset` now has an **`xxxAsync`
+  twin** that answers the same thing off the thread pool: `sizeAsync`, `blockSizeAsync`,
+  `dataTypeAsync`, `colorInterpretationAsync`, `descriptionAsync`, `unitTypeAsync`,
+  `noDataValueAsync`, `scaleAsync`, `offsetAsync`, `minimumAsync`, `maximumAsync`,
+  `idAsync`, `readOnlyAsync`, `hasArbitraryOverviewsAsync`, `categoryNamesAsync`,
+  `colorTableAsync`, `rasterSizeAsync`, `geoTransformAsync` and `spatialRefAsync`. They
+  exist for the *wait*, not for the work: a getter takes the process-wide lock, and on
+  an ordinary dataset that is the exclusive side, so one read while an async read is in
+  flight stops the event loop until that read finishes. The name keeps the reference's
+  `Async` suffix, and that is the one deliberate exception to this binding's "the async
+  form drops the `Sync` suffix" rule — `band.dataType` is a property, so a
+  `band.dataType()` cannot exist beside it and there is no call to rename. They are
+  getters, not methods: `await band.sizeAsync`, with no parentheses.
 - **VRT pixel functions** — a derived VRT band whose pixels a JavaScript function
   computes. `gdal.addPixelFunc(name, fn)` registers one with GDAL, `wrapVRT` writes the
   VRT that uses it, and `toPixelFunc` / `createPixelFunc` / `createPixelFuncWithArgs`

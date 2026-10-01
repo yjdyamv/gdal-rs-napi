@@ -121,6 +121,26 @@ reference's, with two differences worth knowing:
 
 Every Tier 3 entry is now built, or recorded as a non-goal below.
 
+#### Async getters
+
+Every read-only property of a `RasterBand` and of a `Dataset` has its `xxxAsync` twin:
+`sizeAsync`, `blockSizeAsync`, `dataTypeAsync`, `colorInterpretationAsync`,
+`descriptionAsync`, `unitTypeAsync`, `noDataValueAsync`, `scaleAsync`, `offsetAsync`,
+`minimumAsync`, `maximumAsync`, `idAsync`, `readOnlyAsync`,
+`hasArbitraryOverviewsAsync`, `categoryNamesAsync`, `colorTableAsync`, and
+`rasterSizeAsync`, `geoTransformAsync`, `spatialRefAsync`.
+
+They are worth having here for a different reason than in the reference, and the shape
+is the reference's because of a gap in ours: the rule that the async form drops the
+`Sync` suffix has nothing to apply to when there is no call — `band.dataType` is a
+property, so `band.dataType()` cannot exist beside it. What they buy is the *wait*: a
+getter takes the process-wide lock, and on an ordinary dataset that is the exclusive
+side, so a getter read while an async read is in flight stops the event loop until that
+read finishes. These do the reading on the thread pool and hand the answer back.
+
+They report what the dataset already knows, so they are all cheap once the lock is
+had — that, and not the reference's per-dataset I/O queue, is what they are for.
+
 #### The multidimensional model
 
 The whole subsystem is in, on GDAL's own C API: `Dataset.root` opens the door
@@ -148,10 +168,6 @@ Windows keeps the file locked — after `close()`.
 
 These are **decisions, not omissions**.
 
-- **Async getters** — the `xxxAsync` form of every getter. It conflicts with the
-  naming rule (sync is `xxxSync()`, async is `xxx()`; no `Async` suffix), and its
-  purpose in the reference — not blocking behind a per-dataset I/O queue — does not
-  arise here, where a getter just waits on the shared lock. Recorded in PHASE1 WS-4.
 - **Native collection classes** — `dataset.bands.get()` / `.count()` / `.map()` /
   iterators, `layer.fields`, `layer.features`, `driver` collections. Our arrays
   already have `for…of`, `forEach` and `map`, and the singular accessors
@@ -178,6 +194,7 @@ These are **decisions, not omissions**.
 | band / layer / field index | 1-based | **0-based** (`band.id` is the one 1-based value, as GDAL reports it) |
 | blocking call | `xxx()` | `xxxSync()` |
 | async call | `xxxAsync()`, or `xxx()` + callback | `xxx()` returning a `Promise` |
+| async getter | `band.dataTypeAsync` | the same, and for the same reason — see below |
 | setter | `band.noDataValue = x` | `band.setNoDataValue(x)` |
 | enum value | numeric `GDT_*` / `GCI_*` / `OFT_*` | string (`'Float32'`, `'RedBand'`) via `gdal.const` |
 | feature | `Feature` object with `fields` / `geometry` | `FeatureRecord` plain object, plus `layer.getFeature(fid)` for the object form |

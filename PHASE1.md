@@ -32,7 +32,7 @@
 | WS-1 几何对象模型 | ✅ 已完成 | `gdal.Geometry` 类已落地（`fromWkt`/`fromWkb`/`fromJson`、`toWkt`/`toWkb`/`toJson`、`type`/`isEmpty`/`pointCount`/`area`/`length`/`envelope`、`flattenTo2D`/`segmentize`/`swapXY`/`transform`）；写入端已能收 `Geometry` 或 GeoJSON（`createFeature`/`updateFeature`/`setSpatialFilter`/`Feature.setGeometry`/`rasterize`/`transformGeometry`）；GEOS 谓词与集合运算已写好并带 `has_geos()` 守卫（`intersects`/`contains`/…/`buffer`/`union`…，共 19 个）；按形状的访问器（`x`/`y`/`z`、`points`、`rings`/`exteriorRing`/`interiorRings`、`children`、`coordinates`）；GEOS 已**默认静态链入**（Windows/MSVC 上实测 `features().geos === true`，谓词与集合运算跑通）；后续又补了 `makeValid`/`boundary`/`pointOnSurface`/`unaryUnion`/`concaveHull`/`normalize`/`setPrecision`/`isRing`/`toGML`/`toKML`。**类族不做**（见下）。**待**只剩其余平台验证（属发布范围） |
 | WS-2 Driver/Dataset 对象模型 | ✅ 已完成 | `Driver` 对象（+`createCopy`）、`dataset.driver` 对象化、`open({drivers})`、`Dataset.description`/`rasterSize`/`getFileList`、`setProjection` 收 `SpatialRef`。集合类**不做**，见下 |
 | WS-3 Feature/Field 对象模型 | ✅ 已完成 | `layer.field(name)`/`addField`/`deleteField`/`reorderFields`、`FieldInfo` 全量定义、`layer.features()`（异步）、`layer.setSpatialFilter(geom)`、`layer.defn`（`FeatureDefn`）、`layer.getFeature(fid)` → `Feature`（`fields` 直写穿、`geometry`、`defn`、`toObject`） |
-| WS-4 异步人体工学 | ✅ 已完成 | `FeatureCursor` 已可用 `for await`（外壳加的，读的仍是同一个 `read()`）；异步错误已带 `err.code`（外壳从消息前缀提取）；`CoordinateTransform.transformPoints` 已跑在线程池上（点数组，百万点不必调用方分块，同步版更名 `transformPointsSync`）；`band.readChunks` 是 `readChunksSync` 的异步孪生。**不做**（非目标，理由见下）：`Dataset.bands/layers` 的异步迭代、异步 getter、`eventLoopWarning` |
+| WS-4 异步人体工学 | ✅ 已完成 | `FeatureCursor` 已可用 `for await`（外壳加的，读的仍是同一个 `read()`）；异步错误已带 `err.code`（外壳从消息前缀提取）；`CoordinateTransform.transformPoints` 已跑在线程池上（点数组，百万点不必调用方分块，同步版更名 `transformPointsSync`）；`band.readChunks` 是 `readChunksSync` 的异步孪生；只读 getter 的异步孪生也补齐了（19 个 `xxxAsync`）。**不做**（非目标，理由见下）：`Dataset.bands/layers` 的异步迭代、`eventLoopWarning` |
 | WS-7 兼容层 | ✅ 已完成 | `gdal-rs-napi/compat` 已落地：1-based 索引、`xxx()`/`xxxAsync()`（含 node 回调形态）、setter 赋值（`noDataValue`/`geoTransform`/`srs`）、`Driver` 与各集合、`Feature`（`fields.toObject`/`toArray`、可赋值 `geometry`）、`SpatialReference`、几何类族（含 `instanceof`、`toWKT`/`toJSON`/`get*`）。**不做**：本绑定自己定形状的波段附加物——`colorTable`/`mask`/流（形状在主入口上，不在兼容层包装里）。多维模型、`calcAsync` 与 VRT 像素函数也已在主入口落地，但 compat **没有**给它们做重包装。 |
 
 ### 一个修正：`gdal.const` 应该是字符串词汇，不是 GDAL 数字码
@@ -106,7 +106,7 @@ GDAL 的数字码属于兼容层（WS-7），那里 `gdal-async` 的形状才是
 ## A. 差距矩阵
 
 > **本矩阵已按当前状态刷新**。仍标 ❌ 的只剩两类，且逐条给了理由：**做不到**（GDAL 的 C API
-> 没有那个函数）与**已定案的取舍/非目标**（异步 getter、原生集合对象形态、`eventLoopWarning`）。
+> 没有那个函数）与**已定案的取舍/非目标**（原生集合对象形态、`eventLoopWarning`）。
 > 🟡 表示能力齐、只是形状或拼法与 `gdal-async` 不同（那层形状归 `compat`）。
 
 图例：✅ 有；🟡 有但形状不同；❌ 做不到 / 已定案不做。
@@ -251,7 +251,7 @@ GDAL 的数字码属于兼容层（WS-7），那里 `gdal-async` 的形状才是
 | 能力 | gdal-async | 我们 |
 |---|---|---|
 | 方法级异步 | ✅ `xxxAsync` + callback 双形态 | ✅ `xxxSync()` / `xxx(): Promise`（本绑定的命名约定，不引入 `Async` 后缀） |
-| **异步 getter** | ✅ `rasterSizeAsync`、`srsAsync`、`colorTableAsync`… | ❌ **非目标**：与命名规则冲突；它要解决的问题（per-dataset I/O 队列下读同步 getter 会卡）在这里形态不同——同步 getter 只是等锁 |
+| **异步 getter** | ✅ `rasterSizeAsync`、`srsAsync`、`colorTableAsync`… | ✅ 已落地 19 个（Dataset 3 + RasterBand 16）。理由与参考不同：我们这边是**等锁** —— 串行数据集上 getter 取独占锁，若此刻有异步读在跑，同步 getter 会把事件循环堵到读完；异步版把这段等待放到线程池。命名照参考保留 `Async` 后缀：getter 没有可改名的零参调用形式（`band.dataType` 是属性），「异步不带 Sync」这条规则没有对象可施 |
 | **异步迭代器** | ✅ `for await (const f of layer.features)` | ✅ `for await (const f of layer.openCursor())`（外壳加的） |
 | 同步迭代器 | ✅ `for (const f of layer.features)` | ✅ `featuresSync()` / `bands()` / `layers()` 返回数组，本来就同步可迭代 |
 | **每数据集 I/O 队列** | 🟡 有 per-dataset mutex（`libuv` 线程池调度） | 🟡 **进程级 `RwLock`**：数据集走独占；`openThreadSafe()` 的读取走共享、真并行；无数据集的调用（CRS / 几何 / `gdal.fs` / 模块自省）也走共享 |
@@ -439,8 +439,8 @@ compat 层用测试锁住形状即可。它的价值是——**让 `gdal-async` 
 - 发布 `gdal-rs-napi/compat`；用 `gdal-async` 的真实示例当验收测试。
 
 **WS-8 · 明确不做（记为设计取舍，写进 README）**
-- 只剩 A8 那三条：异步 getter、原生集合对象形态、`eventLoopWarning`。
-（Node Streams、波段代数、多维模型、`calcAsync` 与 VRT 像素函数后来都补上了，见
+- 只剩 A8 那两条：原生集合对象形态、`eventLoopWarning`。
+（Node Streams、波段代数、多维模型、`calcAsync`、VRT 像素函数与异步 getter 后来都补上了，见
 [`docs/PARITY.md`](./docs/PARITY.md)。）
 
 ### C3. 顺序与依赖

@@ -23,6 +23,7 @@
 // affected; the shipped cdylib is warning-free.
 #![cfg_attr(test, allow(dead_code))]
 
+mod async_getter;
 mod band;
 mod config;
 mod dataset;

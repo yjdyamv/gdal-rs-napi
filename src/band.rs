@@ -18,6 +18,7 @@ use napi::bindgen_prelude::*;
 use napi::threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode};
 use napi_derive::napi;
 
+use crate::async_getter::{BandProperty, BandPropertyTask};
 use crate::dataset::{CreateOptions, DatasetRef, JsDataset, with_two};
 use crate::dtype::DataType;
 use crate::error::{GdalErrorCode, IntoGdalResult, Result, bad_argument, into_status_error, split};
@@ -403,6 +404,17 @@ impl JsRasterBand {
             kind,
             data_type,
         }
+    }
+
+    /// The dataset this band is a window on, for the callers that pass the pair along
+    /// to a worker thread rather than using it here.
+    pub(crate) fn dataset_ref(&self) -> &DatasetRef {
+        &self.dataset
+    }
+
+    /// Which band of [`Self::dataset_ref`] this is.
+    pub(crate) fn kind(&self) -> BandKind {
+        self.kind
     }
 
     /// The same handle, aimed at `index`'s mask band instead of at the band.
@@ -2361,6 +2373,109 @@ type OpResult<T> = std::result::Result<T, (GdalErrorCode, String)>;
 
 fn op<T>(result: Result<T>) -> OpResult<T> {
     result.map_err(split)
+}
+
+/// The `xxxAsync` halves of the read-only getters. They read through the very getters
+/// above, on the thread pool instead of on the JS thread — see [`crate::async_getter`]
+/// for the tasks and for why the names carry the reference's `Async` suffix.
+#[napi]
+impl JsRasterBand {
+    /// [`Self::size`], off the event loop — the same answer, with the wait for the lock
+    /// on the thread pool rather than on the JS thread.
+    #[napi(getter, ts_return_type = "Promise<Array<number>>")]
+    pub fn size_async(&self) -> AsyncTask<BandPropertyTask<Vec<u32>>> {
+        self.property(BandProperty::Size)
+    }
+
+    /// [`Self::block_size`], off the event loop.
+    #[napi(getter, ts_return_type = "Promise<Array<number>>")]
+    pub fn block_size_async(&self) -> AsyncTask<BandPropertyTask<Vec<u32>>> {
+        self.property(BandProperty::BlockSize)
+    }
+
+    /// [`Self::data_type`], off the event loop.
+    #[napi(getter, ts_return_type = "Promise<DataType>")]
+    pub fn data_type_async(&self) -> AsyncTask<BandPropertyTask<String>> {
+        self.property(BandProperty::DataType)
+    }
+
+    /// [`Self::color_interpretation`], off the event loop.
+    #[napi(getter, ts_return_type = "Promise<string>")]
+    pub fn color_interpretation_async(&self) -> AsyncTask<BandPropertyTask<String>> {
+        self.property(BandProperty::ColorInterpretation)
+    }
+
+    /// [`Self::description`], off the event loop.
+    #[napi(getter, ts_return_type = "Promise<string | null>")]
+    pub fn description_async(&self) -> AsyncTask<BandPropertyTask<Option<String>>> {
+        self.property(BandProperty::Description)
+    }
+
+    /// [`Self::unit_type`], off the event loop.
+    #[napi(getter, ts_return_type = "Promise<string | null>")]
+    pub fn unit_type_async(&self) -> AsyncTask<BandPropertyTask<Option<String>>> {
+        self.property(BandProperty::UnitType)
+    }
+
+    /// [`Self::no_data_value`], off the event loop.
+    #[napi(getter, ts_return_type = "Promise<number | null>")]
+    pub fn no_data_value_async(&self) -> AsyncTask<BandPropertyTask<Option<f64>>> {
+        self.property(BandProperty::NoDataValue)
+    }
+
+    /// [`Self::scale`], off the event loop.
+    #[napi(getter, ts_return_type = "Promise<number | null>")]
+    pub fn scale_async(&self) -> AsyncTask<BandPropertyTask<Option<f64>>> {
+        self.property(BandProperty::Scale)
+    }
+
+    /// [`Self::offset`], off the event loop.
+    #[napi(getter, ts_return_type = "Promise<number | null>")]
+    pub fn offset_async(&self) -> AsyncTask<BandPropertyTask<Option<f64>>> {
+        self.property(BandProperty::Offset)
+    }
+
+    /// [`Self::minimum`], off the event loop.
+    #[napi(getter, ts_return_type = "Promise<number | null>")]
+    pub fn minimum_async(&self) -> AsyncTask<BandPropertyTask<Option<f64>>> {
+        self.property(BandProperty::Minimum)
+    }
+
+    /// [`Self::maximum`], off the event loop.
+    #[napi(getter, ts_return_type = "Promise<number | null>")]
+    pub fn maximum_async(&self) -> AsyncTask<BandPropertyTask<Option<f64>>> {
+        self.property(BandProperty::Maximum)
+    }
+
+    /// [`Self::id`], off the event loop.
+    #[napi(getter, ts_return_type = "Promise<number>")]
+    pub fn id_async(&self) -> AsyncTask<BandPropertyTask<u32>> {
+        self.property(BandProperty::Id)
+    }
+
+    /// [`Self::read_only`], off the event loop.
+    #[napi(getter, ts_return_type = "Promise<boolean>")]
+    pub fn read_only_async(&self) -> AsyncTask<BandPropertyTask<bool>> {
+        self.property(BandProperty::ReadOnly)
+    }
+
+    /// [`Self::has_arbitrary_overviews`], off the event loop.
+    #[napi(getter, ts_return_type = "Promise<boolean>")]
+    pub fn has_arbitrary_overviews_async(&self) -> AsyncTask<BandPropertyTask<bool>> {
+        self.property(BandProperty::HasArbitraryOverviews)
+    }
+
+    /// [`Self::category_names`], off the event loop.
+    #[napi(getter, ts_return_type = "Promise<Array<string>>")]
+    pub fn category_names_async(&self) -> AsyncTask<BandPropertyTask<Vec<String>>> {
+        self.property(BandProperty::CategoryNames)
+    }
+
+    /// [`Self::color_table`], off the event loop.
+    #[napi(getter, ts_return_type = "Promise<Array<ColorTableEntry> | null>")]
+    pub fn color_table_async(&self) -> AsyncTask<BandPropertyTask<Option<Vec<ColorTableEntry>>>> {
+        self.property(BandProperty::ColorTable)
+    }
 }
 
 pub struct ReadBandTask {

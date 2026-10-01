@@ -155,15 +155,31 @@ function wrapFunction(name) {
 function wrapMethod(className, name) {
   const klass = binding[className]
   const descriptor = klass && Object.getOwnPropertyDescriptor(klass.prototype, name)
-  if (!descriptor || typeof descriptor.value !== 'function') {
+  if (!descriptor) {
     throw new Error(`async-methods.js lists ${className}.${name}, but the binding does not have it`)
   }
-  Object.defineProperty(klass.prototype, name, {
-    ...descriptor,
-    value: function (...args) {
-      return withCode(descriptor.value.apply(this, args))
-    },
-  })
+  if (typeof descriptor.value === 'function') {
+    Object.defineProperty(klass.prototype, name, {
+      ...descriptor,
+      value: function (...args) {
+        return withCode(descriptor.value.apply(this, args))
+      },
+    })
+    return
+  }
+  // The `xxxAsync` halves of the getters are getters themselves — a property that
+  // hands back a promise, rather than a call that returns one — so there is nothing
+  // to forward arguments to.
+  if (typeof descriptor.get === 'function') {
+    Object.defineProperty(klass.prototype, name, {
+      ...descriptor,
+      get() {
+        return withCode(descriptor.get.call(this))
+      },
+    })
+    return
+  }
+  throw new Error(`${className}.${name} is neither a method nor a getter`)
 }
 
 for (const name of asyncMethods.functions) wrapFunction(name)

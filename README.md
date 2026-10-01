@@ -1613,6 +1613,30 @@ What it costs, and what it does not do:
 `close()` behaves as it does everywhere else: later reads fail, and a read already
 in flight finishes against a handle that is still alive.
 
+### Async getters
+
+Every read-only property has a twin that answers the same thing off the thread pool:
+
+```js
+band.dataType        // 'Float64', now
+await band.dataTypeAsync   // the same, without stopping the event loop to get it
+```
+
+They are **getters**, not methods — `await band.sizeAsync`, no parentheses. A band has
+`sizeAsync`, `blockSizeAsync`, `dataTypeAsync`, `colorInterpretationAsync`,
+`descriptionAsync`, `unitTypeAsync`, `noDataValueAsync`, `scaleAsync`, `offsetAsync`,
+`minimumAsync`, `maximumAsync`, `idAsync`, `readOnlyAsync`,
+`hasArbitraryOverviewsAsync`, `categoryNamesAsync` and `colorTableAsync`; a dataset has
+`rasterSizeAsync`, `geoTransformAsync` and `spatialRefAsync`.
+
+What they are for is the *wait*, not the work — a getter takes the process-wide lock,
+and on an ordinary dataset that is the exclusive side. Read one while an async read is
+in flight and the synchronous form stops the event loop until that read finishes; this
+form leaves the waiting to the thread pool. (The reference's `Async` suffix is kept
+here, the one place this binding's "the async form drops the `Sync` suffix" rule has
+nothing to apply to: `band.dataType` is a property, so a `band.dataType()` cannot exist
+beside it.)
+
 ### Resources: handles, descriptors and streaming
 
 Three things worth knowing together, because they are all about *how much* a process

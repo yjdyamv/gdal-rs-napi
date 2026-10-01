@@ -25,6 +25,7 @@ use napi::threadsafe_function::ThreadsafeFunction;
 use napi_derive::napi;
 use serde_json::Value;
 
+use crate::async_getter::{DatasetProperty, DatasetPropertyTask, SpatialRefTask};
 use crate::band::JsRasterBand;
 use crate::driver::JsDriver;
 use crate::dtype::DataType;
@@ -668,6 +669,22 @@ pub struct JsDataset {
 }
 
 impl JsDataset {
+    /// A handle to the same open dataset, for work that only reads through it: the
+    /// `xxxAsync` getters build one on a worker thread and never look at the path.
+    pub(crate) fn detached(dataset: DatasetRef) -> Self {
+        Self {
+            dataset,
+            path: String::new(),
+            mem_file: None,
+        }
+    }
+
+    /// The open dataset behind this handle, for the callers that pass it along to a
+    /// worker thread rather than using it here.
+    pub(crate) fn handle(&self) -> &DatasetRef {
+        &self.dataset
+    }
+
     pub(crate) fn wrap_ref(dataset: DatasetRef, path: String) -> Self {
         Self {
             dataset,
@@ -1881,6 +1898,29 @@ pub fn open_sync(
                 path,
             ))
         }
+    }
+}
+
+/// The `xxxAsync` halves of the read-only getters — see [`crate::async_getter`] for the
+/// tasks, and for why the names carry the reference's `Async` suffix.
+#[napi]
+impl JsDataset {
+    /// [`Self::raster_size`], off the event loop.
+    #[napi(getter, ts_return_type = "Promise<RasterSize>")]
+    pub fn raster_size_async(&self) -> AsyncTask<DatasetPropertyTask<RasterSize>> {
+        self.property(DatasetProperty::RasterSize)
+    }
+
+    /// [`Self::geo_transform`], off the event loop.
+    #[napi(getter, ts_return_type = "Promise<Array<number> | null>")]
+    pub fn geo_transform_async(&self) -> AsyncTask<DatasetPropertyTask<Option<Vec<f64>>>> {
+        self.property(DatasetProperty::GeoTransform)
+    }
+
+    /// [`Self::spatial_ref`], off the event loop.
+    #[napi(getter, ts_return_type = "Promise<JsSpatialRef | null>")]
+    pub fn spatial_ref_async(&self) -> AsyncTask<SpatialRefTask> {
+        self.spatial_ref_task()
     }
 }
 

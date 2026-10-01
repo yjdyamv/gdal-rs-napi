@@ -1360,6 +1360,27 @@ node scripts/bench-parallel.mjs big.tif --concurrency 4 [--min-speedup 1.5]
 `close()` 的行为与其它地方一致：之后的读取会失败，而**已经在进行中**的读取会在仍然存活的句柄上
 正常跑完。
 
+### 异步 getter
+
+每个只读属性都有一个到线程池上取同样答案的孪生：
+
+```js
+band.dataType        // 'Float64'，立刻拿到
+await band.dataTypeAsync   // 同一个答案，但不用为此堵住事件循环
+```
+
+它们是 **getter 而不是方法** —— `await band.sizeAsync`，不写括号。波段上是
+`sizeAsync`、`blockSizeAsync`、`dataTypeAsync`、`colorInterpretationAsync`、
+`descriptionAsync`、`unitTypeAsync`、`noDataValueAsync`、`scaleAsync`、`offsetAsync`、
+`minimumAsync`、`maximumAsync`、`idAsync`、`readOnlyAsync`、
+`hasArbitraryOverviewsAsync`、`categoryNamesAsync`、`colorTableAsync`；数据集上是
+`rasterSizeAsync`、`geoTransformAsync`、`spatialRefAsync`。
+
+它们买的是**等待**而不是干活：getter 要取进程级锁，而普通数据集上那是独占侧。当有一个异步读
+在跑时读同步 getter，事件循环会被卡到那个读结束；异步版把这段等待交给线程池。（这里保留了参考
+实现的 `Async` 后缀，也是本绑定「异步形式不带 `Sync` 后缀」这条规则**唯一**没有对象可施的地方：
+`band.dataType` 是属性，旁边不可能存在 `band.dataType()`。）
+
 ### 资源：句柄、描述符与流式读取
 
 三件放在一起看的事，都是关于一个进程**同时**开着多少东西：
