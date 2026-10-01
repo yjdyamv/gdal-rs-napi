@@ -1044,6 +1044,33 @@ impl JsRasterBand {
         })
     }
 
+    /// This band converted to another sample type, as a band of a **new in-memory
+    /// dataset** — `gdal_translate -of MEM -ot <type>`. The conversion is done once,
+    /// up front, so the result is independent of the source: closing the source does
+    /// not invalidate it. That is the difference from a VRT, which would read through
+    /// to the source and dangle once it is closed.
+    #[napi]
+    pub fn as_type(&self, data_type: DataType) -> Result<JsRasterBand> {
+        ensure_initialized();
+        let BandKind::Index(index) = self.kind else {
+            return Err(bad_argument("asType works on a band, not on a mask"));
+        };
+        let args = vec![
+            "-of".to_string(),
+            "MEM".to_string(),
+            "-ot".to_string(),
+            gdal_type_name(data_type)?.to_string(),
+        ];
+        let dataset = self.dataset.with_exclusive(|source| {
+            crate::programs::run(crate::programs::Program::Translate, "", &[source], &args)
+        })?;
+        Ok(JsRasterBand::from_kind(
+            DatasetRef::serialised(dataset),
+            BandKind::Index(index),
+            data_type,
+        ))
+    }
+
     /// Min, max, mean and standard deviation.
     ///
     /// By default GDAL computes them on the spot if it has nothing cached, which
@@ -1645,6 +1672,25 @@ impl JsRasterBand {
             block_height.min(band_height.saturating_sub(top)),
         ))
     }
+}
+
+/// GDAL's name for a sample type, for the command-line arguments that take one by
+/// name — `-ot` in a translate. `Byte` rather than `Uint8`, which is how GDAL spells
+/// that one; the rest differ only in case.
+fn gdal_type_name(data_type: DataType) -> Result<&'static str> {
+    Ok(match data_type {
+        DataType::Uint8 => "Byte",
+        DataType::Int8 => "Int8",
+        DataType::Uint16 => "UInt16",
+        DataType::Int16 => "Int16",
+        DataType::Uint32 => "UInt32",
+        DataType::Int32 => "Int32",
+        DataType::Uint64 => "UInt64",
+        DataType::Int64 => "Int64",
+        DataType::Float32 => "Float32",
+        DataType::Float64 => "Float64",
+        DataType::Unknown => return Err(bad_argument("asType needs a sample type, not Unknown")),
+    })
 }
 
 /// A `ReadOptions` for one window, which is all the accessors above need.

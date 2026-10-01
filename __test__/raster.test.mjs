@@ -1024,6 +1024,32 @@ test('a closed dataset fails loudly instead of touching freed memory', () => {
   assert.doesNotThrow(() => dataset.close(), 'close is idempotent, not an error')
 })
 
+test('asType converts a band into an independent in-memory band', () => {
+  const path = tmp('as-type.tif')
+  const dataset = gdal.createSync(path, {
+    driver: 'GTiff',
+    width: 4,
+    height: 4,
+    bandCount: 1,
+    dataType: 'Uint8',
+  })
+  const band = dataset.band(0)
+  band.fill(7)
+
+  const asFloat = band.asType('Float32')
+  assert.equal(asFloat.dataType, 'Float32')
+  assert.equal(asFloat.getPixel(0, 0), 7)
+
+  // A mask band has no translated counterpart.
+  assert.throws(() => band.mask.asType('Float32'), /not on a mask/)
+
+  // The conversion is materialised, so the result is independent of the source:
+  // closing the source leaves it readable, which a VRT-backed band could not
+  // promise (it shares the source handle and would dangle).
+  dataset.close()
+  assert.equal(asFloat.getPixel(0, 0), 7)
+})
+
 test('a band and a layer flush below the dataset, both ways', async () => {
   const path = tmp('flush.tif')
   const raster = gdal.createSync(path, {
