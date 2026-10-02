@@ -247,6 +247,34 @@ The 72 left are four families rather than 72 unknowns:
 | **The programs as module functions** | `translate`, `warp`, `dem`, `buildVRT`, `rasterize`, `polygonize`, `sieveFilter`, `fillNodata`, `checksumImage`, `reprojectImage`, `suggestedWarpOutput`, `contourGenerate` and their `…Async` forms | their signatures are **objects** (`gdal.polygonize({ … })`), not this binding's argument lists — each has to be read, not renamed |
 | **Classes and capabilities we do not have** | `FieldDefn` (68), `Envelope` (28), `Envelope3D` (25), `ColorTable` (9), `FeatureDefn` (7), and the curve geometries (`CircularString`, `CompoundCurve`, `SimpleCurve`, `MultiCurve` — 47 uses) | real work: the definitions exist natively but are not objects here, and the curves are not in the binding at all |
 
+**Since that measurement**, `compat` has closed the most-used parts of two of the four
+families:
+
+- **The programs as module functions** — `translate`, `vectorTranslate`, `warp`,
+  `buildVRT`, `dem`, `checksumImage`, `suggestedWarpOutput`, `reprojectImage`,
+  `fillNodata` and `sieveFilter`, each with its `…Async` twin. The reference and this
+  binding take the **same `args` array** of CLI options, so these are one native call
+  with the sources mapped from `Dataset` objects to paths. Four remain and are
+  deliberately not forwarded: `polygonize` and `contourGenerate` pass field *indexes*
+  where this binding takes names, and `rasterize` (a whole vector source) and `info`
+  (a `gdalinfo` wrapper) have no native counterpart.
+- **The vector write surface** — `layer.features.add` / `set` / `remove` and their
+  `…Async` forms, `layer.fields.add` / `remove` / `reorder` / `indexOf` / `getNames`,
+  `dataset.layers.create` / `copy` / `remove`, `layer.getSpatialFilter` /
+  `testCapability` / `fidColumn` / `geomColumn` / `defn` / `ds`, and `feature.defn`
+  (a `FeatureDefn`). Also corrected: `dataset.rasterSize`, `band.size` and
+  `band.blockSize` now answer the reference's `xyz` shape (`{ x, y }`) rather than
+  `{ xSize, ySize }`, which is what a port actually reads.
+
+What remains from the list is `FieldDefn` (a class), `ColorTable`, and the curve
+geometries — all of which need the native object model to grow first.
+
+The adapter is covered by its own **typed TypeScript suite** (`ts-test/`, run with
+`npm test` under Vitest): every export and class member is exercised, the
+declarations in `compat/index.d.ts` are the types the suite compiles against, and
+`npm run test:coverage` holds a coverage floor so a new member cannot land untested
+without the number moving.
+
 The member-level report the same run prints (153 names) is a **lead, not a measurement** —
 a bare `.name` cannot say which class it was reached on, so the suite's own helpers and
 any gdal-ish local land in it too. It is still how a whole family of forgotten accessors

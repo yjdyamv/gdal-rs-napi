@@ -23,7 +23,8 @@
 // Coverage is a subset, and honestly so — see `PHASE1.md` (WS-7) for what is in the
 // native binding but not reshaped here (the raster streams, `calcAsync`, the pixel
 // functions, and the command-line programs and their `translate`/`warp` family). The
-// test suite in `__test__/compat*.test.mjs` is what claims what works.
+// typed suite in `ts-test/compat-*.spec.ts` (and `ts-test/native/compat*.spec.ts`)
+// is what claims what works.
 
 const native = require('../index.js')
 
@@ -142,6 +143,10 @@ function dataTypeName(value) {
 class Geometry {
   toWKT() {
     return this.toWkt()
+  }
+
+  toWKB() {
+    return this.toWkb()
   }
 
   toJSON() {
@@ -291,6 +296,11 @@ class FeatureFields {
     return this._fields().names()
   }
 
+  /** The field names — the reference's method spelling of `names`. */
+  getNames() {
+    return this._fields().names()
+  }
+
   get count() {
     return this._fields().count()
   }
@@ -359,6 +369,21 @@ function unwrapGeometry(geometry) {
   return geometry && typeof geometry.toJson === 'function' ? geometry.toJson() : geometry
 }
 
+/**
+ * A layer's (or feature's) schema, as the reference spells it: `name`, `geomType`
+ * and a `fields` collection. Built from the native `Layer.defn` snapshot, so a
+ * later `addField` does not change an object already handed out.
+ */
+class FeatureDefn {
+  constructor(defn, layer) {
+    this.name = defn.name
+    this.geomType = defn.geometryType
+    this.geomIgnored = defn.geometryType === 'None'
+    this.styleIgnored = true
+    this.fields = new FieldCollection(defn.fields, layer)
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Collections
 //
@@ -378,19 +403,120 @@ class Collection {
     this._items.forEach((item, index) => callback(item, index + 1))
   }
 
+  map(callback) {
+    return this._items.map((item, index) => callback(item, index + 1))
+  }
+
   [Symbol.iterator]() {
     return this._items[Symbol.iterator]()
   }
 }
 
+/**
+ * A GDAL driver in the reference's shape. The native class spells the blocking
+ * forms `createSync` / `openSync` / `createCopySync`, while the reference spells
+ * them `create` / `open` / `createCopy` and reserves `…Async` for the pool — so
+ * this is the adapter between the two, and `deleteDataset` is the native `delete`.
+ */
+class Driver {
+  constructor(nativeDriver) {
+    this._native = nativeDriver
+  }
+
+  get name() {
+    return this._native.name
+  }
+
+  get description() {
+    return this._native.description
+  }
+
+  get longName() {
+    return this._native.longName
+  }
+
+  toString() {
+    return this._native.name
+  }
+
+  testCapability(name) {
+    return this._native.testCapability(name)
+  }
+
+  getMetadata(domain) {
+    return this._native.metadata(domain)
+  }
+
+  create(path, xSize, ySize, bandCount, dataType, options) {
+    return new Dataset(
+      this._native.createSync(path, {
+        width: xSize,
+        height: ySize,
+        bandCount,
+        dataType: dataTypeName(dataType),
+        options,
+      }),
+    )
+  }
+
+  createAsync(path, xSize, ySize, bandCount, dataType, options, callback) {
+    const cb = typeof options === 'function' ? options : callback
+    const creation = typeof options === 'function' ? undefined : options
+    return withCallback(
+      Promise.resolve().then(() => this.create(path, xSize, ySize, bandCount, dataType, creation)),
+      cb,
+    )
+  }
+
+  open(path, mode) {
+    return new Dataset(this._native.openSync(path, { update: mode === 'r+' }))
+  }
+
+  openAsync(path, mode, options, callback) {
+    const cb = typeof options === 'function' ? options : callback
+    return withCallback(Promise.resolve().then(() => this.open(path, mode)), cb)
+  }
+
+  createCopy(path, source, options) {
+    return new Dataset(this._native.createCopySync(path, source._native, options))
+  }
+
+  createCopyAsync(path, source, options, callback) {
+    const cb = typeof options === 'function' ? options : callback
+    const copyOptions = typeof options === 'function' ? undefined : options
+    return withCallback(Promise.resolve().then(() => this.createCopy(path, source, copyOptions)), cb)
+  }
+
+  deleteDataset(path) {
+    this._native.delete(path)
+  }
+
+  /** Alias of `deleteDataset`, under this binding's own spelling. */
+  delete(path) {
+    this._native.delete(path)
+  }
+
+  rename(newName, oldName) {
+    this._native.rename(newName, oldName)
+  }
+
+  copyFiles(newName, oldName) {
+    this._native.copyFiles(newName, oldName)
+  }
+}
+
 class DriverCollection extends Collection {
   constructor() {
-    super(native.drivers().map((driver) => driver))
+    super(native.drivers().map((driver) => new Driver(driver)))
   }
 
   get(nameOrIndex) {
     if (typeof nameOrIndex === 'number') return this._items[nameOrIndex - 1] ?? null
     return this._items.find((driver) => driver.name === nameOrIndex) ?? null
+  }
+
+  getNames() {
+    return this._items.map((driver) => driver.name)
   }
 }
 
@@ -401,22 +527,126 @@ class RasterBandCollection extends Collection {
 }
 
 class LayerCollection extends Collection {
+  constructor(items, ds) {
+    super(items)
+    this.ds = ds
+  }
+
   get(nameOrIndex) {
     if (typeof nameOrIndex === 'number') return this._items[nameOrIndex - 1] ?? null
     return this._items.find((layer) => layer.name === nameOrIndex) ?? null
   }
+
+  /**
+   * Create a layer — `dataset.layers.create(name, srs, geomType, options)`. `srs` is
+   * a `SpatialReference` (or a WKT string), `geomType` one of this binding's geometry
+   * type names, and `options` the driver's layer creation options.
+   */
+  create(name, srs, geomType, options) {
+    const request = { name, geometryType: geomType ?? undefined }
+    if (srs instanceof SpatialReference) request.wkt = srs.toWKT()
+    // A bare `EPSG:4326` is resolved to WKT: the native layer creation only takes
+    // a WKT string, and an authority code is a definition, not a WKT.
+    else if (typeof srs === 'string') request.wkt = new SpatialReference(srs).toWKT()
+    if (options) request.options = options
+    const layer = new Layer(this.ds._native.createLayer(request), this.ds)
+    this._items.push(layer)
+    return layer
+  }
+
+  createAsync(name, srs, geomType, options, callback) {
+    const cb = typeof options === 'function' ? options : callback
+    const creation = typeof options === 'function' ? undefined : options
+    return withCallback(Promise.resolve().then(() => this.create(name, srs, geomType, creation)), cb)
+  }
+
+  /** Copy an existing layer from another dataset into this one. */
+  copy(source, name, options) {
+    const layer = new Layer(this.ds._native.copyLayer(source._native, name, options), this.ds)
+    this._items.push(layer)
+    return layer
+  }
+
+  copyAsync(source, name, options, callback) {
+    const cb = typeof options === 'function' ? options : callback
+    const copyOptions = typeof options === 'function' ? undefined : options
+    return withCallback(Promise.resolve().then(() => this.copy(source, name, copyOptions)), cb)
+  }
+
+  /** Drop a layer, by name or 1-based index — the reference deletes by name too. */
+  remove(nameOrIndex) {
+    const layer = typeof nameOrIndex === 'number' ? this._items[nameOrIndex - 1] : this.get(nameOrIndex)
+    if (!layer) throw new Error(`no layer ${nameOrIndex}`)
+    this.ds._native.deleteLayer(layer.name)
+    // Deleting a layer shifts every later index, and a `Layer` here holds a
+    // position rather than a handle — so the survivors are re-fetched rather than
+    // left pointing at the wrong one.
+    this._items = this.ds._native.layers().map((nativeLayer) => new Layer(nativeLayer, this.ds))
+  }
+
+  removeAsync(nameOrIndex, callback) {
+    const cb = typeof nameOrIndex === 'function' ? nameOrIndex : callback
+    const which = typeof nameOrIndex === 'function' ? undefined : nameOrIndex
+    return withCallback(Promise.resolve().then(() => this.remove(which)), cb)
+  }
 }
 
 class FieldCollection extends Collection {
+  constructor(items, layer) {
+    super(items)
+    this.layer = layer
+  }
+
   get(nameOrIndex) {
     if (typeof nameOrIndex === 'number') return this._items[nameOrIndex - 1] ?? null
     return this._items.find((field) => field.name === nameOrIndex) ?? null
+  }
+
+  /** The field names, in schema order. */
+  getNames() {
+    return this._items.map((field) => field.name)
+  }
+
+  /** 1-based index of a field, or `-1` — the reference's `indexOf`. */
+  indexOf(name) {
+    const index = this._items.findIndex((field) => field.name === name)
+    return index < 0 ? -1 : index + 1
+  }
+
+  /**
+   * Add a field. `definition` is the `FieldDefinition` object `createLayer` takes
+   * (`{ name, fieldType, width?, precision?, nullable?, unique?, defaultValue?,
+   * justification? }`), and the added field is answered back.
+   */
+  add(definition) {
+    this.layer._native.addField(definition)
+    const added = this.layer._native.fields.at(-1)
+    this._items.push(added)
+    return added
+  }
+
+  /** Drop a field by name. */
+  remove(name) {
+    this.layer._native.deleteField(name)
+    const index = this._items.findIndex((field) => field.name === name)
+    if (index >= 0) this._items.splice(index, 1)
+  }
+
+  /** Reorder the schema to exactly `names`, each field once. */
+  reorder(names) {
+    this.layer._native.reorderFields(names)
+    this._items = names.map((name) => this._items.find((field) => field.name === name))
   }
 }
 
 class OverviewCollection extends Collection {
   get(index) {
     return this._items[index - 1] ?? null
+  }
+
+  /** The first level at or below `samples` across, or the smallest one. */
+  getBySampleCount(samples) {
+    return this._items.find((overview) => overview.size[0] <= samples) ?? this._items.at(-1) ?? null
   }
 }
 
@@ -429,11 +659,11 @@ class BandPixels {
   }
 
   get xSize() {
-    return this._band.size[0]
+    return this._band.size.x
   }
 
   get ySize() {
-    return this._band.size[1]
+    return this._band.size.y
   }
 
   get(x, y) {
@@ -485,6 +715,25 @@ class BandPixels {
       { x, y, width, height },
     )
   }
+
+  /** A Node `Readable` of the band's samples, as the native stream makes it. */
+  createReadStream(options) {
+    return this._band._native.createReadStream(options)
+  }
+
+  /** A Node `Writable` that consumes the band's samples. */
+  createWriteStream(options) {
+    return this._band._native.createWriteStream(options)
+  }
+
+  /** The block holding `(x, y)`, clipped to the band. */
+  readBlock(x, y) {
+    return this._band._native.readBlock(x, y)
+  }
+
+  writeBlock(x, y, data) {
+    this._band._native.writeBlock(x, y, data)
+  }
 }
 
 class RasterBand {
@@ -494,11 +743,12 @@ class RasterBand {
   }
 
   get size() {
-    return { xSize: this._native.size[0], ySize: this._native.size[1] }
+    // The reference's `size` is the `xyz` interface — `{ x, y }` — not `{ xSize, ySize }`.
+    return { x: this._native.size[0], y: this._native.size[1] }
   }
 
   get blockSize() {
-    return { xSize: this._native.blockSize[0], ySize: this._native.blockSize[1] }
+    return { x: this._native.blockSize[0], y: this._native.blockSize[1] }
   }
 
   get dataType() {
@@ -550,7 +800,9 @@ class RasterBand {
   }
 
   get overviews() {
-    return new OverviewCollection(this._native.overviews)
+    // Plain copy, for the reason the fields collection is copied: `band.overviews`
+    // is a collection wrapper whose own `map` / `forEach` read a snapshot.
+    return new OverviewCollection([...this._native.overviews])
   }
 }
 
@@ -598,13 +850,94 @@ class LayerFeatures {
   [Symbol.iterator]() {
     return this._layer._native.featuresSync().map((record) => new Feature(this._layer, record.fid))[Symbol.iterator]()
   }
+
+  /** The layer this view belongs to — the reference's back-reference. */
+  get layer() {
+    return this._layer
+  }
+
+  /**
+   * Add a feature. `feature` is a `Feature`, a `Geometry`, or the GeoJSON object
+   * `createFeature` takes; a plain `Feature` also carries its own fields across.
+   * The native `createFeature` does not report the new id, so a `Feature` passed in
+   * is answered back and a bare geometry answers `null`.
+   */
+  add(feature, properties) {
+    if (feature instanceof Feature) {
+      this._layer._native.createFeature(
+        unwrapGeometry(feature.geometry ?? undefined) ?? null,
+        feature.fields.toObject(),
+      )
+      return feature
+    }
+    this._layer._native.createFeature(unwrapGeometry(feature) ?? null, properties ?? null)
+    return null
+  }
+
+  addAsync(feature, properties, callback) {
+    const cb = typeof properties === 'function' ? properties : callback
+    const props = typeof properties === 'function' ? undefined : properties
+    return withCallback(Promise.resolve().then(() => this.add(feature, props)), cb)
+  }
+
+  /**
+   * Overwrite a feature by id: `set(feature)` uses the feature's own id, and
+   * `set(fid, feature)` names it. Like `add`, a plain geometry is accepted.
+   */
+  set(fid, feature) {
+    const id = typeof fid === 'number' ? fid : fid.fid
+    const value = typeof fid === 'number' ? feature : fid
+    const geometry = value instanceof Feature ? value.geometry : value
+    const properties = value instanceof Feature ? value.fields.toObject() : undefined
+    this._layer._native.updateFeature(id, unwrapGeometry(geometry ?? undefined) ?? null, properties ?? null)
+    return value
+  }
+
+  setAsync(fid, feature, callback) {
+    const cb = typeof feature === 'function' ? feature : callback
+    const value = typeof feature === 'function' ? undefined : feature
+    return withCallback(Promise.resolve().then(() => (value === undefined ? this.set(fid) : this.set(fid, value))), cb)
+  }
+
+  /** Remove a feature by id — the native `deleteFeature`. */
+  remove(fid) {
+    this._layer._native.deleteFeature(fid)
+  }
+
+  removeAsync(fid, callback) {
+    return withCallback(Promise.resolve().then(() => this.remove(fid)), callback)
+  }
 }
 
 class Layer {
-  constructor(nativeLayer) {
+  constructor(nativeLayer, ds) {
     this._native = nativeLayer
-    this.fields = new FieldCollection(nativeLayer.fields)
+    this._ds = ds
+    // `nativeLayer.fields` is the shell's *collection wrapper* — an array with its
+    // own `map` / `forEach` reading a frozen snapshot. Copying it into a plain array
+    // is what lets `add` / `remove` / `reorder` mutate the view and stay truthful.
+    this.fields = new FieldCollection([...nativeLayer.fields], this)
     this.features = new LayerFeatures(this)
+  }
+
+  /** The parent dataset — the reference's back-reference, or `null`. */
+  get ds() {
+    return this._ds ?? null
+  }
+
+  /** The FID column, or `null` when GDAL generates ids. */
+  get fidColumn() {
+    return this._native.fidColumn
+  }
+
+  /** The geometry column, or `null` for a layer with no geometry. */
+  get geomColumn() {
+    return this._native.geomColumn
+  }
+
+  /** The layer's schema, as a `FeatureDefn`. */
+  get defn() {
+    return new FeatureDefn(this._native.defn, this)
   }
 
   get name() {
@@ -646,10 +979,24 @@ class Layer {
     this._native.setAttributeFilter(filter)
   }
 
-  flush() {}
+  /** The spatial filter in force, as a `Geometry`, or `null`. */
+  getSpatialFilter() {
+    const filter = this._native.getSpatialFilter()
+    return filter ? wrapGeometry(filter) : null
+  }
 
-  async flushAsync(callback) {
-    return withCallback(Promise.resolve(), callback)
+  /** Whether the layer can do `name`, using GDAL's own `OLC*` capability names. */
+  testCapability(name) {
+    return this._native.testCapability(name)
+  }
+
+  /** Write the layer's pending changes to disk. */
+  flush() {
+    this._native.flushSync()
+  }
+
+  flushAsync(callback) {
+    return withCallback(this._native.flush(), callback)
   }
 }
 
@@ -664,7 +1011,10 @@ class Dataset {
     // vector side at all, and asking it for layers throws. It gets an empty collection
     // rather than taking the whole constructor down with it.
     const layers = nativeDataset.threadSafe ? [] : nativeDataset.layers()
-    this.layers = new LayerCollection(layers.map((layer) => new Layer(layer)))
+    this.layers = new LayerCollection(
+      layers.map((layer) => new Layer(layer, this)),
+      this,
+    )
   }
 
   get description() {
@@ -672,11 +1022,17 @@ class Dataset {
   }
 
   get driver() {
-    return this._native.driver
+    return new Driver(this._native.driver)
+  }
+
+  /** Whether this handle is read concurrently — only `open(path, 'rs' | 'rt')`. */
+  get threadSafe() {
+    return this._native.threadSafe
   }
 
   get rasterSize() {
-    return { xSize: this._native.rasterSize.width, ySize: this._native.rasterSize.height }
+    // The `xyz` interface, as the reference spells it.
+    return { x: this._native.rasterSize.width, y: this._native.rasterSize.height }
   }
 
   get srs() {
@@ -949,9 +1305,16 @@ function open(path, mode = 'r', drivers, xSize, ySize, bandCount, dataType, crea
   // gdal-async takes one driver name or a list of them, and it creates in `"w"`.
   const list = typeof drivers === 'string' ? [drivers] : drivers
   if (mode === 'w') {
+    const driver = list?.[0]
+    if (driver === undefined) throw new Error('creating a dataset needs a driver name')
+    // No raster size means a vector dataset — `GDALCreate` with no dimensions, which
+    // is `createVector` here and not `create`.
+    if (xSize === undefined || ySize === undefined) {
+      return new Dataset(native.createVectorSync(path, driver))
+    }
     return new Dataset(
       native.createSync(path, {
-        driver: list?.[0],
+        driver,
         width: xSize,
         height: ySize,
         bandCount,
@@ -1057,8 +1420,16 @@ Object.assign(Dataset.prototype, {
     return this._native.executeSql(sql, dialect)
   },
 
-  executeSQLAsync(sql, dialect) {
-    return this._native.executeSqlAsync(sql, dialect)
+  /**
+   * The same query under the reference's async name. The native query is
+   * synchronous, so this is the reference's *shape* rather than its concurrency —
+   * like the rest of this adapter's `xxxAsync` pairs. (The native binding has no
+   * `executeSqlAsync`, which is what this used to forward to.)
+   */
+  executeSQLAsync(sql, dialect, callback) {
+    const cb = typeof dialect === 'function' ? dialect : callback
+    if (typeof dialect === 'function') dialect = undefined
+    return withCallback(Promise.resolve().then(() => this._native.executeSql(sql, dialect)), cb)
   },
 
   /** A getter here, a getter-shaped call there. */
@@ -1113,11 +1484,48 @@ Object.assign(RasterBand.prototype, {
   },
 
   getMaskFlags() {
-    return this._native.maskFlags
+    // The reference reports GDAL's `GMF_*` bitmask; this binding spells the same
+    // flags as booleans, so they are folded back into the number here.
+    const flags = this._native.maskFlags
+    return (flags.allValid ? 1 : 0) | (flags.perDataset ? 2 : 0) | (flags.alpha ? 4 : 0) | (flags.noData ? 8 : 0)
   },
 
   createMaskBand(perDataset) {
     return this._native.createMask(perDataset)
+  },
+})
+
+// The read-only band values the reference carries as properties. Each is a
+// passthrough to the native getter, and each answers the same shape (`scale` and
+// the rest are `number | null`, `unitType` a `string | null`).
+Object.defineProperties(RasterBand.prototype, {
+  scale: { configurable: true, get() { return this._native.scale } },
+  offset: { configurable: true, get() { return this._native.offset } },
+  unitType: { configurable: true, get() { return this._native.unitType } },
+  minimum: { configurable: true, get() { return this._native.minimum } },
+  maximum: { configurable: true, get() { return this._native.maximum } },
+  id: { configurable: true, get() { return this._native.id } },
+  readOnly: { configurable: true, get() { return this._native.readOnly } },
+  hasArbitraryOverviews: {
+    configurable: true,
+    get() { return this._native.hasArbitraryOverviews },
+  },
+  categoryNames: { configurable: true, get() { return this._native.categoryNames } },
+})
+
+Object.assign(RasterBand.prototype, {
+  /** The band as a 2D `MDArray`. */
+  asMDArray() {
+    return this._native.asMDArray()
+  },
+
+  /** Save this band's changes to disk. */
+  flush() {
+    this._native.flushSync()
+  },
+
+  flushAsync(callback) {
+    return withCallback(this._native.flush(), callback)
   },
 })
 
@@ -1470,6 +1878,14 @@ Object.assign(Feature.prototype, {
   },
 })
 
+// The reference's `feature.defn` — the schema this feature belongs to.
+Object.defineProperty(Feature.prototype, 'defn', {
+  configurable: true,
+  get() {
+    return new FeatureDefn(this._layer._native.defn, this._layer)
+  },
+})
+
 // The operations that build a new geometry have to be re-wrapped, because the adapter's
 // own classes are **not** in the native chain: `wrapGeometry` is applied at the
 // factories, so a result that came out of an operation would be tagged as the main
@@ -1499,7 +1915,6 @@ for (const name of [
   'simplifyPreserveTopology',
   'swapXY',
   'symDifference',
-  'transform',
   'unaryUnion',
   'union',
   'unionCascaded',
@@ -1514,6 +1929,24 @@ for (const name of [
     },
   })
 }
+
+/** A `SpatialReference` wrapper as the native one the native methods expect. */
+function unwrapSpatialRef(value) {
+  return value instanceof SpatialReference ? value._srs : value
+}
+
+// `transform` names two CRSs, and a caller hands it this adapter's
+// `SpatialReference` wrappers — the native method wants the native ones, so it is
+// unwrapped here rather than in the generic re-wrap loop above.
+Object.defineProperty(Geometry.prototype, 'transform', {
+  configurable: true,
+  writable: true,
+  value(from, to) {
+    return wrapGeometry(
+      nativeGeometry.transform.call(this, unwrapSpatialRef(from), unwrapSpatialRef(to)),
+    )
+  },
+})
 
 let driversCollection = null
 
@@ -1610,8 +2043,8 @@ const Gdal = {
   RasterBandPixels: BandPixels,
   RasterBandOverviews: OverviewCollection,
   GDALDrivers: DriverCollection,
-  /** `dataset.driver` is the native object here rather than a wrapper, so this is it. */
-  Driver: native.Driver,
+  /** `dataset.driver` is a wrapper here too, under the reference's method names. */
+  Driver,
   CoordinateTransformation,
 
   // Re-exports: the main entry point already answers these, under its own name or the
@@ -1628,7 +2061,15 @@ const Gdal = {
   toPixelFunc: (fn) => native.toPixelFunc(fn),
   createPixelFunc: (fn) => native.createPixelFunc(fn),
   createPixelFuncWithArgs: (fn) => native.createPixelFuncWithArgs(fn),
-  calcAsync: (inputs, output, fn, options) => native.calcAsync(inputs, output, fn, options),
+  calcAsync: (inputs, output, fn, options) =>
+    native.calcAsync(
+      // Unwrap this adapter's bands, which the native `calcAsync` would not
+      // recognise as `RasterBand`s; a native band is passed straight through.
+      Object.fromEntries(Object.entries(inputs ?? {}).map(([name, band]) => [name, band?._native ?? band])),
+      output?._native ?? output,
+      fn,
+      options,
+    ),
   RasterMuxStream: native.RasterMuxStream,
   RasterTransform: native.RasterTransform,
 
@@ -1665,5 +2106,221 @@ const Gdal = {
     native.eventLoopWarning = value
   },
 }
+
+// ---- gdal-async's module-level utilities -----------------------------------
+//
+// The reference spells each command-line tool as one function taking the same
+// `args` array of CLI options this binding's own program entry points take, so
+// most of these are a single native call with the sources mapped from `Dataset`
+// objects to the paths the native module-level entries open. The four the
+// reference has that are **not** here — `polygonize`, `contourGenerate`,
+// `rasterize` and `info` — are the ones whose mapping is not mechanical: the
+// first two pass field *indexes* where this binding takes names, and the latter
+// two have no native counterpart (this binding has no `gdalinfo` wrapper, and
+// `gdal.rasterize` burns a whole vector source where the native
+// `Dataset.rasterize` takes geometries).
+
+/** The native progress callback from the reference's `options.progress_cb`. */
+function utilProgress(options) {
+  const callback = options?.progress_cb
+  if (typeof callback !== 'function') return undefined
+  return (update) => callback(update.complete, update.message)
+}
+
+/** A `Dataset` or a path, as the path the native module-level entries open. */
+function sourcePath(source) {
+  if (typeof source === 'string') return source
+  return source?._native?.path || source?._native?.description
+}
+
+const wrapDataset = (dataset) => new Dataset(dataset)
+
+function translate(destination, source, args) {
+  return wrapDataset(source._native.translateSync(destination, args))
+}
+
+function translateAsync(destination, source, args, options, callback) {
+  const cb = typeof options === 'function' ? options : callback
+  const util = typeof options === 'function' ? undefined : options
+  return withCallback(
+    source._native.translate(destination, args, utilProgress(util)).then(wrapDataset),
+    cb,
+  )
+}
+
+function vectorTranslate(destination, source, args) {
+  return wrapDataset(source._native.vectorTranslateSync(destination, args))
+}
+
+function vectorTranslateAsync(destination, source, args, options, callback) {
+  const cb = typeof options === 'function' ? options : callback
+  const util = typeof options === 'function' ? undefined : options
+  return withCallback(
+    source._native.vectorTranslate(destination, args, utilProgress(util)).then(wrapDataset),
+    cb,
+  )
+}
+
+function warp(dstPath, dstDataset, sources, args) {
+  if (dstDataset !== null && dstDataset !== undefined) {
+    throw new TypeError('gdal.warp cannot write into an existing destination dataset — use reprojectImage')
+  }
+  return wrapDataset(native.warpSync(dstPath, sources.map(sourcePath), args))
+}
+
+function warpAsync(dstPath, dstDataset, sources, args, options, callback) {
+  const cb = typeof options === 'function' ? options : callback
+  const util = typeof options === 'function' ? undefined : options
+  if (dstDataset !== null && dstDataset !== undefined) {
+    return withCallback(
+      Promise.reject(new TypeError('gdal.warp cannot write into an existing destination dataset — use reprojectImage')),
+      cb,
+    )
+  }
+  return withCallback(
+    native.warp(dstPath, sources.map(sourcePath), args, utilProgress(util)).then(wrapDataset),
+    cb,
+  )
+}
+
+function buildVRT(dstPath, sources, args) {
+  return wrapDataset(native.buildVrtSync(dstPath, sources.map(sourcePath), args))
+}
+
+function buildVRTAsync(dstPath, sources, args, callback) {
+  const cb = typeof args === 'function' ? args : callback
+  const cliArgs = typeof args === 'function' ? undefined : args
+  return withCallback(native.buildVrt(dstPath, sources.map(sourcePath), cliArgs).then(wrapDataset), cb)
+}
+
+function dem(dstPath, source, mode, args, colorFile) {
+  return wrapDataset(source._native.demProcessSync(dstPath, mode, args, colorFile))
+}
+
+function demAsync(dstPath, source, mode, args, colorFile, options, callback) {
+  const cb = typeof options === 'function' ? options : callback
+  const util = typeof options === 'function' ? undefined : options
+  return withCallback(
+    source._native.demProcess(dstPath, mode, args, colorFile, utilProgress(util)).then(wrapDataset),
+    cb,
+  )
+}
+
+function checksumImage(source, x, y, width, height) {
+  return source._native.checksumSync({ x, y, width, height })
+}
+
+function checksumImageAsync(source, x, y, width, height, callback) {
+  const cb = typeof height === 'function' ? height : callback
+  const box = typeof height === 'function' ? { x, y, width } : { x, y, width, height }
+  return withCallback(source._native.checksum(box), cb)
+}
+
+function suggestedWarpOutput(options) {
+  const result = options.src._native.suggestedWarpOutputSync({
+    srcWkt: options.s_srs?.wkt,
+    dstWkt: options.t_srs?.wkt,
+    maxError: options.maxError,
+  })
+  return { rasterSize: { x: result.width, y: result.height }, geoTransform: result.geoTransform }
+}
+
+function suggestedWarpOutputAsync(options, callback) {
+  const cb = typeof options === 'function' ? options : callback
+  const opts = typeof options === 'function' ? undefined : options
+  return withCallback(
+    opts.src._native
+      .suggestedWarpOutput({ srcWkt: opts.s_srs?.wkt, dstWkt: opts.t_srs?.wkt, maxError: opts.maxError })
+      .then((result) => ({
+        rasterSize: { x: result.width, y: result.height },
+        geoTransform: result.geoTransform,
+      })),
+    cb,
+  )
+}
+
+function reprojectImage(options) {
+  options.src._native.reprojectImageSync(options.dst._native, {
+    srcWkt: options.s_srs?.wkt,
+    dstWkt: options.t_srs?.wkt,
+    resampling: options.resampling,
+    maxError: options.maxError,
+    memoryLimit: options.memoryLimit,
+  })
+}
+
+function reprojectImageAsync(options, callback) {
+  const cb = typeof options === 'function' ? options : callback
+  const opts = typeof options === 'function' ? undefined : options
+  return withCallback(
+    opts.src._native.reprojectImage(opts.dst._native, {
+      srcWkt: opts.s_srs?.wkt,
+      dstWkt: opts.t_srs?.wkt,
+      resampling: opts.resampling,
+      maxError: opts.maxError,
+      memoryLimit: opts.memoryLimit,
+    }),
+    cb,
+  )
+}
+
+function fillNodata(options) {
+  options.src._native.fillNoDataSync({
+    maxDistance: options.searchDist,
+    smoothingIterations: options.smoothingIterations,
+  })
+}
+
+function fillNodataAsync(options, callback) {
+  const cb = typeof options === 'function' ? options : callback
+  const opts = typeof options === 'function' ? undefined : options
+  return withCallback(
+    opts.src._native.fillNoData({
+      maxDistance: opts.searchDist,
+      smoothingIterations: opts.smoothingIterations,
+    }),
+    cb,
+  )
+}
+
+function sieveFilter(options) {
+  if (options.dst && options.dst !== options.src) {
+    throw new TypeError('gdal.sieveFilter works in place — pass `src` and leave `dst` out (or equal to `src`)')
+  }
+  options.src._native.sieveFilterSync({
+    threshold: options.threshold,
+    connectedness: options.connectedness,
+  })
+}
+
+function sieveFilterAsync(options, callback) {
+  const cb = typeof options === 'function' ? options : callback
+  const opts = typeof options === 'function' ? undefined : options
+  return withCallback(Promise.resolve().then(() => sieveFilter(opts)), cb)
+}
+
+Object.assign(Gdal, {
+  FeatureDefn,
+  translate,
+  translateAsync,
+  vectorTranslate,
+  vectorTranslateAsync,
+  warp,
+  warpAsync,
+  buildVRT,
+  buildVRTAsync,
+  dem,
+  demAsync,
+  checksumImage,
+  checksumImageAsync,
+  suggestedWarpOutput,
+  suggestedWarpOutputAsync,
+  reprojectImage,
+  reprojectImageAsync,
+  fillNodata,
+  fillNodataAsync,
+  sieveFilter,
+  sieveFilterAsync,
+})
 
 module.exports = Gdal

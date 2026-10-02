@@ -24,7 +24,7 @@ binding.configureDataPaths({
 // `gdal-async` compatibility layer, where that shape is the target.
 //
 // A constant table needs nothing from GDAL, so it lives here rather than
-// crossing the FFI boundary. `__test__/const.test.mjs` asserts each value is the
+// crossing the FFI boundary. `ts-test/native/const.spec.ts` asserts each value is the
 // spelling the runtime actually uses, so the two cannot drift.
 //
 // Two resampling vocabularies exist because GDAL has two: a pixel read (and a

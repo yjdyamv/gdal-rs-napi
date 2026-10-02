@@ -48,7 +48,10 @@
     "pack:npm": "node scripts/pack-packages.mjs",
     "lgpl": "node scripts/lgpl-geos.mjs",
     "smoke": "node scripts/smoke-install.mjs",
-    "test": "node --test",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "test:coverage": "vitest run --config vitest.coverage.config.mts --coverage",
+    "typecheck": "tsc --noEmit -p tsconfig.test.json && tsc --noEmit -p tsconfig.native.json",
     "lint": "cargo fmt --all --check",
     "lint:fix": "cargo fmt --all",
     "clippy": "cargo clippy --release --all-targets -- -D warnings",
@@ -59,7 +62,10 @@
   },
   "devDependencies": {
     "@napi-rs/cli": "3.10.5",
-    "husky": "^9.1.7"
+    "@types/node": "^26.6.4",
+    "@vitest/coverage-v8": "^5.0.3",
+    "husky": "^9.1.7",
+    "vitest": "^5.0.3"
   },
   "repository": {
     "type": "git",

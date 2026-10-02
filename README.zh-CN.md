@@ -978,7 +978,7 @@ dataset.close()
   `(2:a,b)` 文本，既不是那个值、也不能当值用；**FlatGeobuf** 收下*字段*、然后拒绝写入要素。
   逗号连接是唯一在四种情况下都成立的形式。已经是列表类型的字段（比如从 GeoJSON 读回来的）
   依然按真列表写入；明确声明 `StringList` 就是主动要一个列表列的方式 —— 四种行为都有测试
-  钉住，见 `__test__/vector-write.test.mjs`。
+  钉住，见 `ts-test/native/vector-write.spec.ts`。
 
 值用**字段声明类型**对应的 setter 写入，而不是 JS 值的类型，所以 `Date` 字段收日期字符串、
 `String` 字段收连接后的文本、数组写进整数列会明确报错而不是静默出错。

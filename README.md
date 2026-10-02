@@ -1170,7 +1170,7 @@ boolean `Integer` — with two deliberate choices:
   accepts the *field* and then refuses the feature write. Joined text is the one
   form that survives all of them. Fields that are *already* list-typed (read from
   GeoJSON, say) are still written as real lists, and declaring `StringList`
-  explicitly is how you ask for one — `__test__/vector-write.test.mjs` pins all
+  explicitly is how you ask for one — `ts-test/native/vector-write.spec.ts` pins all
   four behaviours.
 
 Values are written with the setter for the **field's** declared type rather than

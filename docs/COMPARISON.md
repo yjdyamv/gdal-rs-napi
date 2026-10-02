@@ -98,9 +98,11 @@ per-dataset queue leaves implicit.
   it), so its users meet `PROJ_LIB`, `GDAL_DATA`, DLL search paths and version skew.
   This is the single biggest difference in practice, and it is the reason to pick this
   binding at all.
-- **Everything is tested against the real library.** 263 Node tests plus 68 Rust unit
-  tests, an `err.code` on both the sync and async paths, and a generated-declaration
-  test that fails when the runtime and the types drift apart.
+- **Everything is tested against the real library.** A Node suite against the native
+  binding, a **typed TypeScript suite for `compat`** (Vitest, type-checked against
+  `compat/index.d.ts`, with a coverage floor that fails the run when it drops), Rust unit
+  tests, an `err.code` on both the sync and async paths, and a generated-declaration test
+  that fails when the runtime and the types drift apart.
 - **Failure is an error, not a crash.** Closed datasets, out-of-range windows, missing
   drivers, refused thread-safe writes, reentrant callbacks: a clear message with a
   stable `code`. The cases found while building this — an over-eager `free` of a
@@ -111,10 +113,12 @@ per-dataset queue leaves implicit.
   `require` change, or a slow one-file-at-a-time rewrite, and both land on the same
   native implementation. How much of the reference the adapter answers is **counted**
   rather than claimed: `scripts/compat-coverage.mjs` reads gdal-async's own ~60 test
-  files and reports every `gdal.<name>` they use — 64 of 136 as of this writing, with the
+  files and reports every `gdal.<name>` they use — 64 of 136 as of the last run, with the
   remainder grouped into four families in [`PARITY.md`](./PARITY.md). Reading their suite
   is also what turned up the biggest single usage pattern, `assert.instanceOf(dataset,
   gdal.Dataset)` (262 times), which is the kind of thing documentation does not tell you.
+  The module-level programs and the vector write surface have since been forwarded, so
+  the adapter now carries more than that run measured.
 
 ## 5. Weaknesses, honestly
 

@@ -5,7 +5,7 @@
 // It is a list because napi fixes the error type of a `Task` to `Status`, so an
 // async failure cannot carry this binding's `err.code` — the stable token goes
 // into the message as a `[GDAL_…]` prefix instead. `index.js` uses this list to
-// turn that prefix back into a field, and `__test__/async-surface.test.mjs`
+// turn that prefix back into a field, and `ts-test/native/async-surface.spec.ts`
 // checks the list against the generated `binding.d.ts`, so a new async method
 // cannot quietly go uncovered.
 //

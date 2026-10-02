@@ -4,6 +4,7 @@
 /npm
 /dist
 /.commandcode
+/coverage
 
 *.node
 binding.js

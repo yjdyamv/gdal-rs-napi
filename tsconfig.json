@@ -12,5 +12,5 @@
     "skipLibCheck": true,
     "forceConsistentCasingInFileNames": true
   },
-  "include": ["index.d.ts", "binding.d.ts", "__test__/**/*"]
+  "include": ["index.d.ts", "binding.d.ts"]
 }

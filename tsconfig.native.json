@@ -1,0 +1,18 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "noEmit": true,
+    "types": ["node"],
+    // The migrated native suite was written as a dynamic suite against a binding
+    // typed as `any`, so the strict checks buy little here and cost a lot of
+    // annotations. What this config still catches is syntax and outright type
+    // mistakes; the `compat` declarations are the ones held to `strict`, in
+    // `tsconfig.test.json`.
+    "strict": false,
+    "noImplicitAny": false
+  },
+  "include": ["ts-test/native/**/*.ts", "ts-test/helpers.ts"]
+}
