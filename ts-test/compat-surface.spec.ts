@@ -50,6 +50,8 @@ describe('the module surface', () => {
     'fillNodataAsync',
     'sieveFilter',
     'sieveFilterAsync',
+    'rasterize',
+    'rasterizeAsync',
   ] as const
 
   const classes = [
@@ -72,6 +74,7 @@ describe('the module surface', () => {
     'Feature',
     'FeatureFields',
     'FeatureDefn',
+    'FieldDefn',
     'LayerFeatures',
     'LayerFields',
     'DatasetBands',

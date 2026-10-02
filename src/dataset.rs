@@ -41,8 +41,9 @@ use crate::raster_io::{
 };
 use crate::raster_tools::{
     RasterizeOptions, RasterizeRequest, ReprojectImageOptions, ReprojectImageRequest,
-    SuggestedWarpOptions, SuggestedWarpOutput, SuggestedWarpRequest, rasterize, rasterize_request,
-    reproject_image, reproject_image_request, suggested_warp_output, suggested_warp_request,
+    SuggestedWarpOptions, SuggestedWarpOutput, SuggestedWarpRequest,
+    rasterize as rasterize_geometries, rasterize_request, reproject_image, reproject_image_request,
+    suggested_warp_output, suggested_warp_request,
 };
 use crate::runtime::{ensure_initialized, lock_gdal, lock_gdal_shared};
 use crate::spatial_ref::JsSpatialRef;
@@ -1465,7 +1466,7 @@ impl JsDataset {
                 .iter()
                 .map(crate::vector::from_geojson)
                 .collect::<Result<Vec<_>>>()?;
-            rasterize(dataset, &geometries, &request)
+            rasterize_geometries(dataset, &geometries, &request)
         })
     }
 
@@ -2178,6 +2179,67 @@ pub fn vector_translate_sync(
     Ok(JsDataset::wrap(dataset, dest))
 }
 
+/// `gdal_rasterize <args> source dest`, as one call: the geometries of a vector
+/// `source` burned into a raster. `dest` may name a raster to create, and `args`
+/// are gdal_rasterize's own — `-b`, `-burn`, `-a`, `-l`, `-tr`, `-te`, `-ts`,
+/// `-init`, `-at`, `-of`, ...
+#[napi(catch_unwind, ts_return_type = "Promise<Dataset>")]
+pub fn rasterize(
+    dest: String,
+    source: String,
+    args: Option<Vec<String>>,
+    on_progress: Option<ThreadsafeFunction<ProgressUpdate, bool, ProgressUpdate, Status, false>>,
+) -> AsyncTask<ProgramTask> {
+    program_task_paths(
+        programs::Program::Rasterize,
+        dest,
+        vec![source],
+        args,
+        on_progress.map(Arc::new),
+    )
+}
+
+#[napi(catch_unwind)]
+pub fn rasterize_sync(
+    dest: String,
+    source: String,
+    args: Option<Vec<String>>,
+) -> Result<JsDataset> {
+    let args = args.unwrap_or_default();
+    let dataset =
+        programs::run_with_paths(programs::Program::Rasterize, &dest, &[source], &args, None)?;
+    Ok(JsDataset::wrap(dataset, dest))
+}
+
+/// `gdalinfo`'s report for an open dataset — GDAL's own `GDALInfo`, the library
+/// behind the tool. `args` are gdalinfo's command-line options (`['-json']`,
+/// `['-stats']`, `['-nomd']`, ...); with none it prints the default report.
+///
+/// It reads the dataset and nothing else, so it takes the shared side of the lock.
+#[napi(catch_unwind)]
+pub fn gdalinfo(dataset: &JsDataset, args: Option<Vec<String>>) -> Result<String> {
+    let args = args.unwrap_or_default();
+    dataset.dataset().with(|dataset| {
+        let options = programs::with_argv(&args, |argv| unsafe {
+            gdal_sys::GDALInfoOptionsNew(argv, std::ptr::null_mut())
+        })?;
+        if options.is_null() {
+            return Err(programs::rejected("gdalinfo", &args));
+        }
+        let text = unsafe { gdal_sys::GDALInfo(dataset.c_dataset(), options) };
+        // The options object is ours whether or not the call worked.
+        unsafe { gdal_sys::GDALInfoOptionsFree(options) };
+        if text.is_null() {
+            return Err(cpl_failure(
+                "gdalinfo could not read the dataset".to_owned(),
+            ));
+        }
+        let report = crate::runtime::c_string(text);
+        unsafe { gdal_sys::VSIFree(text.cast()) };
+        Ok(report)
+    })
+}
+
 /// `gdalbuildvrt <args> sources... dest`, as one call.
 ///
 /// One source is the "wrap this raster as a VRT without copying it" case; several
@@ -2659,7 +2721,7 @@ impl Task for RasterizeTask {
                     .iter()
                     .map(crate::vector::from_geojson)
                     .collect::<Result<Vec<_>>>()?;
-                rasterize(dataset, &geometries, request)
+                rasterize_geometries(dataset, &geometries, request)
             })))
         })
     }

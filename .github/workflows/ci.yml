@@ -154,6 +154,13 @@ jobs:
         if: matrix.target == 'x86_64-unknown-linux-gnu'
         run: cargo test --release --target ${{ matrix.target }} --lib
 
+      # `compat/index.d.ts` is a contract, and the TypeScript suite compiles against
+      # it: a wrong declaration fails here rather than in a consumer's build. Types
+      # only, so it needs no `.node` and runs before the long source build.
+      - name: Type-check the TypeScript suite
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        run: npm run typecheck
+
       # `npm run build` is scripts/build.mjs: it drops MSYS2/Cygwin prefixes from
       # PATH, verifies sqlite3 is reachable, then drives `napi build` and stages
       # the PROJ/GDAL data files into assets/.
@@ -198,6 +205,14 @@ jobs:
       - name: Test
         if: ${{ !matrix.musl_container }}
         run: npm test
+
+      # The coverage floor is what keeps a new member of the compatibility layer
+      # from landing untested. It re-runs that suite alone (a couple of seconds) on
+      # the one leg whose toolchain is already warm, so it does not multiply the
+      # expensive part of the run.
+      - name: Compatibility coverage
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        run: npm run test:coverage
 
       # So a musl leg tests inside its own container, where musl is the native libc
       # and the generated loader resolves to what was just built rather than to a

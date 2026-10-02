@@ -144,11 +144,11 @@ read finishes. These do the reading on the thread pool and hand the answer back.
 They report what the dataset already knows, so they are all cheap once the lock is
 had — that, and not the reference's per-dataset I/O queue, is what they are for.
 
-`gdal.infoAsync()` is the same exception in function form: `info()` reads the build and
-the driver count, which is cheap, but it takes the *shared* side of the lock and the
-shared side still waits for a dataset holding the exclusive one — so the wait is what
-moves to the pool, and the name keeps the reference's suffix for the same reason the
-getters do.
+`gdal.infoAsync()` is the same exception in function form. With a dataset it answers
+`gdalinfo` (GDAL's own `GDALInfo`), and with none it answers this binding's build info;
+either way it takes the *shared* side of the lock, and the shared side still waits for
+a dataset holding the exclusive one — so the wait is what moves to the pool, and the
+name keeps the reference's suffix for the same reason the getters do.
 
 #### `eventLoopWarning`
 
@@ -252,12 +252,13 @@ families:
 
 - **The programs as module functions** — `translate`, `vectorTranslate`, `warp`,
   `buildVRT`, `dem`, `checksumImage`, `suggestedWarpOutput`, `reprojectImage`,
-  `fillNodata` and `sieveFilter`, each with its `…Async` twin. The reference and this
-  binding take the **same `args` array** of CLI options, so these are one native call
-  with the sources mapped from `Dataset` objects to paths. Four remain and are
-  deliberately not forwarded: `polygonize` and `contourGenerate` pass field *indexes*
-  where this binding takes names, and `rasterize` (a whole vector source) and `info`
-  (a `gdalinfo` wrapper) have no native counterpart.
+  `fillNodata`, `sieveFilter` and `rasterize`, each with its `…Async` twin, plus
+  `info` as a `gdalinfo` wrapper. The reference and this binding take the **same
+  `args` array** of CLI options, so most are one native call with the sources mapped
+  from `Dataset` objects to paths; `rasterize` and `info` needed a native wrapper
+  (`GDALRasterize`, `GDALInfo`), which they now have. Two remain and are deliberately
+  not forwarded: `polygonize` and `contourGenerate` pass field *indexes* where this
+  binding takes names.
 - **The vector write surface** — `layer.features.add` / `set` / `remove` and their
   `…Async` forms, `layer.fields.add` / `remove` / `reorder` / `indexOf` / `getNames`,
   `dataset.layers.create` / `copy` / `remove`, `layer.getSpatialFilter` /
@@ -266,8 +267,10 @@ families:
   `band.blockSize` now answer the reference's `xyz` shape (`{ x, y }`) rather than
   `{ xSize, ySize }`, which is what a port actually reads.
 
-What remains from the list is `FieldDefn` (a class), `ColorTable`, and the curve
-geometries — all of which need the native object model to grow first.
+`FieldDefn` is in too, as a class that `layer.fields.add` and
+`layers.create({ fields })` take — a type name and a numeric `OFT*` code land on the
+same field. What remains from the list is `ColorTable` and the curve geometries, both
+of which need the native object model to grow first.
 
 The adapter is covered by its own **typed TypeScript suite** (`ts-test/`, run with
 `npm test` under Vitest): every export and class member is exercised, the

@@ -26,6 +26,7 @@ pub enum Program {
     Translate,
     Warp,
     VectorTranslate,
+    Rasterize,
 }
 
 impl Program {
@@ -35,13 +36,14 @@ impl Program {
             Self::Translate => "gdal_translate",
             Self::Warp => "gdalwarp",
             Self::VectorTranslate => "ogr2ogr",
+            Self::Rasterize => "gdal_rasterize",
         }
     }
 
     /// The flags its *sources* have to be opened with.
     fn source_flags(self) -> GdalOpenFlags {
         match self {
-            Self::VectorTranslate => GdalOpenFlags::GDAL_OF_VECTOR,
+            Self::VectorTranslate | Self::Rasterize => GdalOpenFlags::GDAL_OF_VECTOR,
             Self::Translate | Self::Warp => GdalOpenFlags::GDAL_OF_RASTER,
         }
     }
@@ -66,7 +68,7 @@ pub(crate) fn rejected(program: &str, args: &[String]) -> Error<GdalErrorCode> {
 ///
 /// The strings are only read — GDAL's parser is simply not `const`-correct — but
 /// they have to outlive the call, which the closure form guarantees.
-fn with_argv<T>(args: &[String], f: impl FnOnce(*mut *mut c_char) -> T) -> Result<T> {
+pub(crate) fn with_argv<T>(args: &[String], f: impl FnOnce(*mut *mut c_char) -> T) -> Result<T> {
     let strings = args
         .iter()
         .map(|arg| {
@@ -262,6 +264,16 @@ options_wrapper!(
     "gdaldem"
 );
 
+options_wrapper!(
+    /// Wraps a `GDALRasterizeOptions` object.
+    RasterizeAppOptions,
+    GDALRasterizeOptions,
+    GDALRasterizeOptionsNew,
+    GDALRasterizeOptionsFree,
+    GDALRasterizeOptionsSetProgress,
+    "gdal_rasterize"
+);
+
 /// The terrain algorithms `gdaldem` offers, which is also the vocabulary
 /// `GDALDEMProcessing` takes as its third argument.
 pub const DEM_ALGORITHMS: [&str; 7] = [
@@ -355,6 +367,11 @@ pub(crate) fn run_with_progress(
             "gdal_translate takes exactly one source dataset",
         ));
     }
+    if program == Program::Rasterize && sources.len() != 1 {
+        return Err(bad_argument(
+            "gdal_rasterize takes exactly one source dataset",
+        ));
+    }
 
     // An empty destination is meaningful: with `-of MEM` GDAL hands back an
     // in-memory dataset instead of writing a file.
@@ -409,6 +426,19 @@ pub(crate) fn run_with_progress(
                     null_mut(),
                     handles.len() as c_int,
                     handles.as_mut_ptr(),
+                    options.c_options,
+                    &mut usage_error,
+                )
+            }
+            Program::Rasterize => {
+                let options = RasterizeAppOptions::new(&args)?;
+                attach_progress!(options, &bridge);
+                // `GDALRasterize` takes one destination and one vector source, and
+                // burns the source's geometries into the destination's bands.
+                gdal_sys::GDALRasterize(
+                    c_dest.as_ptr(),
+                    null_mut(),
+                    sources[0].c_dataset(),
                     options.c_options,
                     &mut usage_error,
                 )

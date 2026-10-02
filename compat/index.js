@@ -384,6 +384,57 @@ class FeatureDefn {
   }
 }
 
+// The numeric `OFT*` codes, back to the field-type names this binding speaks, so a
+// `new FieldDefn('name', gdal.OFTInteger64)` — the shape the reference's tests use —
+// lands on the same vocabulary a string would.
+const FIELD_TYPE_BY_CODE = (() => {
+  const byCode = {}
+  for (const [name, value] of Object.entries(native.numericConstants())) {
+    if (name.startsWith('OFT')) byCode[value] = name.slice(3)
+  }
+  return byCode
+})()
+
+/**
+ * A field definition, as the reference constructs one. `new gdal.FieldDefn(name,
+ * type)` is what `layer.fields.add` and `layers.create({ fields: [...] })` take;
+ * `type` is this binding's field-type name, or one of the numeric `OFT*` constants
+ * the reference hands it.
+ */
+class FieldDefn {
+  constructor(name, type) {
+    this.name = name
+    this.type = typeof type === 'number' ? FIELD_TYPE_BY_CODE[type] ?? 'String' : type ?? 'String'
+    this.width = 0
+    this.precision = 0
+    this.nullable = true
+    this.unique = false
+    this.defaultValue = null
+    this.justification = 'Undefined'
+    this.ignored = false
+  }
+
+  /** The native `FieldDefinition` request this stands for. */
+  toObject() {
+    return {
+      name: this.name,
+      fieldType: this.type,
+      // 0 means "not said", which is what the native request reads as leaves-alone.
+      width: this.width || undefined,
+      precision: this.precision || undefined,
+      nullable: this.nullable,
+      unique: this.unique,
+      defaultValue: this.defaultValue ?? undefined,
+      justification: this.justification,
+    }
+  }
+}
+
+/** A `FieldDefn` or a plain field object, as the native request. */
+function toFieldDefinition(field) {
+  return field instanceof FieldDefn ? field.toObject() : field
+}
+
 // ---------------------------------------------------------------------------
 // Collections
 //
@@ -548,7 +599,13 @@ class LayerCollection extends Collection {
     // A bare `EPSG:4326` is resolved to WKT: the native layer creation only takes
     // a WKT string, and an authority code is a definition, not a WKT.
     else if (typeof srs === 'string') request.wkt = new SpatialReference(srs).toWKT()
-    if (options) request.options = options
+    if (options) {
+      // `fields` is the schema rather than a layer creation option, and the native
+      // request takes it in its own slot — `gdal.FieldDefn`s and plain objects alike.
+      const { fields, ...rest } = options
+      if (fields) request.fields = fields.map(toFieldDefinition)
+      request.options = rest
+    }
     const layer = new Layer(this.ds._native.createLayer(request), this.ds)
     this._items.push(layer)
     return layer
@@ -619,7 +676,7 @@ class FieldCollection extends Collection {
    * justification? }`), and the added field is answered back.
    */
   add(definition) {
-    this.layer._native.addField(definition)
+    this.layer._native.addField(toFieldDefinition(definition))
     const added = this.layer._native.fields.at(-1)
     this._items.push(added)
     return added
@@ -2052,8 +2109,23 @@ const Gdal = {
   config: native.config,
   fs: native.fs,
   vsimem,
-  info: () => native.info(),
-  infoAsync: () => native.infoAsync(),
+  /**
+   * The reference's `info(dataset, args)` is `gdalinfo`'s report for a dataset.
+   * Called with no dataset it is this binding's build info, which is what the native
+   * entry point answers — kept because that is the shape the rest of the surface
+   * already has.
+   */
+  info(dataset, args) {
+    if (dataset === undefined) return native.info()
+    return native.gdalinfo(dataset._native, args)
+  },
+
+  infoAsync(dataset, args, callback) {
+    const cb = typeof args === 'function' ? args : callback
+    const cliArgs = typeof args === 'function' ? undefined : args
+    const value = dataset === undefined ? native.info() : native.gdalinfo(dataset._native, cliArgs)
+    return withCallback(Promise.resolve(value), cb)
+  },
   toDataType: (value) => native.toDataType(value),
   fromDataType: (value) => native.fromDataType(value),
   wrapVRT: (descriptor) => native.wrapVRT(descriptor),
@@ -2299,8 +2371,39 @@ function sieveFilterAsync(options, callback) {
   return withCallback(Promise.resolve().then(() => sieveFilter(opts)), cb)
 }
 
+/**
+ * `gdal_rasterize <args> source destination` — the geometries of a vector source
+ * burned into a raster. `destination` is a path (a raster to create or overwrite);
+ * `args` are gdal_rasterize's own — `-b`, `-burn`, `-a`, `-l`, `-tr`, `-te`, `-ts`,
+ * `-init`, `-at`, ...
+ */
+function rasterize(destination, source, args) {
+  if (typeof destination !== 'string') {
+    throw new TypeError('gdal.rasterize needs a destination path — a dataset argument is not supported')
+  }
+  return wrapDataset(native.rasterizeSync(destination, sourcePath(source), args))
+}
+
+function rasterizeAsync(destination, source, args, options, callback) {
+  const cb = typeof options === 'function' ? options : callback
+  const util = typeof options === 'function' ? undefined : options
+  if (typeof destination !== 'string') {
+    return withCallback(
+      Promise.reject(
+        new TypeError('gdal.rasterize needs a destination path — a dataset argument is not supported'),
+      ),
+      cb,
+    )
+  }
+  return withCallback(
+    native.rasterize(destination, sourcePath(source), args, utilProgress(util)).then(wrapDataset),
+    cb,
+  )
+}
+
 Object.assign(Gdal, {
   FeatureDefn,
+  FieldDefn,
   translate,
   translateAsync,
   vectorTranslate,
@@ -2321,6 +2424,8 @@ Object.assign(Gdal, {
   fillNodataAsync,
   sieveFilter,
   sieveFilterAsync,
+  rasterize,
+  rasterizeAsync,
 })
 
 module.exports = Gdal

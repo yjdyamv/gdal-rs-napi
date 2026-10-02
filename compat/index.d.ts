@@ -430,6 +430,25 @@ declare namespace gdal {
     readonly fields: FieldCollection
   }
 
+  /**
+   * A field definition, as the reference builds one: `new FieldDefn(name, type)`.
+   * `type` is this binding's field-type name, or one of the numeric `OFT*` codes.
+   * `layer.fields.add` and `layers.create({ fields: [...] })` take it.
+   */
+  class FieldDefn {
+    constructor(name: string, type?: string | number)
+    name: string
+    type: string
+    width: number
+    precision: number
+    nullable: boolean
+    unique: boolean
+    defaultValue: string | null
+    justification: string
+    ignored: boolean
+    toObject(): Record<string, any>
+  }
+
   class LayerFeatures extends Collection<Feature> {
     readonly layer: Layer
     get(fid: number): Feature | null
@@ -450,7 +469,7 @@ declare namespace gdal {
     get(index: number): any | null
     getNames(): string[]
     indexOf(name: string): number
-    add(definition: object): any
+    add(definition: FieldDefn | object): any
     remove(name: string): void
     reorder(names: string[]): void
   }
@@ -460,8 +479,18 @@ declare namespace gdal {
   class DatasetLayers extends Collection<Layer> {
     get(name: string): Layer | null
     get(index: number): Layer | null
-    create(name: string, srs?: SpatialReference | string, geomType?: string, options?: object): Layer
-    createAsync(name: string, srs?: SpatialReference | string, geomType?: string, options?: object): Promise<Layer>
+    create(
+      name: string,
+      srs?: SpatialReference | string,
+      geomType?: string,
+      options?: { fields?: Array<FieldDefn | object>; [key: string]: any },
+    ): Layer
+    createAsync(
+      name: string,
+      srs?: SpatialReference | string,
+      geomType?: string,
+      options?: { fields?: Array<FieldDefn | object>; [key: string]: any },
+    ): Promise<Layer>
     copy(source: Layer, name: string, options?: object): Layer
     copyAsync(source: Layer, name: string, options?: object): Promise<Layer>
     remove(nameOrIndex: string | number): void
@@ -682,8 +711,10 @@ declare namespace gdal {
   function verbose(): void
   function quiet(): void
   function decToDMS(angle: number, axis: string, precision?: number): string
+  /** `gdalinfo`: the report for `dataset`, or the build info with no dataset. */
   function info(): any
-  function infoAsync(): Promise<any>
+  function info(dataset: Dataset, args?: string[]): string
+  function infoAsync(dataset?: Dataset, args?: string[]): Promise<any>
   function toDataType(value: number | string): string
   function fromDataType(value: string): number
   function deleteDataset(path: string, driver?: string): void
@@ -722,6 +753,8 @@ declare namespace gdal {
   function fillNodataAsync(options: object): Promise<void>
   function sieveFilter(options: { src: RasterBand; dst?: RasterBand; threshold: number; connectedness?: number }): void
   function sieveFilterAsync(options: object): Promise<void>
+  function rasterize(destination: string, source: Dataset, args?: string[]): Dataset
+  function rasterizeAsync(destination: string, source: Dataset, args?: string[], options?: object): Promise<Dataset>
 }
 
 export = gdal

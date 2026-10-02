@@ -22,6 +22,7 @@ const functions = [
   'infoAsync',
   'open',
   'openThreadSafe',
+  'rasterize',
   'translate',
   'vectorTranslate',
   'warp',
