@@ -20,10 +20,10 @@ export default defineConfig({
       include: ['compat/**/*.js'],
       reporter: ['text-summary', 'json-summary'],
       thresholds: {
-        statements: 97,
+        statements: 98,
         lines: 98,
         functions: 99,
-        branches: 76,
+        branches: 80,
       },
     },
   },

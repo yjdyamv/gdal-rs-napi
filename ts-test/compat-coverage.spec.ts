@@ -352,6 +352,132 @@ describe('the algorithm async wrappers', () => {
   })
 })
 
+describe('the reachable defensive branches', () => {
+  it('falls back to wkb 0 for a type the table does not name', () => {
+    expect(gdal.fromWKT('TRIANGLE ((0 0, 1 0, 0 1, 0 0))').wkbType).toBe(0)
+  })
+
+  it('defaults a field type, and finds nothing for a missing field', () => {
+    expect(new gdal.FieldDefn('noType').type).toBe('String')
+    const dataset = gdal.open(sampleVector('ts-cov-fields.gpkg'), 'r+')
+    const layer = dataset.layers.get(1)!
+    expect(layer.fields.indexOf('missing')).toBe(-1)
+    expect(layer.fields.get('missing')).toBeNull()
+    dataset.close()
+  })
+
+  it('handles a null geometry, a plain object, and a bare geometry', () => {
+    const dataset = gdal.open(sampleVector('ts-cov-geom.gpkg'), 'r+')
+    const layer = dataset.layers.get(1)!
+
+    // A feature created with no geometry reads back `null`.
+    layer.features.add(null, { name: 'no-geometry' })
+    const bare = [...layer.features].find((item) => item.fields.get('name') === 'no-geometry')!
+    expect(bare.geometry).toBeNull()
+
+    const feature = layer.features.first()!
+    // `null` takes the clear path (the GPKG driver keeps the geometry, but the branch runs).
+    feature.geometry = null
+    // A plain GeoJSON object takes `unwrapGeometry`'s non-`toJson` path.
+    feature.geometry = { type: 'Point', coordinates: [4, 5] } as unknown as gdal.Geometry
+    expect(feature.geometry!.toWKT()).toBe('POINT (4 5)')
+
+    layer.features.add(gdal.fromWKT('POINT (7 7)'))
+    expect(layer.features.count()).toBe(3)
+    dataset.close()
+  })
+
+  it('drives the feature async forms with callbacks', async () => {
+    const dataset = gdal.open(sampleVector('ts-cov-features.gpkg'), 'r+')
+    const layer = dataset.layers.get(1)!
+    const features = layer.features
+    await new Promise<void>((resolve, reject) => {
+      loose(features.addAsync.bind(features))(gdal.fromWKT('POINT (1 1)'), (error: Error | null) =>
+        error ? reject(error) : resolve(),
+      )
+    })
+    await new Promise<void>((resolve, reject) => {
+      loose(features.addAsync.bind(features))(
+        gdal.fromWKT('POINT (2 2)'),
+        { name: 'two' },
+        (error: Error | null) => (error ? reject(error) : resolve()),
+      )
+    })
+    const first = features.first()!
+    await new Promise<void>((resolve, reject) => {
+      loose(features.setAsync.bind(features))(first.fid, (error: Error | null) =>
+        error ? reject(error) : resolve(),
+      )
+    })
+    await new Promise<void>((resolve, reject) => {
+      loose(features.setAsync.bind(features))(first, (error: Error | null) =>
+        error ? reject(error) : resolve(),
+      )
+    })
+    await new Promise<void>((resolve, reject) => {
+      loose(features.setAsync.bind(features))(first.fid, gdal.fromWKT('POINT (9 9)'), (error: Error | null) =>
+        error ? reject(error) : resolve(),
+      )
+    })
+    await new Promise<void>((resolve, reject) => {
+      loose(features.removeAsync.bind(features))(first.fid, (error: Error | null) =>
+        error ? reject(error) : resolve(),
+      )
+    })
+    expect(features.count()).toBeGreaterThan(0)
+    dataset.close()
+  })
+
+  it('runs executeSQLAsync with a dialect and through a callback', async () => {
+    const dataset = gdal.open(sampleVector('ts-cov-sql.gpkg'))
+    expect((await dataset.executeSQLAsync('SELECT * FROM things', 'OGRSQL')).length).toBe(1)
+    await new Promise<void>((resolve, reject) => {
+      loose(dataset.executeSQLAsync.bind(dataset))('SELECT * FROM things', (error: Error | null) =>
+        error ? reject(error) : resolve(),
+      )
+    })
+    dataset.close()
+  })
+
+  it('extends the 3D envelope rules', () => {
+    const box = new gdal.Envelope3D({ minX: 0, maxX: 1, minY: 0, maxY: 1, minZ: 0, maxZ: 0 })
+    box.merge(2, 3, 4)
+    expect(box.maxZ).toBe(4)
+    box.merge(2, 3)
+    expect(box.maxX).toBe(2)
+    expect(box.maxY).toBe(3)
+    const other = new gdal.Envelope3D({ minX: 0, maxX: 1, minY: 0, maxY: 1, minZ: -1, maxZ: 1 })
+    box.merge(other)
+    expect(box.minZ).toBe(-1)
+    expect(other.intersects(box)).toBe(true)
+    expect(other.contains(box)).toBe(false)
+  })
+
+  it('runs the algorithm wrappers with no optional fields', async () => {
+    const source = gdal.open(tmp('ts-cov-algo-min-src.tif'), 'w', 'GTiff', 16, 16, 1, 'GDT_Float64')
+    source.geoTransform = [0, 1, 0, 16, 0, -1]
+    const band = source.bands.get(1)!
+    band.pixels.write(
+      0,
+      0,
+      16,
+      16,
+      Buffer.from(Float64Array.from({ length: 256 }, (_, index) => index % 16).buffer),
+    )
+    const destination = gdal.open(tmp('ts-cov-algo-min-dst.gpkg'), 'w', 'GPKG')
+    const contours = destination.layers.create('contours', null, 'LineString')
+    await gdal.contourGenerateAsync({ src: band, dst: contours, interval: 4 })
+    expect(contours.features.count()).toBeGreaterThan(0)
+
+    const polys = destination.layers.create('polys', null, 'Polygon')
+    await gdal.polygonizeAsync({ src: band, dst: polys })
+    expect(polys.features.count()).toBeGreaterThan(0)
+
+    source.close()
+    destination.close()
+  })
+})
+
 describe('multidimensional getters', () => {
   let netcdf = ''
   beforeAll(async () => {
