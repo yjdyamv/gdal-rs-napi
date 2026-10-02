@@ -1665,13 +1665,15 @@ pub(crate) fn execute_sql(
     if layer.is_null() {
         let error_class = unsafe { gdal_sys::CPLGetLastErrorType() };
         if error_class != gdal_sys::CPLErr::CE_None {
-            return Err(crate::error::gdal_error(
-                gdal::errors::GdalError::CplError {
-                    class: error_class,
-                    number: unsafe { gdal_sys::CPLGetLastErrorNo() },
-                    msg: crate::runtime::c_string(unsafe { gdal_sys::CPLGetLastErrorMsg() }),
-                },
-            ));
+            let error = crate::error::gdal_error(gdal::errors::GdalError::CplError {
+                class: error_class,
+                number: unsafe { gdal_sys::CPLGetLastErrorNo() },
+                msg: crate::runtime::c_string(unsafe { gdal_sys::CPLGetLastErrorMsg() }),
+            });
+            // The failure has become an exception, so take it out of the error state:
+            // `lastError()` is documented to report only what never became one.
+            unsafe { gdal_sys::CPLErrorReset() };
+            return Err(error);
         }
         // No layer and no error: nothing to copy out, so an empty array rather than
         // a failure.
@@ -1727,13 +1729,15 @@ impl Task for CursorTask {
     type JsValue = Vec<FeatureRecord>;
 
     fn compute(&mut self) -> napi::Result<Self::Output> {
-        let cursor = JsFeatureCursor {
-            dataset: self.dataset.clone(),
-            index: self.index,
-            batch_size: self.batch_size,
-            state: Arc::clone(&self.state),
-        };
-        Ok(op(cursor.next_batch()))
+        crate::guard::catch(|| {
+            let cursor = JsFeatureCursor {
+                dataset: self.dataset.clone(),
+                index: self.index,
+                batch_size: self.batch_size,
+                state: Arc::clone(&self.state),
+            };
+            Ok(op(cursor.next_batch()))
+        })
     }
 
     fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
@@ -1756,9 +1760,11 @@ impl Task for FeaturesTask {
     type JsValue = Vec<FeatureRecord>;
 
     fn compute(&mut self) -> napi::Result<Self::Output> {
-        Ok(op(
-            JsLayer::new(self.dataset.clone(), self.index).read_features()
-        ))
+        crate::guard::catch(|| {
+            Ok(op(
+                JsLayer::new(self.dataset.clone(), self.index).read_features()
+            ))
+        })
     }
 
     fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
@@ -1778,9 +1784,11 @@ impl Task for FlushLayerTask {
     type JsValue = ();
 
     fn compute(&mut self) -> napi::Result<Self::Output> {
-        Ok(op(
-            JsLayer::new(self.dataset.clone(), self.index).flush_pending()
-        ))
+        crate::guard::catch(|| {
+            Ok(op(
+                JsLayer::new(self.dataset.clone(), self.index).flush_pending()
+            ))
+        })
     }
 
     fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {

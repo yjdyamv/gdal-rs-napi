@@ -89,13 +89,26 @@ pub fn resolve_window(
         )));
     }
 
+    let out_width = options.out_width.map_or(width, |v| v as usize);
+    let out_height = options.out_height.map_or(height, |v| v as usize);
+    if out_width == 0 || out_height == 0 {
+        return Err(bad_argument("the output window is empty"));
+    }
+    // `GDALRasterIOEx` takes these as a C `int`; a size that does not fit is refused
+    // here rather than truncated to a negative or otherwise wrong one.
+    if out_width > i32::MAX as usize || out_height > i32::MAX as usize {
+        return Err(bad_argument(format!(
+            "the output size {out_width}x{out_height} is too large for GDAL to address"
+        )));
+    }
+
     Ok(Window {
         x,
         y,
         width,
         height,
-        out_width: options.out_width.map_or(width, |v| v as usize),
-        out_height: options.out_height.map_or(height, |v| v as usize),
+        out_width,
+        out_height,
     })
 }
 
@@ -203,7 +216,14 @@ pub fn read_window_into(
         return Err(bad_argument("cannot read an Unknown sample type"));
     };
 
-    let expected = window.out_width * window.out_height * data_type.size();
+    // `checked_mul` rather than `*`: a window large enough to overflow `usize` is
+    // refused, rather than wrapping to a small number that would then agree with a
+    // short buffer and let GDAL write past it.
+    let expected = window
+        .out_width
+        .checked_mul(window.out_height)
+        .and_then(|samples| samples.checked_mul(data_type.size()))
+        .ok_or_else(|| bad_argument("the requested window is too large to address"))?;
     if into.len() != expected {
         return Err(bad_argument(format!(
             "`into` holds {} bytes, but this read produces {}x{} samples of {} bytes each — {expected} bytes",
@@ -259,7 +279,10 @@ pub fn write_window(
         return Err(bad_argument("cannot write an Unknown sample type"));
     }
 
-    let expected = window.width * window.height;
+    let expected = window
+        .width
+        .checked_mul(window.height)
+        .ok_or_else(|| bad_argument("the requested window is too large to address"))?;
     let available = bytes.len() / data_type.size();
     if available < expected {
         return Err(bad_argument(format!(
@@ -468,6 +491,33 @@ mod tests {
     fn rejects_an_empty_window() {
         assert!(resolve_window(&options(0, 0, 0, 1), 8, 4).is_err());
         assert!(resolve_window(&options(0, 0, 1, 0), 8, 4).is_err());
+    }
+
+    /// The output size reaches `GDALRasterIOEx` as a C `int`, so an empty one and one
+    /// that does not fit are both refused up front.
+    #[test]
+    fn rejects_an_empty_or_unaddressable_output_size() {
+        let empty = ReadOptions {
+            out_width: Some(0),
+            ..Default::default()
+        };
+        assert!(
+            resolve_window(&empty, 8, 4)
+                .unwrap_err()
+                .reason
+                .contains("output window is empty")
+        );
+
+        let huge = ReadOptions {
+            out_width: Some(u32::MAX),
+            ..Default::default()
+        };
+        assert!(
+            resolve_window(&huge, 8, 4)
+                .unwrap_err()
+                .reason
+                .contains("too large")
+        );
     }
 
     #[test]

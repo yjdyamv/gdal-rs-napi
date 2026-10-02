@@ -166,8 +166,10 @@ impl<T: BandPropertyValue> Task for BandPropertyTask<T> {
     type JsValue = T;
 
     fn compute(&mut self) -> napi::Result<Self::Output> {
-        let band = JsRasterBand::from_kind(self.dataset.clone(), self.kind, self.data_type);
-        Ok(op(T::read(self.property, &band)))
+        crate::guard::catch(|| {
+            let band = JsRasterBand::from_kind(self.dataset.clone(), self.kind, self.data_type);
+            Ok(op(T::read(self.property, &band)))
+        })
     }
 
     fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
@@ -240,10 +242,12 @@ impl<T: DatasetPropertyValue> Task for DatasetPropertyTask<T> {
     type JsValue = T;
 
     fn compute(&mut self) -> napi::Result<Self::Output> {
-        Ok(op(T::read(
-            self.property,
-            &JsDataset::detached(self.dataset.clone()),
-        )))
+        crate::guard::catch(|| {
+            Ok(op(T::read(
+                self.property,
+                &JsDataset::detached(self.dataset.clone()),
+            )))
+        })
     }
 
     fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
@@ -262,14 +266,16 @@ impl Task for SpatialRefTask {
     type JsValue = Option<JsSpatialRef>;
 
     fn compute(&mut self) -> napi::Result<Self::Output> {
-        let dataset = JsDataset::detached(self.dataset.clone());
-        let wkt = dataset
-            .spatial_ref()
-            .and_then(|spatial_ref| match spatial_ref {
-                Some(spatial_ref) => spatial_ref.wkt().map(Some),
-                None => Ok(None),
-            });
-        Ok(op(wkt))
+        crate::guard::catch(|| {
+            let dataset = JsDataset::detached(self.dataset.clone());
+            let wkt = dataset
+                .spatial_ref()
+                .and_then(|spatial_ref| match spatial_ref {
+                    Some(spatial_ref) => spatial_ref.wkt().map(Some),
+                    None => Ok(None),
+                });
+            Ok(op(wkt))
+        })
     }
 
     fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {

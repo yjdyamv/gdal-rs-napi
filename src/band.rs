@@ -7,7 +7,7 @@
 //! what it computes (`statistics`, `histogram`, `defaultHistogram`), uses
 //! [`DatasetRef::with_exclusive`]; a write uses `with_mut`.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::ffi::{CString, c_char, c_int};
 use std::sync::{Arc, Condvar, LazyLock, Mutex};
 
@@ -21,7 +21,9 @@ use napi_derive::napi;
 use crate::async_getter::{BandProperty, BandPropertyTask};
 use crate::dataset::{CreateOptions, DatasetRef, JsDataset, with_two};
 use crate::dtype::DataType;
-use crate::error::{GdalErrorCode, IntoGdalResult, Result, bad_argument, into_status_error, split};
+use crate::error::{
+    GdalErrorCode, IntoGdalResult, Result, bad_argument, cpl_failure, into_status_error, split,
+};
 use crate::raster_io::{
     ReadOptions, read_window, read_window_into, resample_alg, resolve_window, write_window,
 };
@@ -123,8 +125,15 @@ fn string_list(items: &[String]) -> Result<*mut *mut c_char> {
     }
     let mut list: *mut *mut c_char = std::ptr::null_mut();
     for item in items {
-        let text = CString::new(item.as_str())
-            .map_err(|_| bad_argument("a category name cannot contain a NUL byte"))?;
+        let text = match CString::new(item.as_str()) {
+            Ok(text) => text,
+            Err(_) => {
+                // What has been built so far is ours and has to go, or a NUL byte in
+                // a later name leaks every name before it.
+                unsafe { gdal_sys::CSLDestroy(list) };
+                return Err(bad_argument("a category name cannot contain a NUL byte"));
+            }
+        };
         list = unsafe { gdal_sys::CSLAddString(list, text.as_ptr()) };
     }
     Ok(list)
@@ -602,6 +611,9 @@ impl JsRasterBand {
                 "`into` is for reads — writePixels takes the data as its first argument",
             ));
         }
+        // The buffer is only read here, but a concurrent read that is *writing* the
+        // same memory would race it; the claim makes the write refuse instead.
+        let _reservation = reserve_into(data)?;
         // `with_mut` rather than `with_exclusive`: writing must be refused on a
         // read-only thread-safe dataset, and taking `&mut` is how we say so.
         self.dataset.with_mut(|dataset| {
@@ -764,7 +776,17 @@ impl JsRasterBand {
 
         self.dataset.with_mut(|dataset| {
             with_band(dataset, self.kind, |band| {
+                // `RasterBand::set_color_table` throws the `CPLErr` away, so the error
+                // state is the only thing left to read when a driver refuses the table.
+                unsafe { gdal_sys::CPLErrorReset() };
                 band.set_color_table(&table);
+                if unsafe { gdal_sys::CPLGetLastErrorType() } as i32
+                    >= gdal_sys::CPLErr::CE_Failure as i32
+                {
+                    return Err(cpl_failure(
+                        "the driver would not take the colour table".to_owned(),
+                    ));
+                }
                 Ok(())
             })
         })
@@ -810,11 +832,21 @@ impl JsRasterBand {
         let text = optional_c_string(value, "a description")?;
         self.dataset.with_mut(|dataset| {
             with_band(dataset, self.kind, |band| {
+                // `GDALSetDescription` has no return value in this binding's headers, so
+                // the error state is what tells a refused write from an accepted one.
+                unsafe { gdal_sys::CPLErrorReset() };
                 unsafe {
                     gdal_sys::GDALSetDescription(
                         band.c_rasterband() as gdal_sys::GDALMajorObjectH,
                         text.as_ref().map_or(std::ptr::null(), |text| text.as_ptr()),
                     );
+                }
+                if unsafe { gdal_sys::CPLGetLastErrorType() } as i32
+                    >= gdal_sys::CPLErr::CE_Failure as i32
+                {
+                    return Err(cpl_failure(
+                        "the driver would not take the description".to_owned(),
+                    ));
                 }
                 Ok(())
             })
@@ -840,7 +872,7 @@ impl JsRasterBand {
         let domain = optional_c_string(domain, "a metadata domain")?;
         self.dataset.with_mut(|dataset| {
             with_band(dataset, self.kind, |band| {
-                unsafe {
+                cpl_result(unsafe {
                     gdal_sys::GDALSetMetadataItem(
                         band.c_rasterband() as gdal_sys::GDALMajorObjectH,
                         key.as_ptr(),
@@ -848,9 +880,8 @@ impl JsRasterBand {
                         domain
                             .as_ref()
                             .map_or(std::ptr::null(), |domain| domain.as_ptr()),
-                    );
-                }
-                Ok(())
+                    )
+                })
             })
         })
     }
@@ -1692,6 +1723,10 @@ impl JsRasterBand {
     fn read_sync_any(&self, target: Option<DataType>, mut options: ReadOptions) -> Result<Buffer> {
         match options.into.take() {
             Some(mut into) => {
+                // Reserve the buffer for the read, so one already filling it — an async
+                // read on a worker, or another thread's — is refused rather than raced.
+                // The same claim `ReadBandTask` takes when the read is asynchronous.
+                let _reservation = reserve_into(&into)?;
                 self.read_into_sync(target, &options, into.as_mut())?;
                 Ok(into)
             }
@@ -1956,6 +1991,12 @@ impl JsRasterBand {
             })
         })?;
 
+        // A driver that reports a zero block dimension would divide by zero below; one
+        // sample is the smallest block that means anything, and this is the guard
+        // `chunk_plan` already applies to its own row count.
+        let block_width = block_width.max(1);
+        let block_height = block_height.max(1);
+
         // GDAL's blocks are laid out from the band's origin, so the one holding a
         // sample starts at the largest multiple of the block size at or below it.
         let left = x - x % block_width;
@@ -2135,14 +2176,16 @@ impl Task for ReadOverviewTask {
     type JsValue = Buffer;
 
     fn compute(&mut self) -> napi::Result<Self::Output> {
-        let ReadOverviewTask {
-            dataset,
-            kind,
-            level,
-        } = self;
-        Ok(op(dataset.with(|dataset| {
-            with_band(dataset, *kind, |band| read_overview_bytes(band, *level))
-        })))
+        crate::guard::catch(|| {
+            let ReadOverviewTask {
+                dataset,
+                kind,
+                level,
+            } = self;
+            Ok(op(dataset.with(|dataset| {
+                with_band(dataset, *kind, |band| read_overview_bytes(band, *level))
+            })))
+        })
     }
 
     fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
@@ -2201,8 +2244,10 @@ fn read_overview_bytes(band: &mut RasterBand<'_>, level: usize) -> Result<Vec<u8
         )
     };
     let data_type = unsafe { gdal_sys::GDALGetRasterDataType(overview) };
-    let sample_bytes =
-        crate::dtype::bytes_per_sample(DataType::from_gdal(band.band_type())) as usize;
+    // Allocate for the **overview's** own type, which is what `GDALRasterIO` is asked
+    // to write into this buffer: sizing it from the parent band instead would overflow
+    // the allocation if a driver ever gave a level a different type.
+    let sample_bytes = crate::dtype::bytes_per_sample(DataType::from_code(data_type)) as usize;
 
     let mut bytes = vec![0u8; width as usize * height as usize * sample_bytes];
     let class = unsafe {
@@ -2247,23 +2292,32 @@ pub type ChunkCallback = ThreadsafeFunction<Chunk, bool, Chunk, Status, false>;
 /// caught and handed back through a slot — the same reason the progress sink does it.
 /// `false` stops the walk. A call that never reached the JS thread (a torn-down loop)
 /// stops it too, rather than reading strips nobody can receive.
-fn deliver_chunk(callback: &ChunkCallback, chunk: Chunk) -> bool {
-    let answer = Arc::new((Mutex::new(None), Condvar::new()));
+///
+/// A callback that throws is carried back and reported rather than read as "carry
+/// on": the synchronous twin (`readChunksSync`) turns the same throw into an error.
+fn deliver_chunk(callback: &ChunkCallback, chunk: Chunk) -> Result<bool> {
+    /// The callback's answer, or the reason it threw.
+    type Answer = std::result::Result<bool, String>;
+    let answer: Arc<(Mutex<Option<Answer>>, Condvar)> =
+        Arc::new((Mutex::new(None), Condvar::new()));
     let slot = Arc::clone(&answer);
 
     let status = callback.call_with_return_value(
         chunk,
         ThreadsafeFunctionCallMode::Blocking,
         move |result, _env| {
-            let keep_going = !matches!(result, Ok(false));
-            *slot.0.lock().unwrap() = Some(keep_going);
+            let answer = match result {
+                Ok(keep_going) => Ok(keep_going),
+                Err(error) => Err(error.reason),
+            };
+            *slot.0.lock().unwrap() = Some(answer);
             slot.1.notify_all();
             Ok(())
         },
     );
 
     if !matches!(status, Status::Ok) {
-        return false;
+        return Ok(false);
     }
 
     let (value, signal) = &*answer;
@@ -2271,7 +2325,10 @@ fn deliver_chunk(callback: &ChunkCallback, chunk: Chunk) -> bool {
     while answer.is_none() {
         answer = signal.wait(answer).unwrap();
     }
-    answer.unwrap_or(true)
+    match answer.take().unwrap_or(Ok(true)) {
+        Ok(keep_going) => Ok(keep_going),
+        Err(reason) => Err(bad_argument(format!("the chunk callback threw: {reason}"))),
+    }
 }
 
 /// What `readChunksSync` takes for its window and its strips.
@@ -2356,7 +2413,7 @@ impl JsRasterBand {
                     width: plan.width,
                     height: rows,
                 },
-            );
+            )?;
             if !keep_going {
                 break;
             }
@@ -2527,26 +2584,60 @@ impl JsRasterBand {
     }
 }
 
-/// The `into` buffers an async read is currently filling, keyed by their address.
+/// The memory a read or write is touching right now, as half-open byte ranges.
 ///
 /// A read writes through the caller's memory on a worker thread while the JS thread
-/// still has that buffer in hand, so handing the *same* buffer to a second read would
-/// have both write it at once — corrupted samples, and no error to explain them. The
-/// address catches the same buffer passed twice (and two views over one `ArrayBuffer`);
-/// it is released when the task finishes or is dropped.
-static INTO_IN_FLIGHT: LazyLock<Mutex<HashSet<usize>>> =
-    LazyLock::new(|| Mutex::new(HashSet::new()));
+/// still has that buffer in hand, so handing the *same* memory to a second operation
+/// would have both write it at once — corrupted samples, and no error to explain
+/// them. Ranges rather than addresses, so two views over one `ArrayBuffer` and two
+/// overlapping `subarray`s are caught as well as the same buffer passed twice. A range
+/// is released when the operation finishes or is dropped.
+static INTO_IN_FLIGHT: LazyLock<Mutex<Vec<(usize, usize)>>> =
+    LazyLock::new(|| Mutex::new(Vec::new()));
 
-/// Holds a buffer's address reserved in [`INTO_IN_FLIGHT`] for as long as its task lives.
-struct IntoReservation(usize);
+/// Holds a buffer's byte range reserved in [`INTO_IN_FLIGHT`] for as long as its
+/// operation lives.
+#[derive(Debug)]
+struct IntoReservation {
+    start: usize,
+    end: usize,
+}
 
 impl Drop for IntoReservation {
     fn drop(&mut self) {
-        INTO_IN_FLIGHT
+        let mut in_flight = INTO_IN_FLIGHT
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .remove(&self.0);
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if let Some(index) = in_flight
+            .iter()
+            .position(|&(start, end)| start == self.start && end == self.end)
+        {
+            in_flight.swap_remove(index);
+        }
     }
+}
+
+/// Reserve `buffer`'s memory for the duration of one operation, refusing when it
+/// overlaps something already claimed. An empty buffer is skipped: reserving it buys
+/// nothing, and two empty buffers can share a dangling address.
+fn reserve_into(buffer: &[u8]) -> Result<Option<IntoReservation>> {
+    if buffer.is_empty() {
+        return Ok(None);
+    }
+    let start = buffer.as_ptr() as usize;
+    let end = start + buffer.len();
+    let mut in_flight = INTO_IN_FLIGHT
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if in_flight.iter().any(|&(s, e)| start < e && s < end) {
+        return Err(bad_argument(
+            "this buffer is already being filled by another read or write: they reach through \
+             the memory they are given, so await the first operation — or use a \
+             non-overlapping buffer — before reusing it",
+        ));
+    }
+    in_flight.push((start, end));
+    Ok(Some(IntoReservation { start, end }))
 }
 
 pub struct ReadBandTask {
@@ -2588,25 +2679,7 @@ impl ReadBandTask {
         // with the task, not inside the description of the read.
         let mut options = options.unwrap_or_default();
         let into = options.into.take();
-        // An empty buffer is refused later on its size, so reserving it buys nothing —
-        // and two empty buffers can share a dangling address.
-        let reservation = match into.as_ref().filter(|buffer| !buffer.is_empty()) {
-            Some(buffer) => {
-                let address = buffer.as_ptr() as usize;
-                let mut in_flight = INTO_IN_FLIGHT
-                    .lock()
-                    .unwrap_or_else(|poisoned| poisoned.into_inner());
-                if !in_flight.insert(address) {
-                    return Err(bad_argument(
-                        "this `into` buffer is already being filled by another read: a read \
-                         writes through the memory it was given, so await the first read \
-                         before reusing the buffer",
-                    ));
-                }
-                Some(IntoReservation(address))
-            }
-            None => None,
-        };
+        let reservation = into.as_deref().map(reserve_into).transpose()?.flatten();
         Ok(AsyncTask::new(Self {
             dataset,
             kind,
@@ -2623,16 +2696,18 @@ impl Task for ReadBandTask {
     type JsValue = Buffer;
 
     fn compute(&mut self) -> napi::Result<Self::Output> {
-        // `data_type` is only used when writing, so `Unknown` is fine here.
-        let band = JsRasterBand::from_kind(self.dataset.clone(), self.kind, DataType::Unknown);
-        Ok(op(match self.into.as_mut() {
-            Some(into) => band
-                .read_into_sync(self.target, &self.options, into.as_mut())
-                .map(|()| ReadOutput::Reused),
-            None => band
-                .read_sync(self.target, &self.options)
-                .map(ReadOutput::Allocated),
-        }))
+        crate::guard::catch(|| {
+            // `data_type` is only used when writing, so `Unknown` is fine here.
+            let band = JsRasterBand::from_kind(self.dataset.clone(), self.kind, DataType::Unknown);
+            Ok(op(match self.into.as_mut() {
+                Some(into) => band
+                    .read_into_sync(self.target, &self.options, into.as_mut())
+                    .map(|()| ReadOutput::Reused),
+                None => band
+                    .read_sync(self.target, &self.options)
+                    .map(ReadOutput::Allocated),
+            }))
+        })
     }
 
     fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
@@ -2665,8 +2740,10 @@ impl Task for WriteBandTask {
     type JsValue = ();
 
     fn compute(&mut self) -> napi::Result<Self::Output> {
-        let band = JsRasterBand::from_kind(self.dataset.clone(), self.kind, self.data_type);
-        Ok(op(band.write_sync(&self.data, &self.options)))
+        crate::guard::catch(|| {
+            let band = JsRasterBand::from_kind(self.dataset.clone(), self.kind, self.data_type);
+            Ok(op(band.write_sync(&self.data, &self.options)))
+        })
     }
 
     fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
@@ -2687,9 +2764,11 @@ impl Task for StatisticsTask {
     type JsValue = Option<BandStatistics>;
 
     fn compute(&mut self) -> napi::Result<Self::Output> {
-        // `data_type` only matters when writing; this path never does.
-        let band = JsRasterBand::from_kind(self.dataset.clone(), self.kind, DataType::Unknown);
-        Ok(op(band.compute_statistics(self.request)))
+        crate::guard::catch(|| {
+            // `data_type` only matters when writing; this path never does.
+            let band = JsRasterBand::from_kind(self.dataset.clone(), self.kind, DataType::Unknown);
+            Ok(op(band.compute_statistics(self.request)))
+        })
     }
 
     fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
@@ -2708,8 +2787,10 @@ impl Task for HistogramTask {
     type JsValue = BandHistogram;
 
     fn compute(&mut self) -> napi::Result<Self::Output> {
-        let band = JsRasterBand::from_kind(self.dataset.clone(), self.kind, DataType::Unknown);
-        Ok(op(band.compute_histogram(self.request)))
+        crate::guard::catch(|| {
+            let band = JsRasterBand::from_kind(self.dataset.clone(), self.kind, DataType::Unknown);
+            Ok(op(band.compute_histogram(self.request)))
+        })
     }
 
     fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
@@ -2730,9 +2811,11 @@ impl Task for ChecksumTask {
     type JsValue = u32;
 
     fn compute(&mut self) -> napi::Result<Self::Output> {
-        // `data_type` only matters when writing; this path never does.
-        let band = JsRasterBand::from_kind(self.dataset.clone(), self.kind, DataType::Unknown);
-        Ok(op(band.compute_checksum(&self.options)))
+        crate::guard::catch(|| {
+            // `data_type` only matters when writing; this path never does.
+            let band = JsRasterBand::from_kind(self.dataset.clone(), self.kind, DataType::Unknown);
+            Ok(op(band.compute_checksum(&self.options)))
+        })
     }
 
     fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
@@ -2753,8 +2836,10 @@ impl Task for FillNoDataTask {
     type JsValue = ();
 
     fn compute(&mut self) -> napi::Result<Self::Output> {
-        let band = JsRasterBand::from_kind(self.dataset.clone(), self.kind, DataType::Unknown);
-        Ok(op(band.apply_fill_no_data(self.request)))
+        crate::guard::catch(|| {
+            let band = JsRasterBand::from_kind(self.dataset.clone(), self.kind, DataType::Unknown);
+            Ok(op(band.apply_fill_no_data(self.request)))
+        })
     }
 
     fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
@@ -2775,8 +2860,10 @@ impl Task for SieveFilterTask {
     type JsValue = ();
 
     fn compute(&mut self) -> napi::Result<Self::Output> {
-        let band = JsRasterBand::from_kind(self.dataset.clone(), self.kind, DataType::Unknown);
-        Ok(op(band.apply_sieve_filter(self.request)))
+        crate::guard::catch(|| {
+            let band = JsRasterBand::from_kind(self.dataset.clone(), self.kind, DataType::Unknown);
+            Ok(op(band.apply_sieve_filter(self.request)))
+        })
     }
 
     fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
@@ -2800,19 +2887,21 @@ impl Task for PolygonizeTask {
     type JsValue = ();
 
     fn compute(&mut self) -> napi::Result<Self::Output> {
-        let PolygonizeTask {
-            dataset,
-            layer,
-            layer_index,
-            kind,
-            request,
-        } = self;
-        let (kind, layer_index) = (*kind, *layer_index);
+        crate::guard::catch(|| {
+            let PolygonizeTask {
+                dataset,
+                layer,
+                layer_index,
+                kind,
+                request,
+            } = self;
+            let (kind, layer_index) = (*kind, *layer_index);
 
-        Ok(op(with_two(dataset, layer, |raster, vector| {
-            let mut target = vector.layer(layer_index).gdal_context("compute")?;
-            with_band(raster, kind, |band| polygonize(band, &mut target, request))
-        })))
+            Ok(op(with_two(dataset, layer, |raster, vector| {
+                let mut target = vector.layer(layer_index).gdal_context("compute")?;
+                with_band(raster, kind, |band| polygonize(band, &mut target, request))
+            })))
+        })
     }
 
     fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
@@ -2836,21 +2925,23 @@ impl Task for ContourGenerateTask {
     type JsValue = ();
 
     fn compute(&mut self) -> napi::Result<Self::Output> {
-        let ContourGenerateTask {
-            dataset,
-            layer,
-            layer_index,
-            kind,
-            request,
-        } = self;
-        let (kind, layer_index) = (*kind, *layer_index);
+        crate::guard::catch(|| {
+            let ContourGenerateTask {
+                dataset,
+                layer,
+                layer_index,
+                kind,
+                request,
+            } = self;
+            let (kind, layer_index) = (*kind, *layer_index);
 
-        Ok(op(with_two(dataset, layer, |raster, vector| {
-            let mut target = vector.layer(layer_index).gdal_context("compute")?;
-            with_band(raster, kind, |band| {
-                contour_generate(band, &mut target, request)
-            })
-        })))
+            Ok(op(with_two(dataset, layer, |raster, vector| {
+                let mut target = vector.layer(layer_index).gdal_context("compute")?;
+                with_band(raster, kind, |band| {
+                    contour_generate(band, &mut target, request)
+                })
+            })))
+        })
     }
 
     fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
@@ -2872,9 +2963,11 @@ impl Task for ChunkStreamTask {
     type JsValue = u32;
 
     fn compute(&mut self) -> napi::Result<Self::Output> {
-        // `data_type` only matters when writing; this path never does.
-        let band = JsRasterBand::from_kind(self.dataset.clone(), self.kind, DataType::Unknown);
-        Ok(op(band.stream_chunks(&self.options, &self.on_chunk)))
+        crate::guard::catch(|| {
+            // `data_type` only matters when writing; this path never does.
+            let band = JsRasterBand::from_kind(self.dataset.clone(), self.kind, DataType::Unknown);
+            Ok(op(band.stream_chunks(&self.options, &self.on_chunk)))
+        })
     }
 
     fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
@@ -2893,9 +2986,11 @@ impl Task for FlushBandTask {
     type JsValue = ();
 
     fn compute(&mut self) -> napi::Result<Self::Output> {
-        // `data_type` only matters when writing; this path never does.
-        let band = JsRasterBand::from_kind(self.dataset.clone(), self.kind, DataType::Unknown);
-        Ok(op(band.flush_pending()))
+        crate::guard::catch(|| {
+            // `data_type` only matters when writing; this path never does.
+            let band = JsRasterBand::from_kind(self.dataset.clone(), self.kind, DataType::Unknown);
+            Ok(op(band.flush_pending()))
+        })
     }
 
     fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
@@ -2997,5 +3092,45 @@ mod tests {
                 "{interpretation:?} did not round-trip"
             );
         }
+    }
+
+    /// The `into` claim is a byte *range*, so it catches a view overlapping one that
+    /// is in flight — not just the same buffer passed twice — and releases on drop.
+    #[test]
+    fn an_into_claim_covers_a_range_and_is_released_on_drop() {
+        let buffer = [0u8; 16];
+        let first = reserve_into(&buffer)
+            .unwrap()
+            .expect("a non-empty buffer is claimed");
+
+        // The same range and an overlapping view are both refused.
+        assert!(
+            reserve_into(&buffer)
+                .unwrap_err()
+                .reason
+                .contains("already being filled")
+        );
+        assert!(
+            reserve_into(&buffer[4..8])
+                .unwrap_err()
+                .reason
+                .contains("already being filled")
+        );
+
+        // A disjoint buffer is untouched by the claim.
+        let disjoint = [0u8; 4];
+        assert!(reserve_into(&disjoint).unwrap().is_some());
+
+        // Releasing the first frees the range for the next reader.
+        drop(first);
+        assert!(reserve_into(&buffer).unwrap().is_some());
+    }
+
+    /// An empty buffer is never claimed: two of them can share a dangling address.
+    #[test]
+    fn an_empty_into_buffer_is_not_claimed() {
+        let empty: [u8; 0] = [];
+        assert!(reserve_into(&empty).unwrap().is_none());
+        assert!(reserve_into(&empty).unwrap().is_none());
     }
 }

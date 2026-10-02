@@ -53,7 +53,7 @@ impl Program {
 /// `gdal`'s own `BuildVRTOptions` skips this check and then hands the null pointer
 /// to the program, so a typo in an argument list crashes instead of reporting.
 /// Echoing the arguments back is what makes the failure actionable.
-fn rejected(program: &str, args: &[String]) -> Error<GdalErrorCode> {
+pub(crate) fn rejected(program: &str, args: &[String]) -> Error<GdalErrorCode> {
     let rendered = if args.is_empty() {
         "(no arguments)".to_string()
     } else {

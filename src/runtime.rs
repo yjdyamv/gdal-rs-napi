@@ -2,10 +2,14 @@
 //! directories, and one-time driver registration.
 
 use std::cell::Cell;
+use std::collections::hash_map::DefaultHasher;
 use std::ffi::CStr;
+use std::hash::{Hash, Hasher};
 use std::os::raw::c_char;
 use std::path::PathBuf;
-use std::sync::{Mutex, OnceLock, RwLock, RwLockReadGuard, RwLockWriteGuard};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, OnceLock, RwLock, RwLockReadGuard, RwLockWriteGuard, TryLockError};
+use std::thread::ThreadId;
 
 /// Serialises the GDAL access that actually needs serialising.
 ///
@@ -101,6 +105,61 @@ fn reentrant_lock(side: &str) -> ! {
     );
 }
 
+/// The JavaScript thread a worker is currently blocked on, waiting for a progress
+/// callback — as a hashed `ThreadId`, or `0` for "nobody".
+///
+/// A worker running a program holds the GDAL lock while it waits, so if the JS thread
+/// it is waiting on then asks for that same lock, neither side can move. This is what
+/// lets [`diagnose_progress_deadlock`] catch that specific wait and turn it into a
+/// panic (a thrown JavaScript error) instead of a hang. Read without a mutex because
+/// it is inspected on the lock path only when the lock is contended.
+static PROGRESS_WAIT: AtomicU64 = AtomicU64::new(0);
+
+fn thread_token(id: ThreadId) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    id.hash(&mut hasher);
+    // Never 0, which is the "nobody" sentinel.
+    hasher.finish() | 1
+}
+
+/// Announce that a worker is about to block on `js_thread`'s progress callback.
+pub(crate) fn enter_progress_wait(js_thread: ThreadId) {
+    PROGRESS_WAIT.store(thread_token(js_thread), Ordering::SeqCst);
+}
+
+/// The callback came back (or never arrived): nobody is being waited on any more.
+pub(crate) fn leave_progress_wait() {
+    PROGRESS_WAIT.store(0, Ordering::SeqCst);
+}
+
+fn progress_wait_is_this_thread() -> bool {
+    let waiting = PROGRESS_WAIT.load(Ordering::SeqCst);
+    waiting != 0 && waiting == thread_token(std::thread::current().id())
+}
+
+/// Refuse the progress-callback deadlock in place of the hang it would otherwise be.
+///
+/// Called just before a contended lock acquisition. If this thread is the one a worker
+/// is blocked on for an `onProgress` callback, no amount of waiting helps: the worker
+/// holds the lock that this thread is after, and will not release it until the
+/// callback returns — which cannot happen while this thread waits here. Panicking
+/// (clearing the lock marker first, so the thread is not left holding a side) turns
+/// that into a thrown JavaScript error. Doing nothing is the right answer for every
+/// other contender, which is why the check is cheap and this returns immediately.
+#[cold]
+pub(crate) fn diagnose_progress_deadlock(what: &str) {
+    if !progress_wait_is_this_thread() {
+        return;
+    }
+    HELD.with(|held| held.set(Held::None));
+    panic!(
+        "a progress callback is waiting for this JavaScript thread, which is now waiting \
+         on {what}: the worker running the program holds {what} and cannot let go until \
+         the callback returns, so the two can never be satisfied. Do not call back into \
+         this library from `onProgress` — report progress and return."
+    );
+}
+
 /// The write guard. Clearing the thread-local marker is why this is a wrapper rather
 /// than the bare `RwLockWriteGuard`.
 pub struct GdalWriteGuard(RwLockWriteGuard<'static, ()>);
@@ -152,11 +211,47 @@ pub fn lock_gdal() -> GdalWriteGuard {
         }
         held.set(Held::Exclusive);
     });
-    GdalWriteGuard(
-        GDAL_LOCK
-            .write()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()),
-    )
+    match GDAL_LOCK.try_write() {
+        Ok(guard) => GdalWriteGuard(guard),
+        Err(TryLockError::Poisoned(poisoned)) => GdalWriteGuard(poisoned.into_inner()),
+        Err(TryLockError::WouldBlock) => {
+            // About to wait: rule out the one wait that can never end first.
+            diagnose_progress_deadlock("the exclusive GDAL lock");
+            GdalWriteGuard(
+                GDAL_LOCK
+                    .write()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()),
+            )
+        }
+    }
+}
+
+/// Take the exclusive side **if it is free**, and give up rather than wait otherwise.
+///
+/// For [`crate::dataset::DatasetHandle::drop`], which can run from a napi finalizer:
+/// a blocking acquisition there would deadlock against an operation already on this
+/// thread (or panic through [`reentrant_lock`]). Returning `None` leaves the caller
+/// to fall back to what it did before the lock existed, so a contended drop is no
+/// worse than it used to be and an uncontended one is properly ordered.
+pub fn try_lock_gdal() -> Option<GdalWriteGuard> {
+    let entered = HELD.with(|held| {
+        if held.get() != Held::None {
+            return false;
+        }
+        held.set(Held::Exclusive);
+        true
+    });
+    if !entered {
+        return None;
+    }
+    match GDAL_LOCK.try_write() {
+        Ok(guard) => Some(GdalWriteGuard(guard)),
+        Err(TryLockError::Poisoned(poisoned)) => Some(GdalWriteGuard(poisoned.into_inner())),
+        Err(TryLockError::WouldBlock) => {
+            HELD.with(|held| held.set(Held::None));
+            None
+        }
+    }
 }
 
 /// Shared access: work with no dataset and no global configuration in it, plus pixel
@@ -177,11 +272,18 @@ pub fn lock_gdal_shared() -> GdalReadGuard {
         }
         held.set(Held::Shared);
     });
-    GdalReadGuard(
-        GDAL_LOCK
-            .read()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()),
-    )
+    match GDAL_LOCK.try_read() {
+        Ok(guard) => GdalReadGuard(guard),
+        Err(TryLockError::Poisoned(poisoned)) => GdalReadGuard(poisoned.into_inner()),
+        Err(TryLockError::WouldBlock) => {
+            diagnose_progress_deadlock("the shared GDAL lock");
+            GdalReadGuard(
+                GDAL_LOCK
+                    .read()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()),
+            )
+        }
+    }
 }
 
 /// Data directories handed over from JS via `configureDataPaths`.

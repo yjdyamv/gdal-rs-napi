@@ -1006,6 +1006,11 @@ test('suggestedWarpOutput says what a warp would produce, and reprojectImage doe
   // `gauss` is a RasterIO kernel, and reprojection does not take it.
   assert.throws(() => source.reprojectImageSync(dest, { resampling: 'gauss' }), /unknown resampling/)
 
+  // Two datasets are taken at once, and their per-dataset mutexes are not
+  // reentrant: passing one handle twice has to be refused, not deadlock the process
+  // while holding the exclusive GDAL lock.
+  assert.throws(() => source.reprojectImageSync(source), /both handles name the same one/)
+
   dest.close()
   source.close()
 })

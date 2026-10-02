@@ -20,7 +20,6 @@
 use std::ffi::{CString, c_char, c_int, c_void};
 use std::ptr;
 use std::sync::Mutex;
-use std::sync::atomic::{AtomicPtr, Ordering};
 use std::thread::ThreadId;
 
 use napi::Env;
@@ -67,18 +66,38 @@ unsafe extern "C" {
 /// numbers, and this is the one that says "the application's own failure".
 const CPLE_APP_DEFINED: c_int = 1;
 
+/// The JavaScript environment a pixel function belongs to.
+///
+/// `napi_env` is a raw pointer with no `Send`, so it is wrapped: a registration is
+/// only ever read back on the thread that made it (see `Registration::js_thread`), so
+/// moving the value between threads is not the same as using it there. A process-wide
+/// `ENV` used to be kept instead, which is wrong as soon as two worker threads each
+/// register a function — the second overwrites the first.
+struct JsEnv(sys::napi_env);
+
+// SAFETY: the value is only read on `Registration::js_thread`, which is the thread it
+// was captured on.
+unsafe impl Send for JsEnv {}
+
 /// What a slot holds. The JS function itself is kept in JavaScript, keyed by slot.
 struct Registration {
     name: String,
     /// The thread that registered it, and so the only one that may call into JS.
     js_thread: ThreadId,
+    /// The environment of that thread — see `JsEnv`.
+    env: JsEnv,
 }
 
-static REGISTRY: Mutex<Vec<Option<Registration>>> = Mutex::new(Vec::new());
+/// A slot in the fixed pool. `Reserved` is held while a registration is between
+/// taking its slot and telling GDAL about it, so two registrations cannot claim the
+/// same one.
+enum Slot {
+    Free,
+    Reserved,
+    Taken(Registration),
+}
 
-/// The JS environment, captured when the first function is registered. Every call
-/// comes from the registering thread, so this is the environment to use.
-static ENV: AtomicPtr<sys::napi_env__> = AtomicPtr::new(ptr::null_mut());
+static REGISTRY: Mutex<Vec<Slot>> = Mutex::new(Vec::new());
 
 macro_rules! trampoline_pool {
     ($($name:ident = $slot:literal),* $(,)?) => {
@@ -163,19 +182,32 @@ pub fn register_pixel_func(env: Env, name: String) -> Result<u32> {
     let name_text = CString::new(name.clone())
         .map_err(|_| bad_argument("a pixel function name cannot contain a NUL byte"))?;
 
-    let mut registry = REGISTRY
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let slot = registry
-        .iter()
-        .position(Option::is_none)
-        .or_else(|| (registry.len() < SLOTS).then_some(registry.len()))
-        .ok_or_else(|| {
-            bad_argument(format!(
-                "this binding has room for {SLOTS} pixel functions and they are all taken; \
-                 GDAL has no way to unregister one"
-            ))
-        })?;
+    // Reserve the slot under the registry lock, then release it before taking the
+    // GDAL lock. The dispatch path takes them in the opposite order — a read holds
+    // the GDAL lock when the trampoline runs, and `evaluate` then locks the registry
+    // — so holding both here would be a lock-order inversion, and two JS threads
+    // registering at once would deadlock.
+    let slot = {
+        let mut registry = REGISTRY
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let slot = registry
+            .iter()
+            .position(|slot| matches!(slot, Slot::Free))
+            .or_else(|| (registry.len() < SLOTS).then_some(registry.len()))
+            .ok_or_else(|| {
+                bad_argument(format!(
+                    "this binding has room for {SLOTS} pixel functions and they are all taken; \
+                     GDAL has no way to unregister one"
+                ))
+            })?;
+        if slot == registry.len() {
+            registry.push(Slot::Reserved);
+        } else {
+            registry[slot] = Slot::Reserved;
+        }
+        slot
+    };
 
     let status = {
         let _guard = lock_gdal();
@@ -184,21 +216,24 @@ pub fn register_pixel_func(env: Env, name: String) -> Result<u32> {
         }
     };
     if status as gdal_sys::CPLErr::Type != gdal_sys::CPLErr::CE_None {
+        // Hand the reservation back, so the slot is usable again.
+        let mut registry = REGISTRY
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        registry[slot] = Slot::Free;
         return Err(bad_argument(format!(
             "GDAL would not take a pixel function named {name:?}"
         )));
     }
 
-    ENV.store(env.raw(), Ordering::SeqCst);
-    let registration = Registration {
+    let mut registry = REGISTRY
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    registry[slot] = Slot::Taken(Registration {
         name,
         js_thread: std::thread::current().id(),
-    };
-    if slot == registry.len() {
-        registry.push(Some(registration));
-    } else {
-        registry[slot] = Some(registration);
-    }
+        env: JsEnv(env.raw()),
+    });
     Ok(slot as u32)
 }
 
@@ -264,13 +299,17 @@ unsafe fn evaluate(
     line_space: c_int,
     args: gdal_sys::CSLConstList,
 ) -> std::result::Result<(), String> {
-    let (name, js_thread) = {
+    let (name, js_thread, env) = {
         let registry = REGISTRY
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        match registry.get(slot).and_then(Option::as_ref) {
-            Some(registration) => (registration.name.clone(), registration.js_thread),
-            None => return Err("a pixel function ran from a slot with nothing in it".to_string()),
+        match registry.get(slot) {
+            Some(Slot::Taken(registration)) => (
+                registration.name.clone(),
+                registration.js_thread,
+                registration.env.0,
+            ),
+            _ => return Err("a pixel function ran from a slot with nothing in it".to_string()),
         }
     };
 
@@ -283,7 +322,6 @@ unsafe fn evaluate(
         ));
     }
 
-    let env = ENV.load(Ordering::SeqCst);
     if env.is_null() {
         return Err("no JavaScript environment was ever captured".to_string());
     }
@@ -319,14 +357,15 @@ unsafe fn evaluate(
             if source.is_null() {
                 return Err("a source buffer was missing".to_string());
             }
-            let view = typed_array(env, source, source_type, elements)?;
+            let view = owned_typed_array(env, source, source_type, elements)?;
             status(sys::napi_set_element(env, sources, index as u32, view))?;
         }
 
-        // The output goes through a dense copy of our own: GDAL's buffer is allowed to
-        // be strided, and a typed array cannot be.
-        let mut dense = vec![0u8; elements.saturating_mul(buffer_sample)];
-        let output = typed_array(env, dense.as_mut_ptr().cast(), buffer_type, elements)?;
+        // The output goes through a dense buffer of our own: GDAL's buffer is allowed
+        // to be strided, and a typed array cannot be. napi owns the memory, so a pixel
+        // function that keeps the view — rather than just reading it — does not keep a
+        // pointer into memory that is freed the moment this call returns.
+        let (output, output_ptr) = owned_output_array(env, buffer_type, elements)?;
 
         let pixel_args = if args.is_null() {
             undefined
@@ -356,10 +395,11 @@ unsafe fn evaluate(
             ));
         }
 
-        // What the function left in the dense buffer, laid into the real one.
+        // What the function left in the output buffer, laid into the real one.
         scatter(
             data,
-            &dense,
+            output_ptr.cast(),
+            elements.saturating_mul(buffer_sample),
             buffer_sample,
             buf_x,
             buf_y,
@@ -372,16 +412,18 @@ unsafe fn evaluate(
 
 /// Lay a dense buffer into a possibly strided one, byte by byte — which is right for
 /// every sample type without knowing anything else about it.
+#[allow(clippy::too_many_arguments)]
 fn scatter(
     destination: *mut c_void,
-    source: &[u8],
+    source: *const u8,
+    source_len: usize,
     sample: usize,
     buf_x: usize,
     buf_y: usize,
     pixel_space: i32,
     line_space: i32,
 ) {
-    if destination.is_null() || sample == 0 {
+    if destination.is_null() || source.is_null() || sample == 0 {
         return;
     }
     let pixel_space = pixel_space.max(0) as usize;
@@ -389,7 +431,11 @@ fn scatter(
     unsafe {
         for y in 0..buf_y {
             for x in 0..buf_x {
-                let from = source.as_ptr().add((y * buf_x + x) * sample);
+                let offset = (y * buf_x + x) * sample;
+                if offset + sample > source_len {
+                    return;
+                }
+                let from = source.add(offset);
                 let to = (destination as *mut u8).add(y * line_space + x * pixel_space);
                 ptr::copy_nonoverlapping(from, to, sample);
             }
@@ -397,26 +443,70 @@ fn scatter(
     }
 }
 
-/// A typed array over memory somebody else owns — GDAL's. The external array buffer has
-/// no finalizer, so dropping the JS view leaves the memory alone, which is the point.
-unsafe fn typed_array(
+/// A typed array whose memory napi owns, holding a copy of GDAL's source buffer.
+///
+/// GDAL's buffers are only valid for the duration of the callback, so a JavaScript
+/// function that keeps the view would otherwise hold a pointer into memory GDAL is
+/// free to reuse. Copying into an `ArrayBuffer` that napi owns makes the view safe to
+/// keep, and the copy is the same order of work the function itself does.
+unsafe fn owned_typed_array(
     env: sys::napi_env,
-    data: *mut c_void,
+    source: *const c_void,
+    data_type: gdal_sys::GDALDataType::Type,
+    length: usize,
+) -> std::result::Result<sys::napi_value, String> {
+    let bytes = length.saturating_mul(sample_size(data_type)?);
+    unsafe {
+        let mut arraybuffer = ptr::null_mut();
+        let mut data = ptr::null_mut();
+        status(sys::napi_create_arraybuffer(
+            env,
+            bytes,
+            &mut data,
+            &mut arraybuffer,
+        ))?;
+        if bytes > 0 && !source.is_null() && !data.is_null() {
+            ptr::copy_nonoverlapping(source.cast::<u8>(), data.cast::<u8>(), bytes);
+        }
+        typed_view(env, arraybuffer, data_type, length)
+    }
+}
+
+/// A zeroed, napi-owned typed array for the pixel function's output, with the raw
+/// pointer returned so the caller can read back what the function wrote into it —
+/// safely, because napi owns the memory for as long as the view lives.
+unsafe fn owned_output_array(
+    env: sys::napi_env,
+    data_type: gdal_sys::GDALDataType::Type,
+    length: usize,
+) -> std::result::Result<(sys::napi_value, *mut c_void), String> {
+    let bytes = length.saturating_mul(sample_size(data_type)?);
+    unsafe {
+        let mut arraybuffer = ptr::null_mut();
+        let mut data = ptr::null_mut();
+        status(sys::napi_create_arraybuffer(
+            env,
+            bytes,
+            &mut data,
+            &mut arraybuffer,
+        ))?;
+        if bytes > 0 && !data.is_null() {
+            ptr::write_bytes(data.cast::<u8>(), 0, bytes);
+        }
+        let view = typed_view(env, arraybuffer, data_type, length)?;
+        Ok((view, data))
+    }
+}
+
+/// A typed array view over an `ArrayBuffer` napi owns.
+unsafe fn typed_view(
+    env: sys::napi_env,
+    arraybuffer: sys::napi_value,
     data_type: gdal_sys::GDALDataType::Type,
     length: usize,
 ) -> std::result::Result<sys::napi_value, String> {
     let element = element_type(data_type)?;
-    let bytes = length.saturating_mul(sample_size(data_type)?);
     unsafe {
-        let mut arraybuffer = ptr::null_mut();
-        status(sys::napi_create_external_arraybuffer(
-            env,
-            data,
-            bytes,
-            None,
-            ptr::null_mut(),
-            &mut arraybuffer,
-        ))?;
         let mut view = ptr::null_mut();
         status(sys::napi_create_typedarray(
             env,

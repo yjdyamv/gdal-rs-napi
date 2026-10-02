@@ -12,6 +12,7 @@ use std::ffi::{CString, c_char, c_int};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
+use std::thread::ThreadId;
 
 #[cfg(gd_thread_safe)]
 use gdal::ThreadSafeDataset;
@@ -64,9 +65,18 @@ pub type SharedDataset = Arc<Mutex<DatasetHandle>>;
 /// A poisoned lock is recovered from on purpose: a panic in one operation must
 /// not brick every object that shares the handle.
 pub fn lock_handle(shared: &SharedDataset) -> MutexGuard<'_, DatasetHandle> {
-    shared
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+    match shared.try_lock() {
+        Ok(handle) => handle,
+        Err(std::sync::TryLockError::Poisoned(poisoned)) => poisoned.into_inner(),
+        Err(std::sync::TryLockError::WouldBlock) => {
+            // A worker waiting for a progress callback holds this mutex; if this is the
+            // JavaScript thread it is waiting on, the wait can never end — diagnose it.
+            crate::runtime::diagnose_progress_deadlock("the dataset");
+            shared
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner())
+        }
+    }
 }
 
 impl Drop for DatasetHandle {
@@ -75,10 +85,14 @@ impl Drop for DatasetHandle {
         // dataset. Close it first: a `/vsimem/` file cannot be unlinked while a handle
         // still has it open, and on Windows the attempt simply fails.
         //
-        // No GDAL lock is taken, and that is deliberate: this can run from a napi
-        // finalizer, where the reentrancy guard would panic if this thread already
-        // held the lock. GDAL's `/vsimem/` tree is internally synchronised, and no
-        // other object references this dataset.
+        // The exclusive lock is taken when it is free, so this matches the explicit
+        // `close()` path. It is deliberately *not* a blocking acquisition: this can
+        // run from a napi finalizer, where waiting on the lock held by an operation
+        // on this very thread would deadlock, and where the reentrancy guard would
+        // panic. When the lock is contended the close proceeds as it always did —
+        // GDAL's `/vsimem/` tree is internally synchronised, and no other object
+        // references this dataset by the time its last `Arc` goes.
+        let _guard = crate::runtime::try_lock_gdal();
         drop(self.dataset.take());
         if let Some(path) = self.mem_file.take() {
             let _ = gdal::vsi::unlink_mem_file(&path);
@@ -308,15 +322,18 @@ impl DatasetRef {
                 // dataset does not have to wait for it.
                 let _guard = lock_gdal_shared();
                 let mut handle = lock_handle(shared);
-                if let Some(dataset) = handle.dataset.take() {
-                    dataset.close().gdal_context("close")?;
-                }
+                let closed = match handle.dataset.take() {
+                    Some(dataset) => dataset.close().gdal_context("close"),
+                    None => Ok(()),
+                };
                 // Unlink now rather than leaving it to the handle's `Drop`, so `close()`
-                // keeps its promise that the `/vsimem/` file is gone.
+                // keeps its promise that the `/vsimem/` file is gone. Done whether or not
+                // the close reported an error: a dataset that failed to close still has
+                // no business keeping the file alive.
                 if let Some(path) = handle.mem_file.take() {
                     let _ = gdal::vsi::unlink_mem_file(&path);
                 }
-                Ok(())
+                closed
             }
             #[cfg(gd_thread_safe)]
             Self::Concurrent { dataset } => {
@@ -407,6 +424,17 @@ pub(crate) fn with_two<T>(
     second: &DatasetRef,
     f: impl FnOnce(&mut GdalDataset, &mut GdalDataset) -> Result<T>,
 ) -> Result<T> {
+    // Both per-dataset mutexes are taken below, and they are not reentrant: two
+    // handles naming one dataset would deadlock the process on the second `lock()`
+    // — while holding the write side, so every other thread hangs with it. Checked
+    // here rather than at each call site, so no caller can reach the deadlock by
+    // forgetting to ask `same_dataset` first.
+    if first.same_dataset(second) {
+        return Err(bad_argument(
+            "this operation needs two datasets, but both handles name the same one; open a \
+             second dataset instead",
+        ));
+    }
     let _guard = lock_gdal();
     let mut first = first.owned_handle()?;
     let mut second = second.owned_handle()?;
@@ -853,6 +881,12 @@ impl JsDataset {
                 }
                 return Ok(envelope);
             }
+
+            // A vector dataset has no geotransform, and asking for it leaves GDAL's
+            // error state holding that refusal. It is not this call's failure — the
+            // vector answer below is the success — so clear it rather than let
+            // `lastError()` report a failure that has already been handled.
+            unsafe { gdal_sys::CPLErrorReset() };
 
             // No geotransform, so this is the vector side: what the layers cover.
             let mut envelope: Option<GeometryEnvelope> = None;
@@ -1619,6 +1653,7 @@ impl JsDataset {
             sources: ProgramSources::Open(self.dataset.clone()),
             args: args.unwrap_or_default(),
             progress: on_progress.map(Arc::new),
+            js_thread: std::thread::current().id(),
         }))
     }
 
@@ -1840,35 +1875,37 @@ impl Task for OpenTask {
     type JsValue = JsDataset;
 
     fn compute(&mut self) -> napi::Result<Self::Output> {
-        Ok(op(match &self.kind {
-            OpenKind::Open {
-                update,
-                drivers,
-                multidimensional,
-            } => open_gdal(&self.path, *update, drivers.as_deref(), *multidimensional)
-                .map(DatasetRef::serialised),
-            OpenKind::OpenBytes {
-                bytes,
-                update,
-                drivers,
-                multidimensional,
-            } => open_bytes_gdal(
-                &self.path,
-                bytes,
-                *update,
-                drivers.as_deref(),
-                *multidimensional,
-            )
-            .map(|dataset| DatasetRef::serialised_mem_file(dataset, self.path.clone())),
-            OpenKind::CreateRaster(options) => {
-                create_gdal(&self.path, options).map(DatasetRef::serialised)
-            }
-            OpenKind::CreateVector { driver } => {
-                create_vector_gdal(&self.path, driver).map(DatasetRef::serialised)
-            }
-            #[cfg(gd_thread_safe)]
-            OpenKind::ThreadSafe => open_thread_safe_gdal(&self.path),
-        }))
+        crate::guard::catch(|| {
+            Ok(op(match &self.kind {
+                OpenKind::Open {
+                    update,
+                    drivers,
+                    multidimensional,
+                } => open_gdal(&self.path, *update, drivers.as_deref(), *multidimensional)
+                    .map(DatasetRef::serialised),
+                OpenKind::OpenBytes {
+                    bytes,
+                    update,
+                    drivers,
+                    multidimensional,
+                } => open_bytes_gdal(
+                    &self.path,
+                    bytes,
+                    *update,
+                    drivers.as_deref(),
+                    *multidimensional,
+                )
+                .map(|dataset| DatasetRef::serialised_mem_file(dataset, self.path.clone())),
+                OpenKind::CreateRaster(options) => {
+                    create_gdal(&self.path, options).map(DatasetRef::serialised)
+                }
+                OpenKind::CreateVector { driver } => {
+                    create_vector_gdal(&self.path, driver).map(DatasetRef::serialised)
+                }
+                #[cfg(gd_thread_safe)]
+                OpenKind::ThreadSafe => open_thread_safe_gdal(&self.path),
+            }))
+        })
     }
 
     fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
@@ -2196,7 +2233,15 @@ fn build_vrt_with_paths(dest: &str, sources: &[String], args: &[String]) -> Resu
     let options = if args.is_empty() {
         None
     } else {
-        Some(BuildVRTOptions::new(args.to_vec()).gdal_context("build_vrt_with_paths")?)
+        let options = BuildVRTOptions::new(args.to_vec()).gdal_context("build_vrt_with_paths")?;
+        // `BuildVRTOptions::new` hands back a null pointer for arguments GDAL does
+        // not like — the same trap the options of the other programs have — and the
+        // `gdal` crate does not check it. Passed on, the null reaches `GDALBuildVRT`
+        // and crashes it; echoing the arguments back is what makes the failure usable.
+        if unsafe { options.c_options() }.is_null() {
+            return Err(programs::rejected("gdalbuildvrt", args));
+        }
+        Some(options)
     };
     // An empty destination means an in-memory VRT.
     let path = (!dest.is_empty()).then(|| Path::new(dest));
@@ -2216,6 +2261,7 @@ fn program_task(
         sources: ProgramSources::Open(dataset),
         args: args.unwrap_or_default(),
         progress,
+        js_thread: std::thread::current().id(),
     })
 }
 
@@ -2232,6 +2278,7 @@ fn program_task_paths(
         sources: ProgramSources::Paths(sources),
         args: args.unwrap_or_default(),
         progress,
+        js_thread: std::thread::current().id(),
     })
 }
 
@@ -2256,6 +2303,7 @@ pub fn dem_process(
         sources: ProgramSources::Paths(vec![source]),
         args: args.unwrap_or_default(),
         progress: on_progress.map(Arc::new),
+        js_thread: std::thread::current().id(),
     }))
 }
 
@@ -2324,6 +2372,8 @@ pub struct DemTask {
     /// Present only when the caller asked for progress. The sync entry points have
     /// no way to run it, so they pass `None` — see `programs::run_with_progress`.
     progress: Option<Arc<ProgressCallback>>,
+    /// The JS thread the callback runs on, captured when the task was built on it.
+    js_thread: ThreadId,
 }
 
 impl Task for DemTask {
@@ -2331,44 +2381,47 @@ impl Task for DemTask {
     type JsValue = JsDataset;
 
     fn compute(&mut self) -> napi::Result<Self::Output> {
-        let DemTask {
-            algorithm,
-            dest,
-            color_file,
-            sources,
-            args,
-            progress,
-        } = self;
-
-        // The sink owns whatever the callback needs; `progress` below is the trait
-        // object the programs take, and is `None` when nobody asked.
-        let sink = progress
-            .as_ref()
-            .map(|callback| JsProgressSink::new(Arc::clone(callback)));
-        let progress = sink
-            .as_ref()
-            .map(|sink| sink as &dyn programs::ProgressSink);
-
-        Ok(op(match sources {
-            ProgramSources::Paths(paths) => dem_with_paths(
+        crate::guard::catch(|| {
+            let DemTask {
                 algorithm,
                 dest,
-                color_file.as_deref(),
-                paths,
+                color_file,
+                sources,
                 args,
                 progress,
-            ),
-            ProgramSources::Open(dataset) => dataset.with_exclusive(|source| {
-                programs::dem_process_with_progress(
-                    dest,
+                js_thread,
+            } = self;
+
+            // The sink owns whatever the callback needs; `progress` below is the trait
+            // object the programs take, and is `None` when nobody asked.
+            let sink = progress
+                .as_ref()
+                .map(|callback| JsProgressSink::new(Arc::clone(callback), *js_thread));
+            let progress = sink
+                .as_ref()
+                .map(|sink| sink as &dyn programs::ProgressSink);
+
+            Ok(op(match sources {
+                ProgramSources::Paths(paths) => dem_with_paths(
                     algorithm,
+                    dest,
                     color_file.as_deref(),
-                    source,
+                    paths,
                     args,
                     progress,
-                )
-            }),
-        }))
+                ),
+                ProgramSources::Open(dataset) => dataset.with_exclusive(|source| {
+                    programs::dem_process_with_progress(
+                        dest,
+                        algorithm,
+                        color_file.as_deref(),
+                        source,
+                        args,
+                        progress,
+                    )
+                }),
+            }))
+        })
     }
 
     fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
@@ -2387,9 +2440,11 @@ impl Task for FlushTask {
     type JsValue = ();
 
     fn compute(&mut self) -> napi::Result<Self::Output> {
-        Ok(op(self
-            .dataset
-            .with_mut(|dataset| dataset.flush_cache().gdal())))
+        crate::guard::catch(|| {
+            Ok(op(self
+                .dataset
+                .with_mut(|dataset| dataset.flush_cache().gdal())))
+        })
     }
 
     fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
@@ -2460,23 +2515,25 @@ impl Task for CopyTask {
     type JsValue = JsDataset;
 
     fn compute(&mut self) -> napi::Result<Self::Output> {
-        let CopyTask {
-            dataset,
-            path,
-            driver,
-            options,
-        } = self;
+        crate::guard::catch(|| {
+            let CopyTask {
+                dataset,
+                path,
+                driver,
+                options,
+            } = self;
 
-        Ok(op(dataset.with_exclusive(|source| {
-            let driver = DriverManager::get_driver_by_name(driver).gdal_context("compute")?;
+            Ok(op(dataset.with_exclusive(|source| {
+                let driver = DriverManager::get_driver_by_name(driver).gdal_context("compute")?;
 
-            let mut list = CslStringList::new();
-            for (name, value) in options.iter() {
-                list.add_name_value(name, value).gdal_context("compute")?;
-            }
+                let mut list = CslStringList::new();
+                for (name, value) in options.iter() {
+                    list.add_name_value(name, value).gdal_context("compute")?;
+                }
 
-            source.create_copy(&driver, path, &list).gdal()
-        })))
+                source.create_copy(&driver, path, &list).gdal()
+            })))
+        })
     }
 
     fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
@@ -2504,6 +2561,8 @@ pub struct ProgramTask {
     args: Vec<String>,
     /// See `DemTask::progress`: present only when the caller asked for progress.
     progress: Option<Arc<ProgressCallback>>,
+    /// The JS thread the callback runs on — see `DemTask::js_thread`.
+    js_thread: ThreadId,
 }
 
 impl Task for ProgramTask {
@@ -2511,29 +2570,32 @@ impl Task for ProgramTask {
     type JsValue = JsDataset;
 
     fn compute(&mut self) -> napi::Result<Self::Output> {
-        let ProgramTask {
-            program,
-            dest,
-            sources,
-            args,
-            progress,
-        } = self;
+        crate::guard::catch(|| {
+            let ProgramTask {
+                program,
+                dest,
+                sources,
+                args,
+                progress,
+                js_thread,
+            } = self;
 
-        let sink = progress
-            .as_ref()
-            .map(|callback| JsProgressSink::new(Arc::clone(callback)));
-        let progress = sink
-            .as_ref()
-            .map(|sink| sink as &dyn programs::ProgressSink);
+            let sink = progress
+                .as_ref()
+                .map(|callback| JsProgressSink::new(Arc::clone(callback), *js_thread));
+            let progress = sink
+                .as_ref()
+                .map(|sink| sink as &dyn programs::ProgressSink);
 
-        Ok(op(match sources {
-            ProgramSources::Paths(paths) => {
-                programs::run_with_paths(*program, dest, paths, args, progress)
-            }
-            ProgramSources::Open(dataset) => dataset.with_exclusive(|source| {
-                programs::run_with_progress(*program, dest, &[source], args, progress)
-            }),
-        }))
+            Ok(op(match sources {
+                ProgramSources::Paths(paths) => {
+                    programs::run_with_paths(*program, dest, paths, args, progress)
+                }
+                ProgramSources::Open(dataset) => dataset.with_exclusive(|source| {
+                    programs::run_with_progress(*program, dest, &[source], args, progress)
+                }),
+            }))
+        })
     }
 
     fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
@@ -2556,10 +2618,12 @@ impl Task for BuildOverviewsTask {
     type JsValue = ();
 
     fn compute(&mut self) -> napi::Result<Self::Output> {
-        let BuildOverviewsTask { dataset, request } = self;
-        Ok(op(
-            dataset.with_mut(|source| write_overviews(source, request))
-        ))
+        crate::guard::catch(|| {
+            let BuildOverviewsTask { dataset, request } = self;
+            Ok(op(
+                dataset.with_mut(|source| write_overviews(source, request))
+            ))
+        })
     }
 
     fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
@@ -2580,22 +2644,24 @@ impl Task for RasterizeTask {
     type JsValue = ();
 
     fn compute(&mut self) -> napi::Result<Self::Output> {
-        let RasterizeTask {
-            dataset,
-            geometries,
-            request,
-        } = self;
+        crate::guard::catch(|| {
+            let RasterizeTask {
+                dataset,
+                geometries,
+                request,
+            } = self;
 
-        Ok(op(dataset.with_mut(|dataset| {
-            // Built here rather than on the JS thread: GDAL makes the geometries, so
-            // it happens under the lock either way, and this is where the pool is
-            // already paying for the work.
-            let geometries = geometries
-                .iter()
-                .map(crate::vector::from_geojson)
-                .collect::<Result<Vec<_>>>()?;
-            rasterize(dataset, &geometries, request)
-        })))
+            Ok(op(dataset.with_mut(|dataset| {
+                // Built here rather than on the JS thread: GDAL makes the geometries, so
+                // it happens under the lock either way, and this is where the pool is
+                // already paying for the work.
+                let geometries = geometries
+                    .iter()
+                    .map(crate::vector::from_geojson)
+                    .collect::<Result<Vec<_>>>()?;
+                rasterize(dataset, &geometries, request)
+            })))
+        })
     }
 
     fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
@@ -2615,10 +2681,12 @@ impl Task for SuggestedWarpOutputTask {
     type JsValue = SuggestedWarpOutput;
 
     fn compute(&mut self) -> napi::Result<Self::Output> {
-        let SuggestedWarpOutputTask { dataset, request } = self;
-        Ok(op(dataset.with_exclusive(|dataset| {
-            suggested_warp_output(dataset, request)
-        })))
+        crate::guard::catch(|| {
+            let SuggestedWarpOutputTask { dataset, request } = self;
+            Ok(op(dataset.with_exclusive(|dataset| {
+                suggested_warp_output(dataset, request)
+            })))
+        })
     }
 
     fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
@@ -2638,14 +2706,16 @@ impl Task for ReprojectImageTask {
     type JsValue = ();
 
     fn compute(&mut self) -> napi::Result<Self::Output> {
-        let ReprojectImageTask {
-            dataset,
-            dest,
-            request,
-        } = self;
-        Ok(op(with_two(dataset, dest, |source, target| {
-            reproject_image(source, target, request)
-        })))
+        crate::guard::catch(|| {
+            let ReprojectImageTask {
+                dataset,
+                dest,
+                request,
+            } = self;
+            Ok(op(with_two(dataset, dest, |source, target| {
+                reproject_image(source, target, request)
+            })))
+        })
     }
 
     fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
@@ -2666,11 +2736,13 @@ impl Task for BuildVrtTask {
     type JsValue = JsDataset;
 
     fn compute(&mut self) -> napi::Result<Self::Output> {
-        Ok(op(build_vrt_with_paths(
-            &self.dest,
-            &self.sources,
-            &self.args,
-        )))
+        crate::guard::catch(|| {
+            Ok(op(build_vrt_with_paths(
+                &self.dest,
+                &self.sources,
+                &self.args,
+            )))
+        })
     }
 
     fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {

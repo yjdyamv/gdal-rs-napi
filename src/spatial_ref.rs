@@ -824,12 +824,14 @@ impl Task for TransformPointsTask {
     type JsValue = Float64Array;
 
     fn compute(&mut self) -> napi::Result<Self::Output> {
-        Ok(op((|| {
-            ensure_initialized();
-            let _guard = lock_gdal_shared();
-            let transform = self.def.build()?;
-            transform_points_with(&transform, &self.points)
-        })()))
+        crate::guard::catch(|| {
+            Ok(op((|| {
+                ensure_initialized();
+                let _guard = lock_gdal_shared();
+                let transform = self.def.build()?;
+                transform_points_with(&transform, &self.points)
+            })()))
+        })
     }
 
     fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
@@ -850,14 +852,16 @@ impl Task for IdentifyEpsgTask {
     type JsValue = Option<String>;
 
     fn compute(&mut self) -> napi::Result<Self::Output> {
-        Ok(op((|| {
-            ensure_initialized();
-            let _guard = lock_gdal_shared();
+        crate::guard::catch(|| {
+            Ok(op((|| {
+                ensure_initialized();
+                let _guard = lock_gdal_shared();
 
-            let mut srs = SpatialRef::from_wkt(&self.wkt).gdal_context("compute")?;
-            srs.auto_identify_epsg().gdal_context("compute")?;
-            Ok(srs.authority().ok())
-        })()))
+                let mut srs = SpatialRef::from_wkt(&self.wkt).gdal_context("compute")?;
+                srs.auto_identify_epsg().gdal_context("compute")?;
+                Ok(srs.authority().ok())
+            })()))
+        })
     }
 
     fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {

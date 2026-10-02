@@ -33,6 +33,7 @@ mod dtype;
 mod error;
 mod fs;
 mod geometry;
+mod guard;
 mod json;
 mod multidim;
 mod pixel_func;
@@ -150,7 +151,7 @@ impl Task for InfoTask {
     type JsValue = GdalInfo;
 
     fn compute(&mut self) -> napi::Result<Self::Output> {
-        Ok(info())
+        crate::guard::catch(|| Ok(info()))
     }
 
     fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {

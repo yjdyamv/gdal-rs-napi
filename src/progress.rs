@@ -7,6 +7,7 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
+use std::thread::ThreadId;
 
 use napi::Status;
 use napi::threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode};
@@ -53,15 +54,30 @@ pub struct JsProgressSink {
     cancelled: AtomicBool,
     /// Where the callback's answer lands, and what to wait on for it. See `report`.
     answer: Arc<(Mutex<Option<bool>>, Condvar)>,
+    /// The JavaScript thread the callback runs on. The worker is about to block on it
+    /// while still holding the GDAL lock, so the scheduler needs to know which thread
+    /// that is — see `runtime::enter_progress_wait`.
+    js_thread: ThreadId,
 }
 
 impl JsProgressSink {
-    pub fn new(callback: Arc<ProgressCallback>) -> Self {
+    pub fn new(callback: Arc<ProgressCallback>, js_thread: ThreadId) -> Self {
         Self {
             callback,
             cancelled: AtomicBool::new(false),
             answer: Arc::new((Mutex::new(None), Condvar::new())),
+            js_thread,
         }
+    }
+}
+
+/// Clears the "waiting on this JS thread" marker however `report` leaves — an early
+/// return included — so a later, unrelated lock request is not misdiagnosed.
+struct ProgressWaitGuard;
+
+impl Drop for ProgressWaitGuard {
+    fn drop(&mut self) {
+        crate::runtime::leave_progress_wait();
     }
 }
 
@@ -73,6 +89,13 @@ impl ProgressSink for JsProgressSink {
 
         *self.answer.0.lock().unwrap() = None;
         let answer = Arc::clone(&self.answer);
+
+        // Announce the wait before the blocking send, and keep it announced through the
+        // condvar wait below; the guard clears it however this returns, early exits
+        // included. A lock request from this very JS thread is then diagnosed rather
+        // than deadlocked.
+        crate::runtime::enter_progress_wait(self.js_thread);
+        let _wait = ProgressWaitGuard;
 
         let status = self.callback.call_with_return_value(
             ProgressUpdate {
