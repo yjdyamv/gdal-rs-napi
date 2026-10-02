@@ -6,6 +6,50 @@ First working cut — everything here is new.
 
 ### Binding
 
+- **`compat` answers every `gdal.*` name the reference's own tests use.** The
+  measurement that drove the earlier rounds — `scripts/compat-coverage.mjs` reading
+  `gdal-async`'s ~60 TypeScript test files — now reports **136 answered, 0 missing**
+  (was 64 answered, 72 missing). The last families, all supplied by the adapter's own
+  table because GDAL spells them as C macros that never reach `gdal-sys`: the layer
+  capabilities (`OLCRandomRead`, `OLCCreateField`, …), the datasource and driver ones
+  (`ODsCCreateLayer`, `ODrCCreateDataSource`, `DCAP_CREATE`, …), the multidimensional
+  dimension types and directions (`DIM_TEMPORAL`, `DIR_NORTH`, …), the CPL error
+  numbers (`CPLE_AppDefined`, …), the extended-data-type strings (`GEDTC_String`), and
+  `wkb25DBit` with the whole `wkb*25D` family. They are the *strings* `testCapability`
+  already accepts, or GDAL's ABI numbers, and `src/constants.rs` keeps to its rule:
+  it reads out of the linked headers what it can, and the adapter fills the macros.
+- **The curve geometries report their own names now.** `CircularString`,
+  `CompoundCurve`, `CurvePolygon`, `MultiCurve`, `MultiSurface`, `Curve`, `Surface`,
+  `PolyhedralSurface`, `TIN` and `Triangle` were read back as `Unknown` by
+  `Geometry.type` (and by a layer's `geometryType`), and `createLayer` refused to
+  *declare* one — `geometry_type_name` / `geometry_type_from_name` now cover them, and
+  the round trip is a Rust test. `compat` re-tags those types onto the reference's
+  classes (`SimpleCurve` as the base of the line-like shapes, `CircularString`,
+  `CompoundCurve`, `MultiCurve`), and adds the reference's `Geometry.getConstructor`
+  and class- and instance-level `wkbType`. What stays out of reach is the reference's
+  **mutable builder** (`points.add`, `curves.add`, `closeRings`, `addSubLineString`) —
+  a geometry is a value here — and `docs/PARITY.md` records that rather than faking it.
+- **`compat` grows `ColorTable`.** A band's palette is now the reference's object —
+  `count` / `get` / `set` / `interpretation` / `clone` / `isSame` / `ramp` and an
+  iterator — over this binding's `band.colorTable` array and `setColorTable`. A table
+  read from a band is read-only (a write goes back through the band); one built with
+  `new gdal.ColorTable(...)` is writable. Clearing it takes `band.colorTable = null`,
+  which is a new native `RasterBand.clearColorTable()`: `setColorTable([])` writes an
+  *empty* table, not no table, and GDAL keeps answering the former.
+- **`compat` names the raster streams and runs the two algorithm wrappers.** The
+  streams `band.createReadStream()` / `createWriteStream()` build are now named
+  classes (`gdal.RasterReadStream` / `RasterWriteStream`), so the reference's
+  `instanceof` holds; `gdal.contourGenerate(...)` and `gdal.polygonize(...)` take the
+  reference's object form, resolving its **field indexes** to this binding's names.
+- **`Dataset.testCapability(name)`** answers GDAL's datasource and driver capability
+  questions (`CreateLayer`, `DeleteLayer`, `CreateDataSource`, …), the dataset-side
+  counterpart of `Layer.testCapability`. An unknown name is `false`, not a throw.
+- **`compat` fills in the reference's `…Async` twins** for the geometry operations,
+  band and dataset metadata, and the feature and field collections, plus the
+  `FeatureDefnFields`, `Dimensions` and `GeometryCollectionChildren` class aliases.
+  They are shape, not concurrency — the native call still runs on the JS thread, as
+  the rest of the adapter's `xxxAsync` pairs do.
+
 - **`compat` grew the names `gdal-async`'s own test suite reaches for**, and the list is
   derived rather than guessed: `scripts/compat-coverage.mjs` reads the reference's ~60
   TypeScript test files and reports every `gdal.<name>` they use that the adapter does
@@ -1014,11 +1058,15 @@ First working cut — everything here is new.
 
 ### Known gaps
 
-- The capabilities deliberately left out — the multidimensional model, the VRT pixel
-  functions, async getters, the native collection classes and the geometry subclass
-  family — are listed with their reasons in [`docs/PARITY.md`](./docs/PARITY.md), the
-  full boundary against `gdal-async`; the additive gaps that remain are tiered there
-  too.
+- The capabilities deliberately left out are listed with their reasons in
+  [`docs/PARITY.md`](./docs/PARITY.md), the full boundary against `gdal-async`. That
+  list is now short: the multidimensional model, the VRT pixel functions, the streams,
+  the async getters, the pixel-wise `calcAsync`, the native collection **typing**, and
+  the geometry subclass family are all *in*; what is not is the reference's **mutable
+  geometry builder** (`points.add`, `curves.add`, `closeRings`, `addSubLineString`,
+  `GeometryCollectionChildren`) — a geometry is a value here — and the one type
+  asymmetry, that a member the generated declarations own keeps their return type.
+  The additive gaps that remain are tiered there too.
 - Transformations are 2D, and a *geometry* transform is synchronous. A coordinate
   array has a threaded form (`transformPointsSync` / `transformPoints`), which is the
   bulk entry; `Geometry.transform` and `transformGeometry` stay synchronous because a

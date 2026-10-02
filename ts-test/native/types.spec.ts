@@ -21,6 +21,8 @@ const SHELL_ADDITIONS = new Set([
   'eventLoopWarning',
   'RasterMuxStream',
   'RasterTransform',
+  'RasterReadStream',
+  'RasterWriteStream',
   'calcAsync',
   'addPixelFunc',
   'toPixelFunc',

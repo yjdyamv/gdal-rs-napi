@@ -792,6 +792,35 @@ impl JsRasterBand {
         })
     }
 
+    /// Remove this band's colour table — the reference's `band.colorTable = null`.
+    ///
+    /// `setColorTable` cannot express this: an empty table is a table with no entries,
+    /// and GDAL keeps answering it rather than reporting no table at all. Clearing is
+    /// the one call that hands `GDALSetRasterColorTable` a `NULL`, so it has a name of
+    /// its own instead of being folded into the setter's shape.
+    #[napi(catch_unwind, js_name = "clearColorTable")]
+    pub fn clear_color_table(&self) -> Result<()> {
+        self.dataset.with_mut(|dataset| {
+            with_band(dataset, self.kind, |band| {
+                // The `CPLErr` goes the same way it does in `set_color_table`: read the
+                // error state, since `GDALSetRasterColorTable`'s own return is available
+                // but its message is what a caller needs.
+                unsafe { gdal_sys::CPLErrorReset() };
+                unsafe {
+                    gdal_sys::GDALSetRasterColorTable(band.c_rasterband(), std::ptr::null_mut());
+                }
+                if unsafe { gdal_sys::CPLGetLastErrorType() } as i32
+                    >= gdal_sys::CPLErr::CE_Failure as i32
+                {
+                    return Err(cpl_failure(
+                        "the driver would not clear the colour table".to_owned(),
+                    ));
+                }
+                Ok(())
+            })
+        })
+    }
+
     /// GDAL's own band number, **1-based**: `band.id` is 1 for the first band.
     /// It is GDAL's numbering, where `index` is this API's 0-based convention,
     /// and the two differ by exactly one. Zero for a band that is not in the

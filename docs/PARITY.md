@@ -226,51 +226,48 @@ every `gdal.<name>` they use, and reports which of those `compat` answers.
 
 ```sh
 node scripts/compat-coverage.mjs /path/to/node-gdal-async
-# [coverage] gdal.*: 64 answered, 72 missing
+# [coverage] gdal.*: 136 answered, 0 missing
+# [coverage] members: 176 answered, 24 missing
 ```
 
-The largest single item that run found was not a name but a *usage*:
+The largest single item the first run found was not a name but a *usage*:
 `assert.instanceOf(dataset, gdal.Dataset)` appears 262 times across the suite, and an
 adapter whose objects are instances of nothing *named* fails every one of them. `compat`
-now exports the classes it was already building objects from (`Dataset`, `RasterBand`,
-`Layer`, `Feature`, the collections, `RasterBandPixels`, `Driver`), plus the re-exports
-whose shape was never in doubt (`config`, `fs`, `info` / `infoAsync`, `toDataType` /
-`fromDataType`, the pixel functions, `calcAsync`, the stream classes) — 64 answered,
-against 35 before.
+exports the classes it builds objects from (`Dataset`, `RasterBand`, `Layer`, `Feature`,
+the collections, `RasterBandPixels`, `Driver`), plus the re-exports whose shape was never
+in doubt (`config`, `fs`, `info` / `infoAsync`, `toDataType` / `fromDataType`, the pixel
+functions, `calcAsync`, the stream classes).
 
-The 72 left are four families rather than 72 unknowns:
+**Every module-level `gdal.*` name the reference's tests use is answered now.** The four
+families the earlier measurement listed are closed:
 
-| family | what the tests use | what closing it needs |
-|---|---|---|
-| **Numeric constant tables** | `OFTString` (39), `OFTInteger` (18), `wkbPoint` (16), `GRA_Bilinear`, `GCI_RedBand`, `OLCCreateField`, `ODrCCreateDataSource`, `DIM_TEMPORAL`, `CPLE_*` … | the values, taken from `gdal_sys` — never written out by hand |
-| **`vsimem`** | `gdal.vsimem.set` / `.release` / `.copy` … (81 uses) | the reference's memory-FS object, over the `fs` calls that already exist |
-| **The programs as module functions** | `translate`, `warp`, `dem`, `buildVRT`, `rasterize`, `polygonize`, `sieveFilter`, `fillNodata`, `checksumImage`, `reprojectImage`, `suggestedWarpOutput`, `contourGenerate` and their `…Async` forms | their signatures are **objects** (`gdal.polygonize({ … })`), not this binding's argument lists — each has to be read, not renamed |
-| **Classes and capabilities we do not have** | `FieldDefn` (68), `Envelope` (28), `Envelope3D` (25), `ColorTable` (9), `FeatureDefn` (7), and the curve geometries (`CircularString`, `CompoundCurve`, `SimpleCurve`, `MultiCurve` — 47 uses) | real work: the definitions exist natively but are not objects here, and the curves are not in the binding at all |
-
-**Since that measurement**, `compat` has closed the most-used parts of two of the four
-families:
-
+- **Numeric constant tables** — the ones `gdal_sys` binds are read out of the linked
+  headers in `src/constants.rs`; the ones GDAL spells as C macros (`OLC*`, `ODsC*`,
+  `ODrC*`, `DIM_*`, `DIR_*`, `CPLE_*`, `GEDTC_String`, `wkb25DBit` and the `wkb*25D`
+  forms) are the reference's own values in `compat`'s table. The strings are exactly
+  what `testCapability()` already accepts, so they are the frozen API rather than a
+  guess.
+- **`vsimem`** — `gdal.vsimem.set` / `.release` / `.copy`, over `fs`.
 - **The programs as module functions** — `translate`, `vectorTranslate`, `warp`,
   `buildVRT`, `dem`, `checksumImage`, `suggestedWarpOutput`, `reprojectImage`,
-  `fillNodata`, `sieveFilter` and `rasterize`, each with its `…Async` twin, plus
-  `info` as a `gdalinfo` wrapper. The reference and this binding take the **same
-  `args` array** of CLI options, so most are one native call with the sources mapped
-  from `Dataset` objects to paths; `rasterize` and `info` needed a native wrapper
-  (`GDALRasterize`, `GDALInfo`), which they now have. Two remain and are deliberately
-  not forwarded: `polygonize` and `contourGenerate` pass field *indexes* where this
-  binding takes names.
-- **The vector write surface** — `layer.features.add` / `set` / `remove` and their
-  `…Async` forms, `layer.fields.add` / `remove` / `reorder` / `indexOf` / `getNames`,
-  `dataset.layers.create` / `copy` / `remove`, `layer.getSpatialFilter` /
-  `testCapability` / `fidColumn` / `geomColumn` / `defn` / `ds`, and `feature.defn`
-  (a `FeatureDefn`). Also corrected: `dataset.rasterSize`, `band.size` and
-  `band.blockSize` now answer the reference's `xyz` shape (`{ x, y }`) rather than
-  `{ xSize, ySize }`, which is what a port actually reads.
+  `fillNodata`, `sieveFilter`, `rasterize`, and now `polygonize` and `contourGenerate`
+  too, each with its `…Async` twin. `rasterize`, `info`, `polygonize` and
+  `contourGenerate` needed native wrappers or an adaptation; the last two take the
+  reference's **field indexes**, which the adapter resolves to this binding's names.
+- **Classes and capabilities** — `FieldDefn`, `FeatureDefn`, `Envelope` / `Envelope3D`,
+  `ColorTable` (over `band.colorTable` and `setColorTable`, with a native
+  `clearColorTable()` for `band.colorTable = null`), and the **curve classes**
+  (`SimpleCurve`, `CircularString`, `CompoundCurve`, `MultiCurve`) — which also needed
+  the native type names, since `Geometry.type` used to answer `Unknown` for a curve.
+  `Geometry.getConstructor` and `wkbType` are in with them.
 
-`FieldDefn` is in too, as a class that `layer.fields.add` and
-`layers.create({ fields })` take — a type name and a numeric `OFT*` code land on the
-same field. What remains from the list is `ColorTable` and the curve geometries, both
-of which need the native object model to grow first.
+The 24 member names still missing are **one family and some noise**. The family is the
+reference's **mutable geometry builder** — `closeRings` (32 uses), `curves` (15),
+`addSubLineString` (9) — which a value-type geometry does not have, and which `compat`
+therefore does not fake; building a geometry in place is the one place the two object
+models genuinely differ. The rest are either fixture names the extractor cannot tell
+from API (`t00z`, `f000`, `WY`), a test's own helper (`throw`, `isVectical`), or the
+last few `…Async` aliases and `getStyleString` / `setStyleString` / `getEnvelope3D`.
 
 The adapter is covered by its own **typed TypeScript suite** (`ts-test/`, run with
 `npm test` under Vitest): every export and class member is exercised, the
@@ -278,7 +275,7 @@ declarations in `compat/index.d.ts` are the types the suite compiles against, an
 `npm run test:coverage` holds a coverage floor so a new member cannot land untested
 without the number moving.
 
-The member-level report the same run prints (153 names) is a **lead, not a measurement** —
+The member-level report the same run prints is a **lead, not a measurement** —
 a bare `.name` cannot say which class it was reached on, so the suite's own helpers and
 any gdal-ish local land in it too. It is still how a whole family of forgotten accessors
 shows up: `points` (359 uses), `rings` (59), `children` (20) and the
@@ -302,12 +299,16 @@ the adapter.
 
 1. **Shipped:** Tier 1, Tier 2, and all of Tier 3 — the algebra, the streams, the
    multidimensional model, the pixel functions, `calcAsync`, the async getters and
-   `eventLoopWarning`.
-2. **Remaining:** nothing on the parity side — every capability the reference has is
-   here under one spelling or the other. What is left of the section above is one type
-   asymmetry, not a missing capability: a member the generated declarations own keeps
-   their return type, so `dataset.bands.get(1)` and a `Point`-typed return are shapes a
-   TypeScript caller spells out (`instanceof` narrows, so the cast is a check rather
-   than a leap). `compat`, whose classes are its own, carries both without that caveat.
+   `eventLoopWarning`. And the last `compat` gaps: every module-level `gdal.*` name the
+   reference's tests use, the constant families, the curve classes, `ColorTable`, the
+   named streams and the two algorithm wrappers.
+2. **Remaining:** two things, both recorded above rather than left as surprises. The
+   reference's **mutable geometry builder** (`points.add`, `curves.add`, `closeRings`,
+   `addSubLineString`) — this binding's geometry is a value, and building one in place
+   is a different object model, not a missing call. And one **type asymmetry**: a member
+   the generated declarations own keeps their return type, so `dataset.bands.get(1)` and
+   a `Point`-typed return are shapes a TypeScript caller spells out (`instanceof`
+   narrows, so the cast is a check rather than a leap). `compat`, whose classes are its
+   own, carries both without that caveat.
 3. **Publishing** stays *deliberately deferred* — see `ROADMAP.md` Phase 0 and
    `CHANGELOG.md`; nothing here changes that.

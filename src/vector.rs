@@ -518,6 +518,19 @@ pub(crate) fn geometry_type_name(ty: OGRwkbGeometryType::Type) -> String {
         WKB::wkbMultiLineString => "MultiLineString",
         WKB::wkbMultiPolygon => "MultiPolygon",
         WKB::wkbGeometryCollection => "GeometryCollection",
+        // The curve and surface types, so a `CIRCULARSTRING` / `COMPOUNDCURVE` parsed
+        // from WKT reports its own name rather than `Unknown` — the reference has a
+        // class per shape and re-tags on this string.
+        WKB::wkbCircularString => "CircularString",
+        WKB::wkbCompoundCurve => "CompoundCurve",
+        WKB::wkbCurvePolygon => "CurvePolygon",
+        WKB::wkbMultiCurve => "MultiCurve",
+        WKB::wkbMultiSurface => "MultiSurface",
+        WKB::wkbCurve => "Curve",
+        WKB::wkbSurface => "Surface",
+        WKB::wkbPolyhedralSurface => "PolyhedralSurface",
+        WKB::wkbTIN => "TIN",
+        WKB::wkbTriangle => "Triangle",
         // `wkbUnknown`, and any type GDAL grows later.
         _ => "Unknown",
     };
@@ -564,10 +577,22 @@ pub(crate) fn geometry_type_from_name(name: &str) -> Result<OGRwkbGeometryType::
         "multilinestring" => OGRwkbGeometryType::wkbMultiLineString,
         "multipolygon" => OGRwkbGeometryType::wkbMultiPolygon,
         "geometrycollection" => OGRwkbGeometryType::wkbGeometryCollection,
+        "circularstring" => OGRwkbGeometryType::wkbCircularString,
+        "compoundcurve" => OGRwkbGeometryType::wkbCompoundCurve,
+        "curvepolygon" => OGRwkbGeometryType::wkbCurvePolygon,
+        "multicurve" => OGRwkbGeometryType::wkbMultiCurve,
+        "multisurface" => OGRwkbGeometryType::wkbMultiSurface,
+        "curve" => OGRwkbGeometryType::wkbCurve,
+        "surface" => OGRwkbGeometryType::wkbSurface,
+        "polyhedralsurface" => OGRwkbGeometryType::wkbPolyhedralSurface,
+        "tin" => OGRwkbGeometryType::wkbTIN,
+        "triangle" => OGRwkbGeometryType::wkbTriangle,
         other => {
             return Err(bad_argument(format!(
                 "unknown geometry type {other:?}; expected one of Point, LineString, Polygon, \
-                 MultiPoint, MultiLineString, MultiPolygon, GeometryCollection, Unknown"
+                 MultiPoint, MultiLineString, MultiPolygon, GeometryCollection, CircularString, \
+                 CompoundCurve, CurvePolygon, MultiCurve, MultiSurface, Curve, Surface, \
+                 PolyhedralSurface, TIN, Triangle, Unknown"
             )));
         }
     };
@@ -2139,7 +2164,7 @@ mod tests {
 
     use super::*;
 
-    const CANONICAL: [&str; 8] = [
+    const CANONICAL: [&str; 18] = [
         "Point",
         "LineString",
         "Polygon",
@@ -2147,6 +2172,16 @@ mod tests {
         "MultiLineString",
         "MultiPolygon",
         "GeometryCollection",
+        "CircularString",
+        "CompoundCurve",
+        "CurvePolygon",
+        "MultiCurve",
+        "MultiSurface",
+        "Curve",
+        "Surface",
+        "PolyhedralSurface",
+        "TIN",
+        "Triangle",
         "Unknown",
     ];
 

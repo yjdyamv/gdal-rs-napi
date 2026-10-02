@@ -33,6 +33,19 @@ pub struct GeometryEnvelope {
     pub max_y: f64,
 }
 
+/// A 3D bounding box, as `Geometry.envelope3d` reports it — the same four corners
+/// plus the Z range.
+#[napi(object)]
+#[derive(Debug, Clone)]
+pub struct GeometryEnvelope3D {
+    pub min_x: f64,
+    pub min_y: f64,
+    pub min_z: f64,
+    pub max_x: f64,
+    pub max_y: f64,
+    pub max_z: f64,
+}
+
 /// A geometry.
 ///
 /// Build one with `fromWkt`, `fromWkb` or `fromJson` (the general GeoJSON entry —
@@ -64,11 +77,17 @@ impl JsGeometry {
     fn kind(&self) -> GeometryKind {
         match geometry_type_flatten(self.inner.geometry_type()) {
             OGRwkbGeometryType::wkbPoint => GeometryKind::Point,
-            OGRwkbGeometryType::wkbLineString => GeometryKind::Line,
-            OGRwkbGeometryType::wkbPolygon => GeometryKind::Polygon,
+            OGRwkbGeometryType::wkbLineString | OGRwkbGeometryType::wkbCircularString => {
+                GeometryKind::Line
+            }
+            OGRwkbGeometryType::wkbPolygon | OGRwkbGeometryType::wkbCurvePolygon => {
+                GeometryKind::Polygon
+            }
             OGRwkbGeometryType::wkbMultiPoint
             | OGRwkbGeometryType::wkbMultiLineString
             | OGRwkbGeometryType::wkbMultiPolygon
+            | OGRwkbGeometryType::wkbMultiCurve
+            | OGRwkbGeometryType::wkbMultiSurface
             | OGRwkbGeometryType::wkbGeometryCollection => GeometryKind::Collection,
             _ => GeometryKind::Other,
         }
@@ -451,6 +470,35 @@ impl JsGeometry {
             min_y: envelope.MinY,
             max_x: envelope.MaxX,
             max_y: envelope.MaxY,
+        }))
+    }
+
+    /// The 3D bounding box, or `null` for an empty geometry. The four XY corners are
+    /// the same as `envelope`; this adds the Z range, which is what a `CONTOUR` or a
+    /// `TIN` needs. A geometry with no Z answers a `minZ`/`maxZ` of `0`.
+    #[napi(catch_unwind, js_name = "envelope3d")]
+    pub fn envelope3d(&self) -> Result<Option<GeometryEnvelope3D>> {
+        ensure_initialized();
+        let _guard = lock_gdal_shared();
+        if self.inner.is_empty() {
+            return Ok(None);
+        }
+        let mut envelope = gdal_sys::OGREnvelope3D {
+            MinX: 0.0,
+            MinY: 0.0,
+            MinZ: 0.0,
+            MaxX: 0.0,
+            MaxY: 0.0,
+            MaxZ: 0.0,
+        };
+        unsafe { gdal_sys::OGR_G_GetEnvelope3D(self.handle(), &mut envelope) };
+        Ok(Some(GeometryEnvelope3D {
+            min_x: envelope.MinX,
+            min_y: envelope.MinY,
+            min_z: envelope.MinZ,
+            max_x: envelope.MaxX,
+            max_y: envelope.MaxY,
+            max_z: envelope.MaxZ,
         }))
     }
 

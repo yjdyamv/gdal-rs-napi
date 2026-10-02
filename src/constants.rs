@@ -23,6 +23,11 @@ use napi_derive::napi;
 /// out of GDAL is a number it will not guess. Callers who need one of those should ask
 /// GDAL for the behaviour instead: `testCapability()` answers the capability questions
 /// by name, and `lastError().number` reports the error number that actually occurred.
+///
+/// The **compatibility layer** answers them anyway, from its own table: GDAL's strings
+/// for the capability families and the ABI numbers for the error codes are the
+/// reference's vocabulary, so `gdal-rs-napi/compat` supplies them where this
+/// headers-only table leaves a hole. See `compat/index.js`'s `GDAL_CONSTANTS`.
 #[napi(catch_unwind)]
 pub fn numeric_constants() -> HashMap<String, u32> {
     use gdal_sys::{

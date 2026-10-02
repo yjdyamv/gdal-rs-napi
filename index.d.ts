@@ -153,8 +153,8 @@ declare module './binding' {
    * own bytes a strip at a time; writing consumes them the same way.
    */
   interface RasterBand {
-    createReadStream(options?: RasterStreamOptions): import('node:stream').Readable
-    createWriteStream(options?: RasterStreamOptions): import('node:stream').Writable
+    createReadStream(options?: RasterStreamOptions): RasterReadStream
+    createWriteStream(options?: RasterStreamOptions): RasterWriteStream
     /** The pixel accessors, under the reference's names. */
     pixels: BandPixels
   }
@@ -238,8 +238,8 @@ export interface BandPixels {
   writeBlock(x: number, y: number, data: Buffer): void
   readValues(x: number, y: number, width: number, height: number): Buffer
   writeValues(x: number, y: number, width: number, height: number, data: Buffer): void
-  createReadStream(options?: RasterStreamOptions): import('node:stream').Readable
-  createWriteStream(options?: RasterStreamOptions): import('node:stream').Writable
+  createReadStream(options?: RasterStreamOptions): RasterReadStream
+  createWriteStream(options?: RasterStreamOptions): RasterWriteStream
 }
 
 /**
@@ -264,6 +264,20 @@ export interface RasterStreamOptions {
    */
   convertNoData?: boolean
 }
+
+/**
+ * The object-mode `Readable` `band.createReadStream()` hands back: one typed array
+ * per strip, in the band's own sample type. A named class rather than a bare
+ * `Readable`, so `instanceof` works — gdal-async's streams are named, and its tests
+ * ask.
+ */
+export declare class RasterReadStream extends import('node:stream').Readable {}
+
+/**
+ * The object-mode `Writable` `band.createWriteStream()` hands back: it consumes typed
+ * arrays and writes them a strip at a time. Named for the same reason as above.
+ */
+export declare class RasterWriteStream extends import('node:stream').Writable {}
 
 /** How a `RasterMuxStream` pairs its inputs up. */
 export interface RasterMuxStreamOptions {

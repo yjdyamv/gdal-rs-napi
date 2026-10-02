@@ -350,10 +350,17 @@ test('the numeric vocabularies come from the headers this build links', () => {
   assert.equal(gdal.GDT_Float32, native.toDataType('Float32'))
   assert.equal(gdal.GDT_Float64, native.toDataType('Float64'))
 
-  // The families `gdal-sys` does not bind are absent rather than guessed — see the
-  // note on `numericConstants()` in `src/constants.rs`.
-  assert.equal(gdal.OLCRandomRead, undefined)
-  assert.equal(gdal.CPLE_AppDefined, undefined)
+  // The families `gdal-sys` cannot bind — GDAL spells them as C macros — are supplied
+  // by `compat`'s own table with the reference's values, rather than left absent. The
+  // native table stays headers-only: `src/constants.rs` reads what it can and the
+  // adapter fills the rest.
+  assert.equal(gdal.OLCRandomRead, 'RandomRead')
+  assert.equal(gdal.CPLE_AppDefined, 1)
+  assert.equal(gdal.DCAP_CREATE, 'DCAP_CREATE')
+  assert.equal(gdal.DIM_TEMPORAL, 'TEMPORAL')
+  assert.equal(gdal.wkbPoint25D, gdal.wkbPoint | gdal.wkb25DBit)
+  assert.equal(native.OLCRandomRead, undefined)
+  assert.equal(native.CPLE_AppDefined, undefined)
 })
 
 test('the re-exports answer what the main entry point answers', () => {

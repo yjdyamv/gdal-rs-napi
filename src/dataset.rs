@@ -820,6 +820,27 @@ impl JsDataset {
         self.dataset.with(|dataset| dataset.description().gdal())
     }
 
+    /// Whether this dataset can do `capability`, in GDAL's own vocabulary — the
+    /// driver's `CreateDataSource` / `DeleteDataSource` (`ODrC*`, which GDAL forwards
+    /// to the driver) and the datasource's `CreateLayer` / `DeleteLayer` /
+    /// `CreateGeomFieldAfterCreateLayer` (`ODsC*`).
+    ///
+    /// A name GDAL does not know answers `false` rather than throwing: the call is a
+    /// question, and "no" is one of its answers — the same rule
+    /// `Layer.testCapability` follows.
+    #[napi(catch_unwind)]
+    pub fn test_capability(&self, capability: String) -> Result<bool> {
+        ensure_initialized();
+        self.dataset.with(|dataset| {
+            let capability = CString::new(capability)
+                .map_err(|_| bad_argument("a capability name cannot contain a NUL byte"))?;
+            let answer = unsafe {
+                gdal_sys::GDALDatasetTestCapability(dataset.c_dataset(), capability.as_ptr())
+            };
+            Ok(answer != 0)
+        })
+    }
+
     /// Raster dimensions as one object, the shape `gdalinfo` prints. `width` and
     /// `height` remain as the flat accessors; this is the same pair grouped.
     #[napi(catch_unwind, getter)]

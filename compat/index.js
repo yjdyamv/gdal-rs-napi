@@ -97,6 +97,102 @@ const CODE_BY_NAME = Object.fromEntries(
   Object.entries(NAME_BY_CODE).map(([code, name]) => [name, Number(code)]),
 )
 
+// The rest of gdal-async's constant vocabulary — the families `gdal_sys` cannot hand
+// over, because GDAL spells them as C *macros* or unnamed enums that never reach the
+// Rust side (`OLC*`, `ODsC*`, `ODrC*`, `DIM_*`, `DIR_*`, `CPLE_*`, `wkb25DBit`).
+// `src/constants.rs` reads everything it *can* out of the headers and says why these
+// are absent; the values here are the reference's own, and the string families are
+// the very names `testCapability()` already accepts, so they are the frozen API
+// rather than a guess. `numericConstants()` still wins wherever the two overlap.
+const GDAL_CONSTANTS = {
+  // CPL error numbers (`cpl_error.h`).
+  CPLE_None: 0,
+  CPLE_AppDefined: 1,
+  CPLE_OutOfMemory: 2,
+  CPLE_FileIO: 3,
+  CPLE_OpenFailed: 4,
+  CPLE_IllegalArg: 5,
+  CPLE_NotSupported: 6,
+  CPLE_AssertionFailed: 7,
+  CPLE_NoWriteAccess: 8,
+  CPLE_UserInterrupt: 9,
+  CPLE_ObjectNull: 10,
+  // Driver capabilities (`GDAL_DCAP_*`).
+  DCAP_CREATE: 'DCAP_CREATE',
+  DCAP_CREATECOPY: 'DCAP_CREATECOPY',
+  DCAP_VIRTUALIO: 'DCAP_VIRTUALIO',
+  // Layer capabilities (`OLC*`) — the strings `layer.testCapability` takes.
+  OLCRandomRead: 'RandomRead',
+  OLCSequentialWrite: 'SequentialWrite',
+  OLCRandomWrite: 'RandomWrite',
+  OLCFastSpatialFilter: 'FastSpatialFilter',
+  OLCFastFeatureCount: 'FastFeatureCount',
+  OLCFastGetExtent: 'FastGetExtent',
+  OLCCreateField: 'CreateField',
+  OLCDeleteField: 'DeleteField',
+  OLCReorderFields: 'ReorderFields',
+  OLCAlterFieldDefn: 'AlterFieldDefn',
+  OLCTransactions: 'Transactions',
+  OLCDeleteFeature: 'DeleteFeature',
+  OLCFastSetNextByIndex: 'FastSetNextByIndex',
+  OLCStringsAsUTF8: 'StringsAsUTF8',
+  OLCIgnoreFields: 'IgnoreFields',
+  OLCCreateGeomField: 'CreateGeomField',
+  OLCCurveGeometries: 'CurveGeometries',
+  OLCMeasuredGeometries: 'MeasuredGeometries',
+  OLCZGeometries: 'ZGeometries',
+  // Datasource capabilities (`ODsC*`) — what `dataset.testCapability` takes.
+  ODsCCreateLayer: 'CreateLayer',
+  ODsCDeleteLayer: 'DeleteLayer',
+  ODsCCreateGeomFieldAfterCreateLayer: 'CreateGeomFieldAfterCreateLayer',
+  ODsCTransactions: 'Transactions',
+  ODsCEmulatedTransactions: 'EmulatedTransactions',
+  ODsCCurveGeometries: 'CurveGeometries',
+  ODsCMeasuredGeometries: 'MeasuredGeometries',
+  ODsCZGeometries: 'ZGeometries',
+  ODsCRandomLayerRead: 'RandomLayerRead',
+  ODsCRandomLayerWrite: 'RandomLayerWrite',
+  ODsCAddFieldDomain: 'AddFieldDomain',
+  ODsCReadLayerMetadata: 'ReadLayerMetadata',
+  // The dataset-flavoured driver capabilities.
+  ODrCCreateDataSource: 'CreateDataSource',
+  ODrCDeleteDataSource: 'DeleteDataSource',
+  // Multidimensional dimension types (`GDAL_DIM_TYPE_*`).
+  DIM_HORIZONTAL_X: 'HORIZONTAL_X',
+  DIM_HORIZONTAL_Y: 'HORIZONTAL_Y',
+  DIM_VERTICAL: 'VERTICAL',
+  DIM_TEMPORAL: 'TEMPORAL',
+  DIM_PARAMETRIC: 'PARAMETRIC',
+  // Dimension directions.
+  DIR_EAST: 'EAST',
+  DIR_WEST: 'WEST',
+  DIR_SOUTH: 'SOUTH',
+  DIR_NORTH: 'NORTH',
+  DIR_UP: 'UP',
+  DIR_DOWN: 'DOWN',
+  DIR_FUTURE: 'FUTURE',
+  DIR_PAST: 'PAST',
+  // Extended data type classes — the reference spells the two string ones with a
+  // capital S / C, beside the numeric `GEDTC_STRING` / `GEDTC_COMPOUND`.
+  GEDTC_String: 'String',
+  GEDTC_Compound: 'Compound',
+  // The Z bit and the codes that are not enum members `gdal_sys` binds. GDAL's
+  // `wkb25DBit` is a signed `int`, so the 2.5D codes are negative JS numbers and
+  // `gdal.wkbPoint | gdal.wkb25DBit` is how the reference builds one.
+  wkb25DBit: -2147483648,
+  wkbNone: 100,
+  wkbLinearRing: 101,
+}
+
+// The 2.5D forms, derived the way GDAL does it: `base | wkb25DBit`.
+for (const [name, code] of Object.entries(native.numericConstants())) {
+  if (!name.startsWith('wkb') || code >= 100 || ['wkbUnknown', 'wkbNone', 'wkbLinearRing'].includes(name)) {
+    continue
+  }
+  GDAL_CONSTANTS[`${name}25D`] = code | GDAL_CONSTANTS.wkb25DBit
+}
+GDAL_CONSTANTS.wkbLinearRing25D = GDAL_CONSTANTS.wkbLinearRing | GDAL_CONSTANTS.wkb25DBit
+
 const TYPED_ARRAY_BY_CODE = {
   1: Uint8Array,
   2: Uint16Array,
@@ -192,25 +288,36 @@ class Geometry {
 // underneath the adapter's.
 Object.setPrototypeOf(Geometry.prototype, native.Geometry.prototype)
 
+class SimpleCurve extends Geometry {}
 class Point extends Geometry {}
-class LineString extends Geometry {}
-class LinearRing extends Geometry {}
+class LineString extends SimpleCurve {}
+class LinearRing extends LineString {}
+class CircularString extends SimpleCurve {}
 class Polygon extends Geometry {}
 class MultiPoint extends Geometry {}
 class MultiLineString extends Geometry {}
 class MultiPolygon extends Geometry {}
 class GeometryCollection extends Geometry {}
+class CompoundCurve extends Geometry {}
+class MultiCurve extends GeometryCollection {}
 
 // gdal-async reports a `LinearRing` through `Polygon.rings`, not as a type of its
-// own, so `LineString` is what a ring looks like from the outside.
+// own, so `LineString` is what a ring looks like from the outside. The curve types are
+// here so a `COMPOUNDCURVE (…)` / `MULTICURVE (…)` parsed from WKT is re-tagged as the
+// reference's class; what the binding does *not* carry is the reference's mutable
+// builder (`points.add`, `curves.add`, `addSubLineString`) — a geometry here is a
+// value, and those are recorded as out of reach rather than faked.
 const CLASS_BY_TYPE = {
   Point: Point,
   LineString: LineString,
+  CircularString: CircularString,
+  CompoundCurve: CompoundCurve,
   Polygon: Polygon,
   MultiPoint: MultiPoint,
   MultiLineString: MultiLineString,
   MultiPolygon: MultiPolygon,
   GeometryCollection: GeometryCollection,
+  MultiCurve: MultiCurve,
 }
 
 /** Re-tag a native geometry as the class gdal-async would have handed back. */
@@ -220,6 +327,72 @@ function wrapGeometry(geometry) {
   Object.setPrototypeOf(geometry, klass.prototype)
   return geometry
 }
+
+// `Geometry.getConstructor(wkbType)` and the `wkbType` property, class-level and
+// instance-level. The codes are the same `wkb*` numbers the numeric table carries,
+// with `LinearRing` (101) the one `gdal_sys` does not bind.
+const WKB_TYPE_BY_NAME = {
+  Unknown: 0,
+  Point: 1,
+  LineString: 2,
+  Polygon: 3,
+  MultiPoint: 4,
+  MultiLineString: 5,
+  MultiPolygon: 6,
+  GeometryCollection: 7,
+  CircularString: 8,
+  CompoundCurve: 9,
+  CurvePolygon: 10,
+  MultiCurve: 11,
+  MultiSurface: 12,
+  LinearRing: 101,
+}
+
+const WKB_CLASS_BY_CODE = {
+  1: Point,
+  2: LineString,
+  3: Polygon,
+  4: MultiPoint,
+  5: MultiLineString,
+  6: MultiPolygon,
+  7: GeometryCollection,
+  8: CircularString,
+  9: CompoundCurve,
+  11: MultiCurve,
+  101: LinearRing,
+}
+
+/** The wkb code of a class, so `gdal.Point.wkbType` and `new gdal.Point().wkbType` agree. */
+function assignWkbType(klass, name) {
+  klass.wkbType = WKB_TYPE_BY_NAME[name]
+}
+
+for (const [name, klass] of Object.entries({
+  SimpleCurve,
+  Point,
+  LineString,
+  LinearRing,
+  CircularString,
+  Polygon,
+  MultiPoint,
+  MultiLineString,
+  MultiPolygon,
+  GeometryCollection,
+  CompoundCurve,
+  MultiCurve,
+})) {
+  if (WKB_TYPE_BY_NAME[name] !== undefined) assignWkbType(klass, name)
+}
+
+Geometry.getConstructor = (wkbType) => WKB_CLASS_BY_CODE[wkbType] ?? null
+
+Object.defineProperty(Geometry.prototype, 'wkbType', {
+  configurable: true,
+  get() {
+    return WKB_TYPE_BY_NAME[this.type.replace(/ [ZM]+$/, '')] ?? 0
+  },
+})
+
 
 const geometryFactories = {
   fromWKT: (wkt) => wrapGeometry(native.Geometry.fromWkt(wkt)),
@@ -791,6 +964,105 @@ class BandPixels {
   writeBlock(x, y, data) {
     this._band._native.writeBlock(x, y, data)
   }
+}
+
+// The numeric `GPI_*` palette interpretations and this binding's strings are one
+// another: GDAL's `GPI_RGB` is what `band.paletteInterpretation` spells `Rgba`.
+const PALETTE_NAME_BY_GPI = { 0: 'Gray', 1: 'Rgba', 2: 'Cmyk', 3: 'Hls' }
+const PALETTE_GPI_BY_NAME = { Gray: 0, Rgba: 1, Cmyk: 2, Hls: 3 }
+
+/**
+ * A band's palette, in the reference's shape: an indexable table of `{ c1, c2, c3,
+ * c4 }` entries with `count`, `get`, `set`, `interpretation`, `clone`, `isSame`,
+ * `ramp` and an iterator. Built over this binding's `band.colorTable` array and
+ * `setColorTable`, so it adds no capability — it is the other spelling.
+ *
+ * A table read from a band is **read-only** (the reference's getter answers one that
+ * refuses `set`, because a write has to go back through the band); one built with
+ * `new ColorTable(...)` or handed back by `clone()` is writable.
+ */
+class ColorTable {
+  constructor(interpretation = PALETTE_GPI_BY_NAME.Rgba, entries, readOnly = false) {
+    this._interpretation =
+      typeof interpretation === 'string'
+        ? (PALETTE_GPI_BY_NAME[interpretation] ?? PALETTE_GPI_BY_NAME.Rgba)
+        : interpretation
+    this._entries = (entries ?? []).map((entry) => ({ c1: entry.c1, c2: entry.c2, c3: entry.c3, c4: entry.c4 }))
+    this._readOnly = readOnly
+  }
+
+  get interpretation() {
+    return this._interpretation
+  }
+
+  count() {
+    return this._entries.length
+  }
+
+  get(index) {
+    const entry = this._entries[index]
+    return entry ? { c1: entry.c1, c2: entry.c2, c3: entry.c3, c4: entry.c4 } : undefined
+  }
+
+  set(index, color) {
+    if (this._readOnly) {
+      throw new Error('this color table is read-only; assign it back to the band to change it')
+    }
+    this._entries[index] = { c1: color.c1, c2: color.c2, c3: color.c3, c4: color.c4 }
+  }
+
+  clone() {
+    return new ColorTable(this._interpretation, this._entries)
+  }
+
+  isSame(other) {
+    if (!(other instanceof ColorTable) || other._interpretation !== this._interpretation) return false
+    if (other._entries.length !== this._entries.length) return false
+    return this._entries.every((entry, index) => {
+      const theirs = other._entries[index]
+      return entry.c1 === theirs.c1 && entry.c2 === theirs.c2 && entry.c3 === theirs.c3 && entry.c4 === theirs.c4
+    })
+  }
+
+  /**
+   * Fill the table from `start` to `end` with a linear ramp between two colours —
+   * the reference's `ramp(start, startColor, end, endColor)`.
+   */
+  ramp(start, startColor, end, endColor) {
+    if (this._readOnly) {
+      throw new Error('this color table is read-only; assign it back to the band to change it')
+    }
+    const span = end - start
+    for (let index = start; index <= end; index++) {
+      const t = span === 0 ? 0 : (index - start) / span
+      const mix = (from, to) => Math.round(from + (to - from) * t)
+      this._entries[index] = {
+        c1: mix(startColor.c1, endColor.c1),
+        c2: mix(startColor.c2, endColor.c2),
+        c3: mix(startColor.c3, endColor.c3),
+        c4: mix(startColor.c4, endColor.c4),
+      }
+    }
+  }
+
+  /** The entries as plain objects, for the `forEach`/`map` shape collections use. */
+  toArray() {
+    return this._entries.map((entry) => ({ ...entry }))
+  }
+
+  [Symbol.iterator]() {
+    return this.toArray()[Symbol.iterator]()
+  }
+}
+
+/** The `ColorTable` a band's native table becomes, or `undefined` when there is none. */
+function colorTableFromNative(band) {
+  const entries = band.colorTable
+  // `null` is "no table at all"; an **empty** array is a table with no entries, which
+  // is what GDAL answers after an empty one is written — and what `isSame` compares.
+  if (entries === null || entries === undefined) return undefined
+  const interpretation = PALETTE_GPI_BY_NAME[band.paletteInterpretation] ?? PALETTE_GPI_BY_NAME.Rgba
+  return new ColorTable(interpretation, entries, true)
 }
 
 class RasterBand {
@@ -1477,6 +1749,11 @@ Object.assign(Dataset.prototype, {
     return this._native.executeSql(sql, dialect)
   },
 
+  /** A dataset's capability question — GDAL's own names (`CreateLayer`, `DeleteLayer`). */
+  testCapability(name) {
+    return this._native.testCapability(name)
+  },
+
   /**
    * The same query under the reference's async name. The native query is
    * synchronous, so this is the reference's *shape* rather than its concurrency —
@@ -1568,6 +1845,32 @@ Object.defineProperties(RasterBand.prototype, {
     get() { return this._native.hasArbitraryOverviews },
   },
   categoryNames: { configurable: true, get() { return this._native.categoryNames } },
+  // The reference's palette: a `ColorTable` object on the getter (read-only), and an
+  // assignment on the setter that writes the whole table back — `null` clears it.
+  colorTable: {
+    configurable: true,
+    get() {
+      return colorTableFromNative(this._native)
+    },
+    set(value) {
+      if (value === null || value === undefined) {
+        this._native.clearColorTable()
+        return
+      }
+      if (!(value instanceof ColorTable)) {
+        throw new TypeError('colorTable must be a gdal.ColorTable')
+      }
+      this._native.setColorTable(value._entries, PALETTE_NAME_BY_GPI[value._interpretation])
+    },
+  },
+  // The async twin the reference carries; the read is cheap, the promise is for the
+  // same shape its `colourTableAsync` has.
+  colorTableAsync: {
+    configurable: true,
+    get() {
+      return Promise.resolve(colorTableFromNative(this._native))
+    },
+  },
 })
 
 Object.assign(RasterBand.prototype, {
@@ -1923,6 +2226,12 @@ Object.assign(Geometry.prototype, {
   getEnvelope() {
     return this.envelope()
   },
+
+  /** The 3D box, as the reference's `Envelope3D`; the empty box for an empty geometry. */
+  getEnvelope3D() {
+    const bounds = nativeGeometry.envelope3d.call(this)
+    return bounds ? new Envelope3D(bounds) : new Envelope3D()
+  },
 })
 
 Object.assign(Feature.prototype, {
@@ -2015,6 +2324,9 @@ const Gdal = {
   // code maps names through it; where the two disagree, the one read out of the
   // headers this build links is the one that wins.
   ...native.numericConstants(),
+  // The families `gdal_sys` cannot hand over — the `OLC*` / `ODsC*` / `ODrC*` strings,
+  // `DIM_*`, `DIR_*`, `CPLE_*`, `wkb25DBit` and the 2.5D codes.
+  ...GDAL_CONSTANTS,
 
   open,
   openAsync,
@@ -2049,14 +2361,19 @@ const Gdal = {
   },
 
   Geometry,
+  SimpleCurve,
   Point,
   LineString,
   LinearRing,
+  CircularString,
   Polygon,
   MultiPoint,
   MultiLineString,
   MultiPolygon,
   GeometryCollection,
+  CompoundCurve,
+  MultiCurve,
+  ColorTable,
   SpatialReference,
   Envelope,
   Envelope3D,
@@ -2095,6 +2412,7 @@ const Gdal = {
   FeatureFields,
   LayerFeatures,
   LayerFields: FieldCollection,
+  FeatureDefnFields: FieldCollection,
   DatasetBands: RasterBandCollection,
   DatasetLayers: LayerCollection,
   RasterBandPixels: BandPixels,
@@ -2103,6 +2421,9 @@ const Gdal = {
   /** `dataset.driver` is a wrapper here too, under the reference's method names. */
   Driver,
   CoordinateTransformation,
+  // The multidim collection aliases the reference's tests name.
+  Dimensions: GroupDimensions,
+  GeometryCollectionChildren: Collection,
 
   // Re-exports: the main entry point already answers these, under its own name or the
   // same one. Nothing is reimplemented here.
@@ -2144,6 +2465,9 @@ const Gdal = {
     ),
   RasterMuxStream: native.RasterMuxStream,
   RasterTransform: native.RasterTransform,
+  // The named stream classes `band.createReadStream()` / `createWriteStream()` build.
+  RasterReadStream: native.RasterReadStream,
+  RasterWriteStream: native.RasterWriteStream,
 
   /**
    * `gdal.deleteDataset(path, driver?)` — the reference's module-level delete. The
@@ -2401,6 +2725,56 @@ function rasterizeAsync(destination, source, args, options, callback) {
   )
 }
 
+/** The field a reference option names by **index**, as this binding's name. */
+function fieldNameAt(layer, index) {
+  const field = layer._native.defn.fields[index]
+  if (!field) throw new RangeError(`no field at index ${index}`)
+  return field.name
+}
+
+/**
+ * `gdal.contourGenerate({ src, dst, offset, interval, fixedLevels, idField, elevField })`
+ * — the reference's object form of `band.contourGenerateSync`. Two shape differences
+ * are bridged here: the reference names the two fields by **index** where this binding
+ * takes a name, and its `progress_cb` has no native counterpart for contouring, so it
+ * is called once when the lines are written.
+ */
+function contourGenerate(options) {
+  const request = {
+    levels: options.fixedLevels,
+    interval: options.interval,
+    base: options.offset,
+  }
+  if (options.elevField !== undefined) request.elevField = fieldNameAt(options.dst, options.elevField)
+  if (options.idField !== undefined) request.idField = fieldNameAt(options.dst, options.idField)
+  options.src._native.contourGenerateSync(options.dst._native, request)
+  if (typeof options.progress_cb === 'function') options.progress_cb()
+}
+
+function contourGenerateAsync(options, callback) {
+  const cb = typeof options === 'function' ? options : callback
+  const opts = typeof options === 'function' ? undefined : options
+  return withCallback(Promise.resolve().then(() => contourGenerate(opts)), cb)
+}
+
+/**
+ * `gdal.polygonize({ src, dst, pixValField, connectedness })` — the reference's object
+ * form of `band.polygonizeSync`, with `pixValField` an index and the same single
+ * `progress_cb` call.
+ */
+function polygonize(options) {
+  const request = { connectedness: options.connectedness }
+  if (options.pixValField !== undefined) request.fieldName = fieldNameAt(options.dst, options.pixValField)
+  options.src._native.polygonizeSync(options.dst._native, request)
+  if (typeof options.progress_cb === 'function') options.progress_cb()
+}
+
+function polygonizeAsync(options, callback) {
+  const cb = typeof options === 'function' ? options : callback
+  const opts = typeof options === 'function' ? undefined : options
+  return withCallback(Promise.resolve().then(() => polygonize(opts)), cb)
+}
+
 Object.assign(Gdal, {
   FeatureDefn,
   FieldDefn,
@@ -2426,6 +2800,93 @@ Object.assign(Gdal, {
   sieveFilterAsync,
   rasterize,
   rasterizeAsync,
+  contourGenerate,
+  contourGenerateAsync,
+  polygonize,
+  polygonizeAsync,
 })
+
+// ---- async twins -----------------------------------------------------------
+//
+// The reference gives most of its blocking methods an `…Async` twin. This binding
+// spells the asynchronous form as the plain call, so the adapter's `xxx()` blocks and
+// `xxxAsync()` is the promise — the same translation the rest of the layer makes. The
+// twins are *shape*, not concurrency: the native call still runs where it had to, on
+// the JS thread. They exist because the reference's code calls them by name.
+
+/**
+ * Define `<name>Async` on `prototype` for each blocking method. A name that already
+ * has an async form is left alone, and a trailing node-style callback is honoured the
+ * way every other `…Async` here honours one.
+ */
+function addAsyncTwins(prototype, names) {
+  for (const name of names) {
+    if (typeof prototype[name] !== 'function' || typeof prototype[`${name}Async`] === 'function') continue
+    Object.defineProperty(prototype, `${name}Async`, {
+      configurable: true,
+      writable: true,
+      value(...args) {
+        const callback = typeof args[args.length - 1] === 'function' ? args.pop() : undefined
+        const run = () => prototype[name].apply(this, args)
+        return withCallback(Promise.resolve().then(run), callback)
+      },
+    })
+  }
+}
+
+addAsyncTwins(Geometry.prototype, [
+  'toWKT', 'toWKB', 'toJSON', 'toObject', 'toGML', 'toKML',
+  'getEnvelope', 'getEnvelope3D', 'getArea', 'getLength', 'getGeometryType',
+  'boundary', 'buffer', 'centroid', 'convexHull', 'difference', 'disjoint',
+  'flattenTo2D', 'intersection', 'makeValid', 'normalize', 'overlaps',
+  'pointOnSurface', 'setPrecision', 'simplify', 'simplifyPreserveTopology',
+  'swapXY', 'symDifference', 'unaryUnion', 'union', 'distance',
+])
+addAsyncTwins(RasterBand.prototype, ['getMetadata', 'setMetadata', 'fill'])
+addAsyncTwins(Dataset.prototype, ['getMetadata', 'setMetadata'])
+addAsyncTwins(Layer.prototype, ['getMetadata', 'setMetadata'])
+addAsyncTwins(Driver.prototype, ['getMetadata'])
+addAsyncTwins(LayerFeatures.prototype, ['count', 'get'])
+addAsyncTwins(FieldCollection.prototype, ['get', 'getNames', 'indexOf'])
+addAsyncTwins(SpatialReference.prototype, [
+  'toWKT', 'toProj4', 'getName', 'getAuthorityName', 'getAuthorityCode', 'getAttrValue', 'isSame', 'equals',
+])
+
+/**
+ * The same for a class's **statics** — the reference's `fromWKTAsync` / `fromURLAsync`
+ * and the rest. `klass[name]` is called with `klass` as the receiver, since these are
+ * factories rather than instance methods.
+ */
+function addStaticAsyncTwins(klass, names) {
+  for (const name of names) {
+    if (typeof klass[name] !== 'function' || typeof klass[`${name}Async`] === 'function') continue
+    Object.defineProperty(klass, `${name}Async`, {
+      configurable: true,
+      writable: true,
+      value(...args) {
+        const callback = typeof args[args.length - 1] === 'function' ? args.pop() : undefined
+        return withCallback(Promise.resolve().then(() => klass[name].apply(klass, args)), callback)
+      },
+    })
+  }
+}
+
+addStaticAsyncTwins(Geometry, ['fromWKT', 'fromWKB', 'fromGeoJson', 'fromGeoJsonBuffer'])
+addStaticAsyncTwins(SpatialReference, [
+  'fromEPSG', 'fromWKT', 'fromProj4', 'fromESRI', 'fromEPSGA', 'fromURN',
+  'fromURL', 'fromCRSURL', 'fromUserInput', 'fromWMSAUTO', 'fromMICoordSys',
+])
+
+// `dataset.srsAsync` / `layer.srsAsync` — the reference's promise-shaped CRS read. A
+// getter, not a call, so no `addAsyncTwins`: the native read is cheap and the promise
+// is the reference's shape.
+for (const prototype of [Dataset.prototype, Layer.prototype]) {
+  Object.defineProperty(prototype, 'srsAsync', {
+    configurable: true,
+    get() {
+      return Promise.resolve(this.srs)
+    },
+  })
+}
 
 module.exports = Gdal

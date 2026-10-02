@@ -211,6 +211,14 @@ binding.FeatureCursor.prototype[Symbol.asyncIterator] = async function* () {
 // defaults to the band's block height, the strip GDAL reads anyway.
 const { Readable, Transform, Writable } = require('node:stream')
 
+// The streams are named classes rather than anonymous `new Readable({...})` values,
+// because gdal-async's streams are named and its tests ask `instanceof` of them. A
+// named subclass costs nothing — the whole behaviour is still the options object the
+// factories pass — and it is what makes `band.pixels.createReadStream() instanceof
+// gdal.RasterReadStream` true in the compat layer.
+class RasterReadStream extends Readable {}
+class RasterWriteStream extends Writable {}
+
 /** Every sample type this binding has, as the typed array JS reads it as. */
 const RASTER_TYPES = new Map([
   ['Uint8', Uint8Array],
@@ -298,7 +306,7 @@ binding.RasterBand.prototype.createReadStream = function createReadStream(option
   // integer one the missing samples come back as 0 instead.
   const noData = options.convertNoData ? band.noDataValue : null
   let next = y
-  return new Readable({
+  return new RasterReadStream({
     objectMode: true,
     read() {
       if (next >= y + height) {
@@ -336,7 +344,7 @@ binding.RasterBand.prototype.createWriteStream = function createWriteStream(opti
   const stripBytes = rowBytes * rows
   let pending = Buffer.alloc(0)
   let next = y
-  return new Writable({
+  return new RasterWriteStream({
     objectMode: true,
     write(chunk, _encoding, callback) {
       try {
@@ -1404,6 +1412,8 @@ collectionMember(binding.MDArray.prototype, 'dimensions', { names: (dimension) =
 
 binding.RasterMuxStream = RasterMuxStream
 binding.RasterTransform = RasterTransform
+binding.RasterReadStream = RasterReadStream
+binding.RasterWriteStream = RasterWriteStream
 binding.calcAsync = calcAsync
 
 module.exports = binding

@@ -117,6 +117,82 @@ declare namespace gdal {
   const wkbTIN: number
   const wkbTriangle: number
 
+  // The families `gdal_sys` cannot hand over — GDAL spells them as C macros. The
+  // string ones are the names `testCapability()` already accepts.
+  const CPLE_None: number
+  const CPLE_AppDefined: number
+  const CPLE_OutOfMemory: number
+  const CPLE_FileIO: number
+  const CPLE_OpenFailed: number
+  const CPLE_IllegalArg: number
+  const CPLE_NotSupported: number
+  const CPLE_AssertionFailed: number
+  const CPLE_NoWriteAccess: number
+  const CPLE_UserInterrupt: number
+  const CPLE_ObjectNull: number
+  const DCAP_CREATE: string
+  const DCAP_CREATECOPY: string
+  const DCAP_VIRTUALIO: string
+  const OLCRandomRead: string
+  const OLCSequentialWrite: string
+  const OLCRandomWrite: string
+  const OLCFastSpatialFilter: string
+  const OLCFastFeatureCount: string
+  const OLCFastGetExtent: string
+  const OLCCreateField: string
+  const OLCDeleteField: string
+  const OLCReorderFields: string
+  const OLCAlterFieldDefn: string
+  const OLCTransactions: string
+  const OLCDeleteFeature: string
+  const OLCFastSetNextByIndex: string
+  const OLCStringsAsUTF8: string
+  const OLCIgnoreFields: string
+  const OLCCreateGeomField: string
+  const OLCCurveGeometries: string
+  const OLCMeasuredGeometries: string
+  const OLCZGeometries: string
+  const ODsCCreateLayer: string
+  const ODsCDeleteLayer: string
+  const ODsCCreateGeomFieldAfterCreateLayer: string
+  const ODsCTransactions: string
+  const ODsCEmulatedTransactions: string
+  const ODsCCurveGeometries: string
+  const ODsCMeasuredGeometries: string
+  const ODsCZGeometries: string
+  const ODsCRandomLayerRead: string
+  const ODsCRandomLayerWrite: string
+  const ODsCAddFieldDomain: string
+  const ODsCReadLayerMetadata: string
+  const ODrCCreateDataSource: string
+  const ODrCDeleteDataSource: string
+  const DIM_HORIZONTAL_X: string
+  const DIM_HORIZONTAL_Y: string
+  const DIM_VERTICAL: string
+  const DIM_TEMPORAL: string
+  const DIM_PARAMETRIC: string
+  const DIR_EAST: string
+  const DIR_WEST: string
+  const DIR_SOUTH: string
+  const DIR_NORTH: string
+  const DIR_UP: string
+  const DIR_DOWN: string
+  const DIR_FUTURE: string
+  const DIR_PAST: string
+  const GEDTC_String: string
+  const GEDTC_Compound: string
+  const wkbNone: number
+  const wkbLinearRing: number
+  const wkb25DBit: number
+  const wkbPoint25D: number
+  const wkbLineString25D: number
+  const wkbPolygon25D: number
+  const wkbMultiPoint25D: number
+  const wkbMultiLineString25D: number
+  const wkbMultiPolygon25D: number
+  const wkbGeometryCollection25D: number
+  const wkbLinearRing25D: number
+
   class Geometry {
     readonly type: string
     readonly isEmpty: boolean
@@ -132,6 +208,10 @@ declare namespace gdal {
     static fromWKB(wkb: Uint8Array): Geometry
     static fromGeoJson(json: any): Geometry
     static fromGeoJsonBuffer(buffer: Uint8Array): Geometry
+    static fromWKTAsync(wkt: string): Promise<Geometry>
+    static fromWKBAsync(wkb: Uint8Array): Promise<Geometry>
+    static fromGeoJsonAsync(json: any): Promise<Geometry>
+    static fromGeoJsonBufferAsync(buffer: Uint8Array): Promise<Geometry>
 
     toWKT(): string
     toWKB(): Uint8Array
@@ -140,8 +220,10 @@ declare namespace gdal {
     toGML(): string
     toKML(altitudeMode?: string): string
     getGeometryType(): string
-    getEnvelope(): { minX: number; minY: number; maxX: number; maxY: number } | null
-    getEnvelope3D(): any
+    getEnvelope(): Envelope
+    getEnvelope3D(): Envelope3D
+    getEnvelopeAsync(): Promise<Envelope>
+    getEnvelope3DAsync(): Promise<Envelope3D>
     getArea(): number
     getLength(): number
     envelope(): { minX: number; minY: number; maxX: number; maxY: number } | null
@@ -184,16 +266,97 @@ declare namespace gdal {
     unionCascaded(): Geometry
     normalize(): Geometry
     setPrecision(gridSize: number): Geometry
+
+    /** The class a numeric `wkb*` type stands for, or `null` for `wkbUnknown`. */
+    static getConstructor(wkbType: number): typeof Geometry | null
+    /** This geometry's numeric `wkb*` type — `gdal.Point.wkbType`'s instance side. */
+    readonly wkbType: number
+
+    // The reference's `…Async` spellings. They are shape, not concurrency: the native
+    // call still blocks where it has to.
+    toWKTAsync(): Promise<string>
+    toWKBAsync(): Promise<Uint8Array>
+    toJSONAsync(): Promise<any>
+    toObjectAsync(): Promise<any>
+    toGMLAsync(): Promise<string>
+    toKMLAsync(altitudeMode?: string): Promise<string>
+    getAreaAsync(): Promise<number>
+    getLengthAsync(): Promise<number>
+    getGeometryTypeAsync(): Promise<string>
+    bufferAsync(distance: number, quadSegments?: number): Promise<Geometry>
+    centroidAsync(): Promise<Geometry>
+    convexHullAsync(): Promise<Geometry>
+    boundaryAsync(): Promise<Geometry>
+    makeValidAsync(): Promise<Geometry>
+    normalizeAsync(): Promise<Geometry>
+    distanceAsync(other: Geometry): Promise<number>
+    disjointAsync(other: Geometry): Promise<boolean>
+    overlapsAsync(other: Geometry): Promise<boolean>
+    unionAsync(other: Geometry): Promise<Geometry>
+    intersectionAsync(other: Geometry): Promise<Geometry>
+    differenceAsync(other: Geometry): Promise<Geometry>
+    simplifyAsync(tolerance: number): Promise<Geometry>
+    simplifyPreserveTopologyAsync(tolerance: number): Promise<Geometry>
+    flattenTo2DAsync(): Promise<Geometry>
   }
 
-  class Point extends Geometry {}
-  class LineString extends Geometry {}
-  class LinearRing extends Geometry {}
-  class Polygon extends Geometry {}
-  class MultiPoint extends Geometry {}
-  class MultiLineString extends Geometry {}
-  class MultiPolygon extends Geometry {}
-  class GeometryCollection extends Geometry {}
+  /** The base of the line-like shapes, in the reference's hierarchy. */
+  class SimpleCurve extends Geometry {
+    static wkbType: number
+  }
+  class Point extends Geometry {
+    static wkbType: number
+  }
+  class LineString extends SimpleCurve {
+    static wkbType: number
+  }
+  class LinearRing extends LineString {
+    static wkbType: number
+  }
+  class CircularString extends SimpleCurve {
+    static wkbType: number
+  }
+  class Polygon extends Geometry {
+    static wkbType: number
+  }
+  class MultiPoint extends Geometry {
+    static wkbType: number
+  }
+  class MultiLineString extends Geometry {
+    static wkbType: number
+  }
+  class MultiPolygon extends Geometry {
+    static wkbType: number
+  }
+  class GeometryCollection extends Geometry {
+    static wkbType: number
+  }
+  class CompoundCurve extends Geometry {
+    static wkbType: number
+  }
+  class MultiCurve extends GeometryCollection {
+    static wkbType: number
+  }
+
+  /** A band's palette, in the reference's shape. */
+  interface ColorTableEntry {
+    c1: number
+    c2: number
+    c3: number
+    c4: number
+  }
+  class ColorTable {
+    constructor(interpretation?: number | string, entries?: ColorTableEntry[])
+    readonly interpretation: number
+    count(): number
+    get(index: number): ColorTableEntry | undefined
+    set(index: number, color: ColorTableEntry): void
+    clone(): ColorTable
+    isSame(other: ColorTable): boolean
+    ramp(start: number, startColor: ColorTableEntry, end: number, endColor: ColorTableEntry): void
+    toArray(): ColorTableEntry[]
+    [Symbol.iterator](): Iterator<ColorTableEntry>
+  }
 
   function fromWKT(wkt: string): Geometry
   function fromWKB(wkb: Uint8Array): Geometry
@@ -239,6 +402,17 @@ declare namespace gdal {
     static fromUserInput(definition: string): SpatialReference
     static fromWMSAUTO(definition: string): SpatialReference
     static fromMICoordSys(definition: string): SpatialReference
+    static fromEPSGAsync(code: number): Promise<SpatialReference>
+    static fromWKTAsync(wkt: string): Promise<SpatialReference>
+    static fromProj4Async(proj4: string): Promise<SpatialReference>
+    static fromESRIAsync(esriWkt: string): Promise<SpatialReference>
+    static fromEPSGAAsync(code: number): Promise<SpatialReference>
+    static fromURNAsync(urn: string): Promise<SpatialReference>
+    static fromURLAsync(url: string): Promise<SpatialReference>
+    static fromCRSURLAsync(url: string): Promise<SpatialReference>
+    static fromUserInputAsync(definition: string): Promise<SpatialReference>
+    static fromWMSAUTOAsync(definition: string): Promise<SpatialReference>
+    static fromMICoordSysAsync(definition: string): Promise<SpatialReference>
 
     readonly wkt: string
     readonly prettyWkt: string
@@ -371,6 +545,9 @@ declare namespace gdal {
     readonly colorInterpretation: string
     readonly overviews: RasterBandOverviews
     readonly categoryNames: string[]
+    /** The palette, as a `ColorTable` object; assign one (or `null` to clear). */
+    colorTable: ColorTable | null | undefined
+    readonly colorTableAsync: Promise<ColorTable | undefined>
     readonly id: number | null
     readonly minimum: number | null
     readonly maximum: number | null
@@ -390,12 +567,15 @@ declare namespace gdal {
     ): Promise<BandStatistics | null> | BandStatistics | null | undefined
     computeStatisticsAsync(allowApproximation?: boolean, force?: boolean): Promise<BandStatistics | null>
     fill(value: number): void
+    fillAsync(value: number): Promise<void>
     asMDArray(): MDArray
     getMaskBand(): RasterBand
     getMaskFlags(): number
     createMaskBand(perDataset?: boolean): void
     getMetadata(domain?: string): Record<string, string>
+    getMetadataAsync(domain?: string): Promise<Record<string, string>>
     setMetadata(values: Record<string, unknown> | string[], domain?: string): boolean
+    setMetadataAsync(values: Record<string, unknown> | string[], domain?: string): Promise<boolean>
     flush(): void
     flushAsync(callback?: (error: Error | null) => void): Promise<void> | undefined
   }
@@ -481,13 +661,13 @@ declare namespace gdal {
     get(index: number): Layer | null
     create(
       name: string,
-      srs?: SpatialReference | string,
+      srs?: SpatialReference | string | null,
       geomType?: string,
       options?: { fields?: Array<FieldDefn | object>; [key: string]: any },
     ): Layer
     createAsync(
       name: string,
-      srs?: SpatialReference | string,
+      srs?: SpatialReference | string | null,
       geomType?: string,
       options?: { fields?: Array<FieldDefn | object>; [key: string]: any },
     ): Promise<Layer>
@@ -506,6 +686,7 @@ declare namespace gdal {
     readonly geomColumn: string | null
     /** Assignment, where the native binding has `setSpatialRef`. */
     srs: SpatialReference | string | null
+    readonly srsAsync: Promise<SpatialReference | null>
     readonly extent: { minX: number; minY: number; maxX: number; maxY: number } | null
     readonly fields: FieldCollection
     readonly features: LayerFeatures
@@ -530,14 +711,19 @@ declare namespace gdal {
     readonly root: Group | null
     /** Assignment, where the native binding has `setProjection`. */
     srs: SpatialReference | string | null
+    readonly srsAsync: Promise<SpatialReference | null>
     /** Assignment, where the native binding has `setGeoTransform`. */
     geoTransform: number[] | null
     getFileList(): string[]
     getGCPProjection(): string | null
     getMetadata(domain?: string): Record<string, string>
+    getMetadataAsync(domain?: string): Promise<Record<string, string>>
     setMetadata(values: Record<string, unknown> | string[], domain?: string): boolean
+    setMetadataAsync(values: Record<string, unknown> | string[], domain?: string): Promise<boolean>
     executeSQL(sql: string, dialect?: string): any[]
     executeSQLAsync(sql: string, dialect?: string): Promise<any[]>
+    /** A datasource capability question, in GDAL's own names. */
+    testCapability(name: string): boolean
     buildOverviews(options?: object): void
     buildOverviewsAsync(options?: object): Promise<void>
     flush(): void
@@ -627,8 +813,21 @@ declare namespace gdal {
     get(index: number): Dimension | null
     getNames(): string[]
   }
+  /** The reference's name for a group's dimension collection. */
+  class Dimensions extends GroupDimensions {}
+  /** The reference's name for a `FeatureDefn`'s field collection. */
+  class FeatureDefnFields extends FieldCollection {}
+  /** The reference's name for a `GeometryCollection`'s parts. */
+  class GeometryCollectionChildren extends Collection<Geometry> {
+    get(index: number): Geometry | null
+  }
 
   // ---- streams and pixel-wise calc -----------------------------------------
+
+  /** The object-mode `Readable` a `band.pixels.createReadStream()` answers. */
+  class RasterReadStream extends import('node:stream').Readable {}
+  /** The object-mode `Writable` a `band.pixels.createWriteStream()` answers. */
+  class RasterWriteStream extends import('node:stream').Writable {}
 
   class RasterMuxStream {
     constructor(inputs: Record<string, any>, options?: object)
@@ -755,6 +954,28 @@ declare namespace gdal {
   function sieveFilterAsync(options: object): Promise<void>
   function rasterize(destination: string, source: Dataset, args?: string[]): Dataset
   function rasterizeAsync(destination: string, source: Dataset, args?: string[], options?: object): Promise<Dataset>
+
+  /** `gdal.contourGenerate` — the reference's object form of `band.contourGenerateSync`. */
+  function contourGenerate(options: {
+    src: RasterBand
+    dst: Layer
+    offset?: number
+    interval?: number
+    fixedLevels?: number[]
+    idField?: number
+    elevField?: number
+    progress_cb?: () => void
+  }): void
+  function contourGenerateAsync(options: object, callback?: (error: Error | null) => void): Promise<void>
+  /** `gdal.polygonize` — the reference's object form of `band.polygonizeSync`. */
+  function polygonize(options: {
+    src: RasterBand
+    dst: Layer
+    pixValField?: number
+    connectedness?: number
+    progress_cb?: () => void
+  }): void
+  function polygonizeAsync(options: object, callback?: (error: Error | null) => void): Promise<void>
 }
 
 export = gdal
