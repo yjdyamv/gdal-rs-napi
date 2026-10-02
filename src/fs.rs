@@ -356,7 +356,8 @@ pub fn read_dir(path: String, recursive: Option<bool>) -> Result<Vec<String>> {
     ensure_initialized();
     let _guard = lock_gdal_shared();
 
-    let entries = gdal::vsi::read_dir(&path, recursive.unwrap_or(false)).gdal()?;
+    let entries =
+        gdal::vsi::read_dir(&path, recursive.unwrap_or(false)).gdal_context("read_dir")?;
     Ok(entries
         .iter()
         .map(|entry| entry.display().to_string())

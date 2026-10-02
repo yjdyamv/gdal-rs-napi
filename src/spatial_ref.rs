@@ -13,7 +13,9 @@ use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use serde_json::Value;
 
-use crate::error::{GdalErrorCode, IntoGdalResult, Result, bad_argument, into_status_error, split};
+use crate::error::{
+    GdalErrorCode, IntoGdalResult, Result, bad_argument, cpl_failure, into_status_error, split,
+};
 use crate::geometry::JsGeometry;
 use crate::runtime::{ensure_initialized, lock_gdal_shared};
 
@@ -101,7 +103,9 @@ impl JsSpatialRef {
     /// and would deadlock going through the `fromDefinition` factory, which takes the
     /// shared side again.
     pub(crate) fn build_from_definition(definition: &str) -> Result<Self> {
-        Ok(Self::wrap(SpatialRef::from_definition(definition).gdal()?))
+        Ok(Self::wrap(
+            SpatialRef::from_definition(definition).gdal_context("build_from_definition")?,
+        ))
     }
 }
 
@@ -112,14 +116,18 @@ impl JsSpatialRef {
     pub fn from_epsg(code: u32) -> Result<Self> {
         ensure_initialized();
         let _guard = lock_gdal_shared();
-        Ok(Self::wrap(SpatialRef::from_epsg(code).gdal()?))
+        Ok(Self::wrap(
+            SpatialRef::from_epsg(code).gdal_context("from_epsg")?,
+        ))
     }
 
     #[napi(catch_unwind, factory)]
     pub fn from_wkt(wkt: String) -> Result<Self> {
         ensure_initialized();
         let _guard = lock_gdal_shared();
-        Ok(Self::wrap(SpatialRef::from_wkt(&wkt).gdal()?))
+        Ok(Self::wrap(
+            SpatialRef::from_wkt(&wkt).gdal_context("from_wkt")?,
+        ))
     }
 
     /// From a PROJ string, e.g. `+proj=longlat +datum=WGS84 +no_defs`.
@@ -127,7 +135,9 @@ impl JsSpatialRef {
     pub fn from_proj4(proj4: String) -> Result<Self> {
         ensure_initialized();
         let _guard = lock_gdal_shared();
-        Ok(Self::wrap(SpatialRef::from_proj4(&proj4).gdal()?))
+        Ok(Self::wrap(
+            SpatialRef::from_proj4(&proj4).gdal_context("from_proj4")?,
+        ))
     }
 
     /// The general entry point: `EPSG:4326`, a WKT string, PROJJSON, or a PROJ
@@ -302,7 +312,9 @@ impl JsSpatialRef {
     pub fn from_esri(esri_wkt: String) -> Result<Self> {
         ensure_initialized();
         let _guard = lock_gdal_shared();
-        Ok(Self::wrap(SpatialRef::from_esri(&esri_wkt).gdal()?))
+        Ok(Self::wrap(
+            SpatialRef::from_esri(&esri_wkt).gdal_context("from_esri")?,
+        ))
     }
 
     /// This CRS as XML — OSR's own serialization, alongside `wkt` and `projJson`.
@@ -330,8 +342,8 @@ impl JsSpatialRef {
         let _guard = lock_gdal_shared();
         let handle = unsafe { gdal_sys::OSRCloneGeogCS(self.inner.to_c_hsrs()) };
         if handle.is_null() {
-            return Err(bad_argument(
-                "this CRS has no geographic component to clone",
+            return Err(cpl_failure(
+                "this CRS has no geographic component to clone".to_owned(),
             ));
         }
         // The crate keeps `from_c_hsrs` private, so the clone goes out as WKT and
@@ -344,9 +356,13 @@ impl JsSpatialRef {
         }
         unsafe { gdal_sys::OSRDestroySpatialReference(handle) };
         if status != 0 {
-            return Err(bad_argument("the geographic CRS could not be serialized"));
+            return Err(cpl_failure(
+                "the geographic CRS could not be serialized".to_owned(),
+            ));
         }
-        Ok(Self::wrap(SpatialRef::from_wkt(&text).gdal()?))
+        Ok(Self::wrap(
+            SpatialRef::from_wkt(&text).gdal_context("clone_geog_cs")?,
+        ))
     }
 
     /// Rewrite the CRS in ESRI's dialect, in place — the reverse of `fromESRI`.
@@ -363,8 +379,8 @@ impl JsSpatialRef {
         ensure_initialized();
         let _guard = lock_gdal_shared();
         if unsafe { gdal_sys::OSRMorphFromESRI(self.inner.to_c_hsrs()) } != 0 {
-            return Err(bad_argument(
-                "this CRS could not be morphed from ESRI's dialect",
+            return Err(cpl_failure(
+                "this CRS could not be morphed from ESRI's dialect".to_owned(),
             ));
         }
         Ok(())
@@ -379,7 +395,9 @@ impl JsSpatialRef {
         let name = std::ffi::CString::new(name)
             .map_err(|_| bad_argument("a well-known CRS name cannot contain a NUL byte"))?;
         if unsafe { gdal_sys::OSRSetWellKnownGeogCS(self.inner.to_c_hsrs(), name.as_ptr()) } != 0 {
-            return Err(bad_argument("unknown well-known CRS name — try \"WGS84\""));
+            return Err(cpl_failure(
+                "unknown well-known CRS name — try \"WGS84\"".to_owned(),
+            ));
         }
         Ok(())
     }
@@ -504,9 +522,9 @@ impl TransformDef {
         options: Option<CoordinateTransformOptions>,
     ) -> Result<Self> {
         Ok(Self {
-            from_wkt: from.to_wkt().gdal()?,
+            from_wkt: from.to_wkt().gdal_context("capture")?,
             from_axis: from.axis_mapping_strategy(),
-            to_wkt: to.to_wkt().gdal()?,
+            to_wkt: to.to_wkt().gdal_context("capture")?,
             to_axis: to.axis_mapping_strategy(),
             options,
         })
@@ -514,9 +532,9 @@ impl TransformDef {
 
     /// Rebuild the transform where this runs. The caller holds the GDAL lock.
     fn build(&self) -> Result<CoordTransform> {
-        let mut from = SpatialRef::from_wkt(&self.from_wkt).gdal()?;
+        let mut from = SpatialRef::from_wkt(&self.from_wkt).gdal_context("build")?;
         from.set_axis_mapping_strategy(self.from_axis);
-        let mut to = SpatialRef::from_wkt(&self.to_wkt).gdal()?;
+        let mut to = SpatialRef::from_wkt(&self.to_wkt).gdal_context("build")?;
         to.set_axis_mapping_strategy(self.to_axis);
 
         match &self.options {
@@ -570,12 +588,12 @@ pub struct CoordinateTransformOptions {
 /// Build GDAL's options object from the JS shape, checking what can be checked
 /// before GDAL sees it.
 fn build_transform_options(options: &CoordinateTransformOptions) -> Result<GdalTransformOptions> {
-    let mut built = GdalTransformOptions::new().gdal()?;
+    let mut built = GdalTransformOptions::new().gdal_context("build_transform_options")?;
 
     if let Some(pipeline) = &options.pipeline {
         built
             .set_coordinate_operation(pipeline, options.reverse.unwrap_or(false))
-            .gdal()?;
+            .gdal_context("build_transform_options")?;
     } else if options.reverse.is_some() {
         return Err(bad_argument(
             "`reverse` only means something alongside a `pipeline` — there is nothing to reverse",
@@ -590,11 +608,15 @@ fn build_transform_options(options: &CoordinateTransformOptions) -> Result<GdalT
                 "an accuracy target has to be a finite number and not negative, got {accuracy}"
             )));
         }
-        built.desired_accuracy(accuracy).gdal()?;
+        built
+            .desired_accuracy(accuracy)
+            .gdal_context("build_transform_options")?;
     }
 
     if let Some(ballpark) = options.ballpark {
-        built.set_ballpark_allowed(ballpark).gdal()?;
+        built
+            .set_ballpark_allowed(ballpark)
+            .gdal_context("build_transform_options")?;
     }
 
     if let Some(area) = &options.area_of_interest {
@@ -606,7 +628,7 @@ fn build_transform_options(options: &CoordinateTransformOptions) -> Result<GdalT
         })?;
         built
             .set_area_of_interest(west, south, east, north)
-            .gdal()?;
+            .gdal_context("build_transform_options")?;
     }
 
     Ok(built)
@@ -633,7 +655,7 @@ impl JsCoordinateTransform {
                 &build_transform_options(options)?,
             ),
         }
-        .gdal()?;
+        .gdal_context("new")?;
 
         // Captured now rather than on the first threaded call: it is two WKT
         // serialisations next to a `CoordTransform::new` that consults PROJ, and it
@@ -653,7 +675,7 @@ impl JsCoordinateTransform {
         let mut ys = [y];
         self.inner
             .transform_coords(&mut xs, &mut ys, &mut [])
-            .gdal()?;
+            .gdal_context("transform_point")?;
         Ok(vec![xs[0], ys[0]])
     }
 
@@ -719,7 +741,10 @@ impl JsCoordinateTransform {
         }
 
         let _guard = lock_gdal_shared();
-        let out = self.inner.transform_bounds(&corners, densify).gdal()?;
+        let out = self
+            .inner
+            .transform_bounds(&corners, densify)
+            .gdal_context("transform_bounds")?;
         Ok(out.to_vec())
     }
 
@@ -746,7 +771,9 @@ impl JsCoordinateTransform {
 
         let _guard = lock_gdal_shared();
         let geometry = crate::vector::from_geojson(&geometry)?;
-        let moved = geometry.transform(&self.inner).gdal()?;
+        let moved = geometry
+            .transform(&self.inner)
+            .gdal_context("transform_geometry")?;
         crate::vector::to_geojson(&moved)
     }
 }
@@ -776,7 +803,7 @@ fn transform_points_with(transform: &CoordTransform, flat: &[f64]) -> Result<Vec
     let mut ys: Vec<f64> = flat.iter().skip(1).step_by(2).copied().collect();
     transform
         .transform_coords(&mut xs, &mut ys, &mut [])
-        .gdal()?;
+        .gdal_context("transform_points_with")?;
 
     let mut out = Vec::with_capacity(flat.len());
     for (x, y) in xs.into_iter().zip(ys) {
@@ -827,8 +854,8 @@ impl Task for IdentifyEpsgTask {
             ensure_initialized();
             let _guard = lock_gdal_shared();
 
-            let mut srs = SpatialRef::from_wkt(&self.wkt).gdal()?;
-            srs.auto_identify_epsg().gdal()?;
+            let mut srs = SpatialRef::from_wkt(&self.wkt).gdal_context("compute")?;
+            srs.auto_identify_epsg().gdal_context("compute")?;
             Ok(srs.authority().ok())
         })()))
     }

@@ -269,7 +269,9 @@ pub fn rasterize(
 ) -> Result<()> {
     let mut options = CslStringList::new();
     for (name, value) in &request.options {
-        options.add_name_value(name, value).gdal()?;
+        options
+            .add_name_value(name, value)
+            .gdal_context("rasterize")?;
     }
 
     let handles: Vec<gdal_sys::OGRGeometryH> = geometries
@@ -363,7 +365,9 @@ pub fn polygonize(
     let mut options = CslStringList::new();
     if request.connectedness == 8 {
         // The option name GDAL's own tool passes for 8-connectivity.
-        options.add_string("8CONNECTED=8").gdal()?;
+        options
+            .add_string("8CONNECTED=8")
+            .gdal_context("polygonize")?;
     }
 
     let source = unsafe { band.c_rasterband() };
@@ -508,8 +512,10 @@ fn ensure_field(
     match layer.defn().fields().position(|field| field.name() == name) {
         Some(index) => Ok(index),
         None => {
-            let definition = FieldDefn::new(name, field_type).gdal()?;
-            definition.add_to_layer(layer).gdal()?;
+            let definition = FieldDefn::new(name, field_type).gdal_context("ensure_field")?;
+            definition
+                .add_to_layer(layer)
+                .gdal_context("ensure_field")?;
             // Appended, so it is the last one.
             Ok(layer.defn().fields().count() - 1)
         }
@@ -536,20 +542,26 @@ pub fn contour_generate(
 
     let mut options = CslStringList::new();
     for (name, value) in &request.levels {
-        options.add_name_value(name, value).gdal()?;
+        options
+            .add_name_value(name, value)
+            .gdal_context("contour_generate")?;
     }
     // These two are field *indexes*, not names: GDAL parses them with `atoi`, and
     // `gdal_contour` hands it an index as well.
     options
         .add_name_value("ELEV_FIELD", &elev.to_string())
-        .gdal()?;
+        .gdal_context("contour_generate")?;
     if let Some(id) = id {
-        options.add_name_value("ID_FIELD", &id.to_string()).gdal()?;
+        options
+            .add_name_value("ID_FIELD", &id.to_string())
+            .gdal_context("contour_generate")?;
     }
     // The pass-through goes last on purpose: GDAL takes the first match for a name,
     // so what this binding filled in wins over an accidental duplicate.
     for (name, value) in &request.extra {
-        options.add_name_value(name, value).gdal()?;
+        options
+            .add_name_value(name, value)
+            .gdal_context("contour_generate")?;
     }
 
     let class = unsafe {
@@ -737,15 +749,19 @@ pub fn suggested_warp_output(
 ) -> Result<SuggestedWarpOutput> {
     let mut options = CslStringList::new();
     if let Some(dst_wkt) = &request.dst_wkt {
-        options.add_name_value("DST_SRS", dst_wkt).gdal()?;
+        options
+            .add_name_value("DST_SRS", dst_wkt)
+            .gdal_context("suggested_warp_output")?;
     }
     if let Some(src_wkt) = &request.src_wkt {
-        options.add_name_value("SRC_SRS", src_wkt).gdal()?;
+        options
+            .add_name_value("SRC_SRS", src_wkt)
+            .gdal_context("suggested_warp_output")?;
     }
     if request.max_error > 0.0 {
         options
             .add_name_value("MAX_ERROR", &request.max_error.to_string())
-            .gdal()?;
+            .gdal_context("suggested_warp_output")?;
     }
 
     // The transformer carries the two CRSes: there is no destination dataset, so

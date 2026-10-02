@@ -135,7 +135,7 @@ impl JsLayer {
     /// whole file; this is the per-layer one a bulk write into one layer wants.
     fn flush_pending(&self) -> Result<()> {
         self.dataset.with_mut(|dataset| {
-            let layer = dataset.layer(self.index).gdal()?;
+            let layer = dataset.layer(self.index).gdal_context("flush_pending")?;
             ogr_result(
                 unsafe { gdal_sys::OGR_L_SyncToDisk(layer.c_layer()) },
                 "flush the layer",
@@ -148,13 +148,13 @@ impl JsLayer {
 fn to_record(feature: &Feature<'_>, field_names: &[String]) -> Result<FeatureRecord> {
     let mut properties = Map::with_capacity(field_names.len());
     for (index, name) in field_names.iter().enumerate() {
-        let value = match feature.field(index).gdal()? {
+        let value = match feature.field(index).gdal_context("to_record")? {
             // The `gdal` crate pulls chrono in without its `alloc` feature, so
             // the date types cannot be formatted here. Let GDAL render them —
             // it already knows the field's date format.
             Some(FieldValue::DateValue(_)) | Some(FieldValue::DateTimeValue(_)) => feature
                 .field_as_string(index)
-                .gdal()?
+                .gdal_context("to_record")?
                 .map_or(Value::Null, Value::from),
             other => field_value_to_json(other),
         };
@@ -698,20 +698,22 @@ fn write_feature(
         }
         if let Some(field_type) = inferred_field_type(value) {
             FieldDefn::new(name, field_type)
-                .gdal()?
+                .gdal_context("write_feature")?
                 .add_to_layer(layer)
-                .gdal()?;
+                .gdal_context("write_feature")?;
         }
     }
 
     // Re-read: creating fields just changed the definition.
     let fields = layer_fields(layer);
-    let mut feature = Feature::new(layer.defn()).gdal()?;
+    let mut feature = Feature::new(layer.defn()).gdal_context("write_feature")?;
 
     if let Some(geometry) = geometry
         && !geometry.is_null()
     {
-        feature.set_geometry(from_geojson(geometry)?).gdal()?;
+        feature
+            .set_geometry(from_geojson(geometry)?)
+            .gdal_context("write_feature")?;
     }
 
     for (name, value) in &properties {
@@ -751,7 +753,9 @@ fn update_existing(
     if let Some(geometry) = geometry
         && !geometry.is_null()
     {
-        feature.set_geometry(from_geojson(geometry)?).gdal()?;
+        feature
+            .set_geometry(from_geojson(geometry)?)
+            .gdal_context("update_existing")?;
     }
 
     if let Some(Value::Object(map)) = properties {
@@ -820,7 +824,7 @@ impl JsLayer {
     pub fn name(&self) -> Result<String> {
         ensure_initialized();
         self.dataset.with_exclusive(|dataset| {
-            let layer = dataset.layer(self.index).gdal()?;
+            let layer = dataset.layer(self.index).gdal_context("name")?;
             Ok(layer.name())
         })
     }
@@ -861,7 +865,7 @@ impl JsLayer {
         self.dataset.with_mut(|dataset| {
             // Not `mut`: `c_layer()` takes the layer by shared reference, unlike the
             // iterating call sites where the layer is borrowed mutably.
-            let layer = dataset.layer(self.index).gdal()?;
+            let layer = dataset.layer(self.index).gdal_context("transaction")?;
             ogr_result(
                 unsafe { call(layer.c_layer()) },
                 &format!("{what} the transaction"),
@@ -875,7 +879,7 @@ impl JsLayer {
     pub fn fid_column(&self) -> Result<Option<String>> {
         ensure_initialized();
         self.dataset.with_exclusive(|dataset| {
-            let layer = dataset.layer(self.index).gdal()?;
+            let layer = dataset.layer(self.index).gdal_context("fid_column")?;
             Ok(named_column(unsafe {
                 gdal_sys::OGR_L_GetFIDColumn(layer.c_layer())
             }))
@@ -888,7 +892,7 @@ impl JsLayer {
     pub fn geom_column(&self) -> Result<Option<String>> {
         ensure_initialized();
         self.dataset.with_exclusive(|dataset| {
-            let layer = dataset.layer(self.index).gdal()?;
+            let layer = dataset.layer(self.index).gdal_context("geom_column")?;
             Ok(named_column(unsafe {
                 gdal_sys::OGR_L_GetGeometryColumn(layer.c_layer())
             }))
@@ -905,7 +909,7 @@ impl JsLayer {
     pub fn test_capability(&self, capability: String) -> Result<bool> {
         ensure_initialized();
         self.dataset.with_exclusive(|dataset| {
-            let layer = dataset.layer(self.index).gdal()?;
+            let layer = dataset.layer(self.index).gdal_context("test_capability")?;
             let capability = std::ffi::CString::new(capability)
                 .map_err(|_| bad_argument("a capability name cannot contain a NUL byte"))?;
             let answer =
@@ -920,7 +924,7 @@ impl JsLayer {
     pub fn feature_count(&self) -> Result<Option<i64>> {
         ensure_initialized();
         self.dataset.with_exclusive(|dataset| {
-            let layer = dataset.layer(self.index).gdal()?;
+            let layer = dataset.layer(self.index).gdal_context("feature_count")?;
             Ok(layer.try_feature_count().map(|count| count as i64))
         })
     }
@@ -930,7 +934,7 @@ impl JsLayer {
     pub fn geometry_type(&self) -> Result<String> {
         ensure_initialized();
         self.dataset.with_exclusive(|dataset| {
-            let layer = dataset.layer(self.index).gdal()?;
+            let layer = dataset.layer(self.index).gdal_context("geometry_type")?;
             Ok(geometry_type_name(layer.defn().geometry_type()))
         })
     }
@@ -939,7 +943,7 @@ impl JsLayer {
     pub fn fields(&self) -> Result<Vec<FieldInfo>> {
         ensure_initialized();
         self.dataset.with_exclusive(|dataset| {
-            let layer = dataset.layer(self.index).gdal()?;
+            let layer = dataset.layer(self.index).gdal_context("fields")?;
             Ok(layer_field_infos(&layer))
         })
     }
@@ -950,7 +954,7 @@ impl JsLayer {
     pub fn field(&self, name: String) -> Result<Option<FieldInfo>> {
         ensure_initialized();
         self.dataset.with_exclusive(|dataset| {
-            let layer = dataset.layer(self.index).gdal()?;
+            let layer = dataset.layer(self.index).gdal_context("field")?;
             Ok(layer_field_infos(&layer)
                 .into_iter()
                 .find(|field| field.name == name))
@@ -978,7 +982,7 @@ impl JsLayer {
         // rather than inside it.
         let definition = build_field_defn(&field)?;
         self.dataset.with_mut(|dataset| {
-            let layer = dataset.layer(self.index).gdal()?;
+            let layer = dataset.layer(self.index).gdal_context("add_field")?;
             add_field_to_layer(&definition, &layer)
         })
     }
@@ -992,7 +996,7 @@ impl JsLayer {
     pub fn delete_field(&self, name: String) -> Result<()> {
         ensure_initialized();
         self.dataset.with_mut(|dataset| {
-            let layer = dataset.layer(self.index).gdal()?;
+            let layer = dataset.layer(self.index).gdal_context("delete_field")?;
             let index = field_position(&layer, &name)?;
             ogr_result(
                 unsafe { gdal_sys::OGR_L_DeleteField(layer.c_layer(), index) },
@@ -1010,7 +1014,7 @@ impl JsLayer {
     pub fn reorder_fields(&self, names: Vec<String>) -> Result<()> {
         ensure_initialized();
         self.dataset.with_mut(|dataset| {
-            let layer = dataset.layer(self.index).gdal()?;
+            let layer = dataset.layer(self.index).gdal_context("reorder_fields")?;
             let existing = layer_field_names(&layer);
 
             let mut seen = HashSet::with_capacity(names.len());
@@ -1042,10 +1046,10 @@ impl JsLayer {
     pub fn extent(&self) -> Result<Option<Vec<f64>>> {
         ensure_initialized();
         self.dataset.with_exclusive(|dataset| {
-            let layer = dataset.layer(self.index).gdal()?;
+            let layer = dataset.layer(self.index).gdal_context("extent")?;
             Ok(layer
                 .try_get_extent()
-                .gdal()?
+                .gdal_context("extent")?
                 .map(|envelope| vec![envelope.MinX, envelope.MinY, envelope.MaxX, envelope.MaxY]))
         })
     }
@@ -1064,7 +1068,7 @@ impl JsLayer {
     pub fn spatial_ref_wkt(&self) -> Result<Option<String>> {
         ensure_initialized();
         self.dataset.with_exclusive(|dataset| {
-            let layer = dataset.layer(self.index).gdal()?;
+            let layer = dataset.layer(self.index).gdal_context("spatial_ref_wkt")?;
             match layer.spatial_ref() {
                 Some(srs) => Ok(srs.to_wkt().ok()),
                 None => Ok(None),
@@ -1077,7 +1081,7 @@ impl JsLayer {
     pub fn spatial_ref(&self) -> Result<Option<JsSpatialRef>> {
         ensure_initialized();
         self.dataset.with_exclusive(|dataset| {
-            let layer = dataset.layer(self.index).gdal()?;
+            let layer = dataset.layer(self.index).gdal_context("spatial_ref")?;
             match layer.spatial_ref() {
                 Some(srs) => Ok(Some(JsSpatialRef::wrap(srs))),
                 None => Ok(None),
@@ -1157,7 +1161,7 @@ impl JsLayer {
         ensure_initialized();
         let domain = domain.unwrap_or_default();
         self.dataset.with_exclusive(|dataset| {
-            let layer = dataset.layer(self.index).gdal()?;
+            let layer = dataset.layer(self.index).gdal_context("metadata")?;
 
             let mut out = std::collections::HashMap::new();
             for entry in layer.metadata() {
@@ -1197,7 +1201,7 @@ impl JsLayer {
     fn read_features(&self) -> Result<Vec<FeatureRecord>> {
         ensure_initialized();
         self.dataset.with_exclusive(|dataset| {
-            let mut layer = dataset.layer(self.index).gdal()?;
+            let mut layer = dataset.layer(self.index).gdal_context("read_features")?;
 
             // Rewound on purpose. GDAL keeps the reading position on the layer, and
             // its `FeatureIterator` only resets it when it is *dropped* — so without
@@ -1222,7 +1226,7 @@ impl JsLayer {
     pub fn feature(&self, fid: i64) -> Result<Option<FeatureRecord>> {
         ensure_initialized();
         self.dataset.with_exclusive(|dataset| {
-            let layer = dataset.layer(self.index).gdal()?;
+            let layer = dataset.layer(self.index).gdal_context("feature")?;
             let field_names = layer_field_names(&layer);
 
             match layer.feature(fid as u64) {
@@ -1251,7 +1255,7 @@ impl JsLayer {
         // `with_mut` rather than `with_exclusive` so that a write is refused on a
         // read-only thread-safe dataset.
         self.dataset.with_mut(|dataset| {
-            let layer = dataset.layer(self.index).gdal()?;
+            let layer = dataset.layer(self.index).gdal_context("create_feature")?;
             write_feature(&layer, geometry.as_ref(), properties)
         })
     }
@@ -1271,7 +1275,7 @@ impl JsLayer {
         let geometry = geometry_argument(geometry)?;
         ensure_initialized();
         self.dataset.with_mut(|dataset| {
-            let layer = dataset.layer(self.index).gdal()?;
+            let layer = dataset.layer(self.index).gdal_context("update_feature")?;
             update_existing(&layer, fid as u64, geometry.as_ref(), properties)
         })
     }
@@ -1285,7 +1289,7 @@ impl JsLayer {
     pub fn defn(&self) -> Result<FeatureDefn> {
         ensure_initialized();
         self.dataset.with_exclusive(|dataset| {
-            let layer = dataset.layer(self.index).gdal()?;
+            let layer = dataset.layer(self.index).gdal_context("defn")?;
             Ok(feature_defn(&layer))
         })
     }
@@ -1306,7 +1310,7 @@ impl JsLayer {
     pub fn get_feature(&self, fid: i64) -> Result<Option<JsFeature>> {
         ensure_initialized();
         self.dataset.with_exclusive(|dataset| {
-            let layer = dataset.layer(self.index).gdal()?;
+            let layer = dataset.layer(self.index).gdal_context("get_feature")?;
             if layer.feature(fid as u64).is_none() {
                 return Ok(None);
             }
@@ -1354,7 +1358,7 @@ impl JsLayer {
         // A write, so `with_mut`: a read-only dataset refuses it, which is also
         // how a thread-safe one stays read-only.
         self.dataset.with_mut(|dataset| {
-            let layer = dataset.layer(self.index).gdal()?;
+            let layer = dataset.layer(self.index).gdal_context("delete_feature")?;
             delete_feature(&layer, fid as u64)
         })
     }
@@ -1365,9 +1369,13 @@ impl JsLayer {
     pub fn set_attribute_filter(&self, query: Option<String>) -> Result<()> {
         ensure_initialized();
         self.dataset.with_mut(|dataset| {
-            let mut layer = dataset.layer(self.index).gdal()?;
+            let mut layer = dataset
+                .layer(self.index)
+                .gdal_context("set_attribute_filter")?;
             match query {
-                Some(query) => layer.set_attribute_filter(&query).gdal()?,
+                Some(query) => layer
+                    .set_attribute_filter(&query)
+                    .gdal_context("set_attribute_filter")?,
                 None => layer.clear_attribute_filter(),
             }
             Ok(())
@@ -1384,7 +1392,9 @@ impl JsLayer {
     ) -> Result<()> {
         ensure_initialized();
         self.dataset.with_mut(|dataset| {
-            let mut layer = dataset.layer(self.index).gdal()?;
+            let mut layer = dataset
+                .layer(self.index)
+                .gdal_context("set_spatial_filter_rect")?;
             layer.set_spatial_filter_rect(min_x, min_y, max_x, max_y);
             Ok(())
         })
@@ -1410,7 +1420,9 @@ impl JsLayer {
         // Converted before the lock, so a malformed geometry is thrown by the call.
         let geometry = geometry.as_ref().map(from_geojson).transpose()?;
         self.dataset.with_mut(|dataset| {
-            let mut layer = dataset.layer(self.index).gdal()?;
+            let mut layer = dataset
+                .layer(self.index)
+                .gdal_context("set_spatial_filter")?;
             match &geometry {
                 Some(geometry) => layer.set_spatial_filter(geometry),
                 None => layer.clear_spatial_filter(),
@@ -1423,7 +1435,9 @@ impl JsLayer {
     pub fn clear_spatial_filter(&self) -> Result<()> {
         ensure_initialized();
         self.dataset.with_mut(|dataset| {
-            let mut layer = dataset.layer(self.index).gdal()?;
+            let mut layer = dataset
+                .layer(self.index)
+                .gdal_context("clear_spatial_filter")?;
             layer.clear_spatial_filter();
             Ok(())
         })
@@ -1436,7 +1450,9 @@ impl JsLayer {
     pub fn get_spatial_filter(&self) -> Result<Option<JsGeometry>> {
         ensure_initialized();
         self.dataset.with_exclusive(|dataset| {
-            let layer = dataset.layer(self.index).gdal()?;
+            let layer = dataset
+                .layer(self.index)
+                .gdal_context("get_spatial_filter")?;
             let handle = unsafe { gdal_sys::OGR_L_GetSpatialFilter(layer.c_layer()) };
             if handle.is_null() {
                 return Ok(None);
@@ -1580,7 +1596,7 @@ fn read_batch(
     count: usize,
     reset: bool,
 ) -> Result<Vec<FeatureRecord>> {
-    let layer = dataset.layer(index).gdal()?;
+    let layer = dataset.layer(index).gdal_context("read_batch")?;
 
     if reset {
         // SAFETY: the layer handle is live for as long as `layer` is.
@@ -1781,7 +1797,7 @@ impl Task for FlushLayerTask {
 // ---------------------------------------------------------------------------
 
 pub(crate) fn to_geojson(geometry: &gdal::vector::Geometry) -> Result<Value> {
-    let json = geometry.json().gdal()?;
+    let json = geometry.json().gdal_context("to_geojson")?;
     serde_json::from_str(&json)
         .map_err(|err| bad_argument(format!("GDAL returned invalid GeoJSON: {err}")))
 }
@@ -1843,21 +1859,24 @@ pub fn geometry_to_wkt(geometry: Value) -> Result<String> {
 pub fn geometry_to_wkb(geometry: Value) -> Result<Buffer> {
     ensure_initialized();
     let _guard = lock_gdal_shared();
-    Ok(from_geojson(&geometry)?.wkb().gdal()?.into())
+    Ok(from_geojson(&geometry)?
+        .wkb()
+        .gdal_context("geometry_to_wkb")?
+        .into())
 }
 
 #[napi(catch_unwind)]
 pub fn geometry_from_wkt(wkt: String) -> Result<Value> {
     ensure_initialized();
     let _guard = lock_gdal_shared();
-    to_geojson(&gdal::vector::Geometry::from_wkt(&wkt).gdal()?)
+    to_geojson(&gdal::vector::Geometry::from_wkt(&wkt).gdal_context("geometry_from_wkt")?)
 }
 
 #[napi(catch_unwind)]
 pub fn geometry_from_wkb(wkb: Buffer) -> Result<Value> {
     ensure_initialized();
     let _guard = lock_gdal_shared();
-    to_geojson(&gdal::vector::Geometry::from_wkb(wkb.as_ref()).gdal()?)
+    to_geojson(&gdal::vector::Geometry::from_wkb(wkb.as_ref()).gdal_context("geometry_from_wkb")?)
 }
 
 /// A layer's schema, grouped the way `Layer.defn` reports it.
@@ -1899,7 +1918,7 @@ fn feature_defn(layer: &impl LayerAccess) -> FeatureDefn {
 fn read_feature(dataset: DatasetRef, index: usize, fid: i64) -> Result<FeatureRecord> {
     ensure_initialized();
     dataset.with_exclusive(|dataset| {
-        let layer = dataset.layer(index).gdal()?;
+        let layer = dataset.layer(index).gdal_context("read_feature")?;
         let field_names = layer_field_names(&layer);
         match layer.feature(fid as u64) {
             Some(feature) => to_record(&feature, &field_names),
@@ -1921,7 +1940,7 @@ fn write_existing(
 ) -> Result<()> {
     ensure_initialized();
     dataset.with_mut(|dataset| {
-        let layer = dataset.layer(index).gdal()?;
+        let layer = dataset.layer(index).gdal_context("write_existing")?;
         update_existing(&layer, fid as u64, geometry, properties)
     })
 }
@@ -1960,7 +1979,7 @@ impl JsFeature {
     pub fn defn(&self) -> Result<FeatureDefn> {
         ensure_initialized();
         self.dataset.with_exclusive(|dataset| {
-            let layer = dataset.layer(self.index).gdal()?;
+            let layer = dataset.layer(self.index).gdal_context("defn")?;
             Ok(feature_defn(&layer))
         })
     }

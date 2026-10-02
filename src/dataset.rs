@@ -29,7 +29,9 @@ use crate::async_getter::{DatasetProperty, DatasetPropertyTask, SpatialRefTask};
 use crate::band::JsRasterBand;
 use crate::driver::JsDriver;
 use crate::dtype::DataType;
-use crate::error::{GdalErrorCode, IntoGdalResult, Result, bad_argument, into_status_error, split};
+use crate::error::{
+    GdalErrorCode, IntoGdalResult, Result, bad_argument, cpl_failure, into_status_error, split,
+};
 use crate::geometry::{GeometryEnvelope, JsGeometry};
 use crate::programs;
 use crate::progress::{JsProgressSink, ProgressCallback, ProgressUpdate};
@@ -49,6 +51,12 @@ pub struct DatasetHandle {
     /// `None` once closed. That is what makes `close()` idempotent and turns any
     /// later use of a stale `Dataset` or `RasterBand` into a clear error.
     dataset: Option<GdalDataset>,
+    /// The `/vsimem/` file an `open(buffer)` dataset owns. It is unlinked when the
+    /// last reference to this handle goes — an explicit `close()`, or the GC of an
+    /// object that was never closed. Owning it *here* rather than on `JsDataset` is
+    /// what keeps a band that outlives its dataset readable: the file lives exactly as
+    /// long as the dataset it holds.
+    mem_file: Option<String>,
 }
 
 pub type SharedDataset = Arc<Mutex<DatasetHandle>>;
@@ -59,6 +67,23 @@ pub fn lock_handle(shared: &SharedDataset) -> MutexGuard<'_, DatasetHandle> {
     shared
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+impl Drop for DatasetHandle {
+    fn drop(&mut self) {
+        // This is the last reference (the `Arc` is gone), so nothing else is using the
+        // dataset. Close it first: a `/vsimem/` file cannot be unlinked while a handle
+        // still has it open, and on Windows the attempt simply fails.
+        //
+        // No GDAL lock is taken, and that is deliberate: this can run from a napi
+        // finalizer, where the reentrancy guard would panic if this thread already
+        // held the lock. GDAL's `/vsimem/` tree is internally synchronised, and no
+        // other object references this dataset.
+        drop(self.dataset.take());
+        if let Some(path) = self.mem_file.take() {
+            let _ = gdal::vsi::unlink_mem_file(&path);
+        }
+    }
 }
 
 impl DatasetHandle {
@@ -75,8 +100,13 @@ impl DatasetHandle {
     }
 
     fn into_shared(dataset: GdalDataset) -> SharedDataset {
+        Self::into_shared_with_file(dataset, None)
+    }
+
+    fn into_shared_with_file(dataset: GdalDataset, mem_file: Option<String>) -> SharedDataset {
         Arc::new(Mutex::new(Self {
             dataset: Some(dataset),
+            mem_file,
         }))
     }
 }
@@ -130,6 +160,15 @@ impl DatasetRef {
     /// Wrap a freshly opened dataset the ordinary way.
     pub fn serialised(dataset: GdalDataset) -> Self {
         Self::Serialised(DatasetHandle::into_shared(dataset))
+    }
+
+    /// Wrap a dataset opened from bytes, recording the `/vsimem/` file it owns so the
+    /// handle unlinks it when the last reference goes.
+    pub fn serialised_mem_file(dataset: GdalDataset, mem_file: String) -> Self {
+        Self::Serialised(DatasetHandle::into_shared_with_file(
+            dataset,
+            Some(mem_file),
+        ))
     }
 
     /// Run `f` with **read** access, under the shared lock when this handle is
@@ -270,7 +309,12 @@ impl DatasetRef {
                 let _guard = lock_gdal_shared();
                 let mut handle = lock_handle(shared);
                 if let Some(dataset) = handle.dataset.take() {
-                    dataset.close().gdal()?;
+                    dataset.close().gdal_context("close")?;
+                }
+                // Unlink now rather than leaving it to the handle's `Drop`, so `close()`
+                // keeps its promise that the `/vsimem/` file is gone.
+                if let Some(path) = handle.mem_file.take() {
+                    let _ = gdal::vsi::unlink_mem_file(&path);
                 }
                 Ok(())
             }
@@ -475,7 +519,7 @@ fn open_thread_safe_gdal(path: &str) -> Result<DatasetRef> {
             ..DatasetOptions::default()
         },
     )
-    .gdal()?;
+    .gdal_context("open_thread_safe_gdal")?;
 
     match dataset.try_into_thread_safe(GdalOpenFlags::GDAL_OF_RASTER) {
         Ok(dataset) => Ok(DatasetRef::Concurrent {
@@ -497,7 +541,7 @@ pub(crate) fn create_gdal(path: &str, options: &CreateOptions) -> Result<GdalDat
     ensure_initialized();
     let _guard = lock_gdal();
 
-    let driver = DriverManager::get_driver_by_name(&options.driver).gdal()?;
+    let driver = DriverManager::get_driver_by_name(&options.driver).gdal_context("create_gdal")?;
     create_dataset(
         &driver,
         path,
@@ -513,7 +557,8 @@ fn create_vector_gdal(path: &str, driver_name: &str) -> Result<GdalDataset> {
     ensure_initialized();
     let _guard = lock_gdal();
 
-    let driver = DriverManager::get_driver_by_name(driver_name).gdal()?;
+    let driver =
+        DriverManager::get_driver_by_name(driver_name).gdal_context("create_vector_gdal")?;
     driver.create_vector_only(path).gdal()
 }
 
@@ -674,10 +719,6 @@ pub struct Gcp {
 pub struct JsDataset {
     dataset: DatasetRef,
     path: String,
-    /// The `/vsimem/` file this binding created to hold the bytes of `open(buffer)`.
-    /// It is what the dataset reads from, it is named by `path`, and closing the
-    /// dataset is what unlinks it.
-    mem_file: Option<String>,
 }
 
 impl JsDataset {
@@ -687,7 +728,6 @@ impl JsDataset {
         Self {
             dataset,
             path: String::new(),
-            mem_file: None,
         }
     }
 
@@ -698,25 +738,11 @@ impl JsDataset {
     }
 
     pub(crate) fn wrap_ref(dataset: DatasetRef, path: String) -> Self {
-        Self {
-            dataset,
-            path,
-            mem_file: None,
-        }
+        Self { dataset, path }
     }
 
     pub(crate) fn wrap(dataset: GdalDataset, path: String) -> Self {
         Self::wrap_ref(DatasetRef::serialised(dataset), path)
-    }
-
-    /// A dataset opened from bytes: `path` *is* the file they live in, so the same
-    /// string serves as the dataset's path and as what closing unlinks.
-    fn wrap_buffer(dataset: DatasetRef, path: String) -> Self {
-        Self {
-            dataset,
-            path: path.clone(),
-            mem_file: Some(path),
-        }
     }
 
     /// The handle behind this dataset, for the operations that need two datasets at
@@ -831,8 +857,8 @@ impl JsDataset {
             // No geotransform, so this is the vector side: what the layers cover.
             let mut envelope: Option<GeometryEnvelope> = None;
             for index in 0..dataset.layer_count() {
-                let layer = dataset.layer(index).gdal()?;
-                let Some(extent) = layer.try_get_extent().gdal()? else {
+                let layer = dataset.layer(index).gdal_context("get_envelope")?;
+                let Some(extent) = layer.try_get_extent().gdal_context("get_envelope")? else {
                     continue;
                 };
                 envelope = Some(match envelope {
@@ -939,7 +965,9 @@ impl JsDataset {
             if wkt.is_empty() {
                 return Ok(None);
             }
-            Ok(Some(JsSpatialRef::wrap(SpatialRef::from_wkt(&wkt).gdal()?)))
+            Ok(Some(JsSpatialRef::wrap(
+                SpatialRef::from_wkt(&wkt).gdal_context("spatial_ref")?,
+            )))
         })
     }
 
@@ -1113,7 +1141,10 @@ impl JsDataset {
                 )));
             }
             Ok(DataType::from_gdal(
-                dataset.rasterband(index as usize + 1).gdal()?.band_type(),
+                dataset
+                    .rasterband(index as usize + 1)
+                    .gdal_context("band")?
+                    .band_type(),
             ))
         })?;
 
@@ -1155,11 +1186,11 @@ impl JsDataset {
                 // on the same side as the rest of the CRS module — this happens before
                 // the dataset closure is entered, which is what keeps it from nesting.
                 let _guard = lock_gdal_shared();
-                Some(SpatialRef::from_wkt(wkt).gdal()?)
+                Some(SpatialRef::from_wkt(wkt).gdal_context("create_layer")?)
             }
             (None, Some(code)) => {
                 let _guard = lock_gdal_shared();
-                Some(SpatialRef::from_epsg(code).gdal()?)
+                Some(SpatialRef::from_epsg(code).gdal_context("create_layer")?)
             }
             (None, None) => None,
         };
@@ -1198,7 +1229,7 @@ impl JsDataset {
                         Some(layer_option_refs.as_slice())
                     },
                 })
-                .gdal()?;
+                .gdal_context("create_layer")?;
 
             // Declared fields go in while the layer is in hand, so the schema
             // exists before the first feature does — and so a field keeps the type
@@ -1261,7 +1292,9 @@ impl JsDataset {
         option_ptrs.push(std::ptr::null_mut());
 
         let index = with_two(&self.dataset, source.dataset(), |dest, src| {
-            let src_layer = src.layer(source.index() as usize).gdal()?;
+            let src_layer = src
+                .layer(source.index() as usize)
+                .gdal_context("copy_layer")?;
             // GDAL appends the copy, so record where the layer list ended before it did.
             let index = dest.layer_count();
             let handle = unsafe {
@@ -1273,7 +1306,7 @@ impl JsDataset {
                 )
             };
             if handle.is_null() {
-                return Err(bad_argument(format!(
+                return Err(cpl_failure(format!(
                     "the driver could not copy the layer as {name:?}"
                 )));
             }
@@ -1314,7 +1347,12 @@ impl JsDataset {
         self.dataset.ensure_vector_capable()?;
         let found = self.dataset.with_exclusive(|dataset| {
             for candidate in 0..dataset.layer_count() {
-                if dataset.layer(candidate).gdal()?.name() == name {
+                if dataset
+                    .layer(candidate)
+                    .gdal_context("layer_by_name")?
+                    .name()
+                    == name
+                {
                     return Ok(Some(candidate));
                 }
             }
@@ -1530,14 +1568,10 @@ impl JsDataset {
     /// dirty blocks in memory until then, exactly as it would for a file on disk.
     #[napi(catch_unwind)]
     pub fn close(&self) -> Result<()> {
-        self.dataset.close()?;
-        if let Some(mem_file) = &self.mem_file {
-            // A second close finds it already unlinked, and that is not worth
-            // reporting: the contract is "idempotent", not "exactly once".
-            let _guard = lock_gdal();
-            let _ = gdal::vsi::unlink_mem_file(mem_file);
-        }
-        Ok(())
+        // The `/vsimem/` file an `open(buffer)` dataset owns is unlinked by
+        // `DatasetRef::close` (and, if this is never called, when the last reference to
+        // the dataset is dropped).
+        self.dataset.close()
     }
 
     /// Run one of `gdaldem`'s terrain algorithms on this dataset: `hillshade`,
@@ -1601,7 +1635,12 @@ impl JsDataset {
         self.dataset.with_mut(|dataset| {
             let mut found = None;
             for candidate in 0..dataset.layer_count() {
-                if dataset.layer(candidate).gdal()?.name() == name {
+                if dataset
+                    .layer(candidate)
+                    .gdal_context("delete_layer")?
+                    .name()
+                    == name
+                {
                     found = Some(candidate);
                     break;
                 }
@@ -1820,7 +1859,7 @@ impl Task for OpenTask {
                 drivers.as_deref(),
                 *multidimensional,
             )
-            .map(DatasetRef::serialised),
+            .map(|dataset| DatasetRef::serialised_mem_file(dataset, self.path.clone())),
             OpenKind::CreateRaster(options) => {
                 create_gdal(&self.path, options).map(DatasetRef::serialised)
             }
@@ -1833,16 +1872,8 @@ impl Task for OpenTask {
     }
 
     fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
-        let from_bytes = matches!(self.kind, OpenKind::OpenBytes { .. });
         output
-            .map(|dataset| {
-                let path = self.path.clone();
-                if from_bytes {
-                    JsDataset::wrap_buffer(dataset, path)
-                } else {
-                    JsDataset::wrap_ref(dataset, path)
-                }
-            })
+            .map(|dataset| JsDataset::wrap_ref(dataset, self.path.clone()))
             .map_err(|(code, reason)| into_status_error(code, reason))
     }
 }
@@ -1907,8 +1938,8 @@ pub fn open_sync(
             let path = mem_file_name();
             let dataset =
                 open_bytes_gdal(&path, &bytes, update, drivers.as_deref(), multidimensional)?;
-            Ok(JsDataset::wrap_buffer(
-                DatasetRef::serialised(dataset),
+            Ok(JsDataset::wrap_ref(
+                DatasetRef::serialised_mem_file(dataset, path.clone()),
                 path,
             ))
         }
@@ -2165,7 +2196,7 @@ fn build_vrt_with_paths(dest: &str, sources: &[String], args: &[String]) -> Resu
     let options = if args.is_empty() {
         None
     } else {
-        Some(BuildVRTOptions::new(args.to_vec()).gdal()?)
+        Some(BuildVRTOptions::new(args.to_vec()).gdal_context("build_vrt_with_paths")?)
     };
     // An empty destination means an in-memory VRT.
     let path = (!dest.is_empty()).then(|| Path::new(dest));
@@ -2388,7 +2419,7 @@ pub(crate) fn create_copy_sync_with(
     options: Option<&Value>,
 ) -> Result<JsDataset> {
     ensure_initialized();
-    let driver = DriverManager::get_driver_by_name(driver).gdal()?;
+    let driver = DriverManager::get_driver_by_name(driver).gdal_context("create_copy_sync_with")?;
     let creation_options = build_creation_options(options)?;
 
     let dataset = source
@@ -2437,11 +2468,11 @@ impl Task for CopyTask {
         } = self;
 
         Ok(op(dataset.with_exclusive(|source| {
-            let driver = DriverManager::get_driver_by_name(driver).gdal()?;
+            let driver = DriverManager::get_driver_by_name(driver).gdal_context("compute")?;
 
             let mut list = CslStringList::new();
             for (name, value) in options.iter() {
-                list.add_name_value(name, value).gdal()?;
+                list.add_name_value(name, value).gdal_context("compute")?;
             }
 
             source.create_copy(&driver, path, &list).gdal()
@@ -2704,5 +2735,37 @@ mod tests {
             "{}",
             err.reason
         );
+    }
+
+    /// An `open(buffer)` dataset owns the `/vsimem/` file its bytes live in. The
+    /// unlink is owned by the shared handle, so it waits for the **last** reference:
+    /// losing the `Dataset` object without `close()` still frees the file, while a band
+    /// that outlives the dataset keeps the file it reads from.
+    #[test]
+    fn a_mem_file_dataset_unlinks_its_file_when_the_last_reference_goes() {
+        ensure_initialized();
+        let path = "/vsimem/gdal-rs-napi-dataset-drop-test.tif";
+        let _ = gdal::vsi::unlink_mem_file(path);
+
+        let options = CreateOptions {
+            driver: "GTiff".to_string(),
+            width: 2,
+            height: 2,
+            band_count: Some(1),
+            data_type: None,
+            options: None,
+        };
+        let dataset = create_gdal(path, &options).unwrap();
+        assert!(crate::fs::exists(path.to_string()));
+
+        let handle = DatasetRef::serialised_mem_file(dataset, path.to_string());
+        let band_side = handle.clone();
+        drop(handle);
+        // A clone still holds the dataset, so the file has to stay for it to read.
+        assert!(crate::fs::exists(path.to_string()));
+
+        drop(band_side);
+        // Last reference gone: the dataset closed and the file went with it.
+        assert!(!crate::fs::exists(path.to_string()));
     }
 }

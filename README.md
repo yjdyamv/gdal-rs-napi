@@ -439,6 +439,12 @@ mismatch is refused rather than half-filled. `into` is a *read* option: `writePi
 takes its data as the first argument, and passing `into` there is an error rather than
 a silent no-op.
 
+The async read fills the buffer on a worker thread, so the buffer is **borrowed until
+the promise settles**: don't read it, write it, or hand it to another read in the
+meantime. A second read into a buffer that is still being filled is refused rather than
+raced — both would write the same memory, and the corrupted samples would arrive with no
+error to explain them.
+
 And for the small questions, where an options object is a lot of ceremony:
 
 ```js

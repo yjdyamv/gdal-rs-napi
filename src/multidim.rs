@@ -19,7 +19,7 @@ use napi_derive::napi;
 
 use crate::dataset::{DatasetRef, JsDataset};
 use crate::dtype::DataType;
-use crate::error::{Result, bad_argument};
+use crate::error::{Result, bad_argument, cpl_failure, driver_failure};
 use crate::runtime::{c_string, ensure_initialized, lock_gdal};
 use crate::spatial_ref::JsSpatialRef;
 
@@ -471,7 +471,7 @@ impl JsMdArray {
         // structural rather than a `Release` repeated at each early return.
         let outcome = (|| -> Result<Vec<u8>> {
             if !is_numeric(data_type) {
-                return Err(bad_argument(
+                return Err(driver_failure(
                     "only a numeric MDArray can be read as bytes; a String or Compound one cannot",
                 ));
             }
@@ -551,7 +551,7 @@ impl JsMdArray {
                 )
             };
             if status == 0 {
-                return Err(bad_argument("this array could not be read"));
+                return Err(cpl_failure("this array could not be read".to_owned()));
             }
             Ok(data)
         })();
@@ -623,7 +623,7 @@ impl JsMdArray {
         let _guard = lock_gdal();
         let handle = unsafe { gdal_sys::GDALMDArrayGetMask(self.handle, std::ptr::null_mut()) };
         if handle.is_null() {
-            return Err(bad_argument("this array has no mask"));
+            return Err(cpl_failure("this array has no mask".to_owned()));
         }
         Ok(JsMdArray::new(handle, self.dataset.clone()))
     }
@@ -637,7 +637,9 @@ impl JsMdArray {
         let expression = c_name(&expression, "a view expression")?;
         let handle = unsafe { gdal_sys::GDALMDArrayGetView(self.handle, expression.as_ptr()) };
         if handle.is_null() {
-            return Err(bad_argument("this view expression could not be applied"));
+            // Our own message rather than GDAL's: a malformed expression leaves
+            // something like `Missing ]'`, which is less use than naming the call.
+            return Err(driver_failure("this view expression could not be applied"));
         }
         Ok(JsMdArray::new(handle, self.dataset.clone()))
     }

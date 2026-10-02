@@ -18,7 +18,7 @@ use napi::bindgen_prelude::*;
 use napi_derive::napi;
 use serde_json::Value;
 
-use crate::error::{IntoGdalResult, Result, bad_argument};
+use crate::error::{IntoGdalResult, Result, bad_argument, driver_failure};
 use crate::runtime::{ensure_initialized, lock_gdal_shared};
 use crate::spatial_ref::JsSpatialRef;
 use crate::vector::{from_geojson, geometry_type_name, to_geojson};
@@ -168,7 +168,7 @@ fn require_geos() -> Result<()> {
 /// `handle` must be a geometry GDAL returned, owned by the caller, or null.
 unsafe fn adopt(handle: gdal_sys::OGRGeometryH) -> Result<JsGeometry> {
     if handle.is_null() {
-        return Err(bad_argument(
+        return Err(driver_failure(
             "GDAL could not compute this geometry — one of the inputs may be invalid",
         ));
     }
@@ -185,11 +185,13 @@ unsafe fn adopt(handle: gdal_sys::OGRGeometryH) -> Result<JsGeometry> {
     unsafe { gdal_sys::OGR_G_DestroyGeometry(handle) };
 
     if status != 0 {
-        return Err(bad_argument(
+        return Err(driver_failure(
             "GDAL could not serialize the computed geometry",
         ));
     }
-    Ok(JsGeometry::wrap(Geometry::from_wkb(&bytes).gdal()?))
+    Ok(JsGeometry::wrap(
+        Geometry::from_wkb(&bytes).gdal_context("adopt")?,
+    ))
 }
 
 /// Adopt a geometry GDAL handed over, taking ownership of `handle`.
@@ -221,7 +223,9 @@ impl JsGeometry {
     pub fn from_wkt(wkt: String) -> Result<Self> {
         ensure_initialized();
         let _guard = lock_gdal_shared();
-        Ok(Self::wrap(Geometry::from_wkt(&wkt).gdal()?))
+        Ok(Self::wrap(
+            Geometry::from_wkt(&wkt).gdal_context("from_wkt")?,
+        ))
     }
 
     /// Parse a WKB buffer, as `geometryToWkb` produces.
@@ -229,7 +233,9 @@ impl JsGeometry {
     pub fn from_wkb(wkb: Buffer) -> Result<Self> {
         ensure_initialized();
         let _guard = lock_gdal_shared();
-        Ok(Self::wrap(Geometry::from_wkb(wkb.as_ref()).gdal()?))
+        Ok(Self::wrap(
+            Geometry::from_wkb(wkb.as_ref()).gdal_context("from_wkb")?,
+        ))
     }
 
     /// Parse a GeoJSON geometry — the same `{ type, coordinates }` object every
@@ -285,7 +291,7 @@ impl JsGeometry {
     pub fn to_wkb(&self) -> Result<Buffer> {
         ensure_initialized();
         let _guard = lock_gdal_shared();
-        Ok(Buffer::from(self.inner.wkb().gdal()?))
+        Ok(Buffer::from(self.inner.wkb().gdal_context("to_wkb")?))
     }
 
     /// The geometry as a GeoJSON object — exactly what `featuresSync()` puts in a
@@ -525,8 +531,11 @@ impl JsGeometry {
     pub fn transform(&self, from: &JsSpatialRef, to: &JsSpatialRef) -> Result<JsGeometry> {
         ensure_initialized();
         let _guard = lock_gdal_shared();
-        let transform = gdal::spatial_ref::CoordTransform::new(from.inner(), to.inner()).gdal()?;
-        Ok(Self::wrap(self.inner.transform(&transform).gdal()?))
+        let transform = gdal::spatial_ref::CoordTransform::new(from.inner(), to.inner())
+            .gdal_context("transform")?;
+        Ok(Self::wrap(
+            self.inner.transform(&transform).gdal_context("transform")?,
+        ))
     }
 }
 
@@ -645,7 +654,9 @@ impl JsGeometry {
         let output =
             unsafe { gdal_sys::OGR_G_CreateGeometry(gdal_sys::OGRwkbGeometryType::wkbPoint) };
         if output.is_null() {
-            return Err(bad_argument("GDAL could not allocate a centroid geometry"));
+            return Err(driver_failure(
+                "GDAL could not allocate a centroid geometry",
+            ));
         }
         unsafe { gdal_sys::OGR_G_Centroid(self.handle(), output) };
         unsafe { adopt(output) }

@@ -56,6 +56,13 @@ pub struct ReadOptions {
     ///
     /// `writePixels` takes its data as the first argument, and `into` there is an error
     /// rather than a silent no-op.
+    ///
+    /// The **async** reads (`readPixels` / `readAs`) fill the buffer on a worker thread
+    /// and hand it back when the promise resolves. So the buffer is **borrowed for the
+    /// duration**: do not read it, write it, or hand it to another read until the
+    /// promise settles. A second read into a buffer that is still being filled is
+    /// refused rather than raced — both would write the same memory, and the corrupted
+    /// samples would arrive without any error to explain them.
     pub into: Option<Buffer>,
 }
 
@@ -154,7 +161,7 @@ pub fn read_window(
         ($ty:ty) => {{
             let buffer = band
                 .read_as::<$ty>(source, source_size, shape, resampling)
-                .gdal()?;
+                .gdal_context("read_window")?;
             Ok(samples_to_bytes(buffer.data()))
         }};
     }
@@ -293,7 +300,8 @@ pub fn write_window(
 pub(crate) fn build_creation_options(options: Option<&Value>) -> Result<CslStringList> {
     let mut list = CslStringList::new();
     for (name, value) in option_pairs(options)? {
-        list.add_name_value(&name, &value).gdal()?;
+        list.add_name_value(&name, &value)
+            .gdal_context("build_creation_options")?;
     }
     Ok(list)
 }

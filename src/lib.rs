@@ -66,7 +66,10 @@ pub fn epsg_to_wkt(code: u32) -> crate::error::Result<String> {
     // The CRS database and PROJ, nothing else — the same work the `SpatialRef`
     // constructors do, so it takes the same side of the lock they do.
     let _guard = lock_gdal_shared();
-    SpatialRef::from_epsg(code).gdal()?.to_wkt().gdal()
+    SpatialRef::from_epsg(code)
+        .gdal_context("epsg_to_wkt")?
+        .to_wkt()
+        .gdal()
 }
 
 #[napi(object)]

@@ -203,6 +203,34 @@ test('a destination of the wrong size is refused, on both paths', async () => {
   dataset.close()
 })
 
+test('two async reads may not fill the same buffer at once', async () => {
+  const path = tmp('into-concurrent.tif')
+  const expected = ramp(8, 8)
+  const created = gdal.createSync(path, { driver: 'GTiff', width: 8, height: 8, bandCount: 1 })
+  created.band(0).writePixelsSync(bytesOf(expected))
+  created.close()
+
+  const dataset = gdal.openSync(path)
+  const band = dataset.band(0)
+  const shared = Buffer.alloc(64)
+
+  // The claim is taken by the call, so the second read is refused before either one
+  // writes the memory.
+  const first = band.readPixels({ into: shared })
+  assert.throws(
+    () => band.readPixels({ into: shared }),
+    /already being filled by another read/,
+  )
+
+  assert.equal(await first, shared)
+  assert.deepEqual(Array.from(shared), Array.from(expected))
+
+  // Once the first has settled the buffer is free again, and reads reuse it as before.
+  assert.equal(await band.readPixels({ into: shared }), shared)
+
+  dataset.close()
+})
+
 test('MEM datasets need no file at all', () => {
   const dataset = gdal.createSync('', { driver: 'MEM', width: 3, height: 2, bandCount: 2 })
   assert.equal(dataset.driver.name, 'MEM')

@@ -123,11 +123,28 @@ pub(crate) fn cpl_failure(fallback: String) -> Error<GdalErrorCode> {
 /// Shorthand so call sites read `.gdal()?` instead of a nested `map_err`.
 pub trait IntoGdalResult<T> {
     fn gdal(self) -> Result<T>;
+
+    /// Like [`Self::gdal`], but names the operation, so the message says **where** it
+    /// failed. GDAL's own string never does — "not recognized as a supported file
+    /// format" does not say which call produced it, and a deep call chain makes that a
+    /// puzzle. The name is **appended**, so the `[CPLErr=…]` prefix and any match on it
+    /// stay intact.
+    fn gdal_context(self, what: &str) -> Result<T>;
 }
 
 impl<T> IntoGdalResult<T> for std::result::Result<T, gdal::errors::GdalError> {
     fn gdal(self) -> Result<T> {
         self.map_err(gdal_error)
+    }
+
+    fn gdal_context(self, what: &str) -> Result<T> {
+        self.map_err(|err| {
+            let mut error = gdal_error(err);
+            error.reason.push_str(" (in ");
+            error.reason.push_str(what);
+            error.reason.push(')');
+            error
+        })
     }
 }
 
@@ -135,6 +152,18 @@ impl<T> IntoGdalResult<T> for std::result::Result<T, gdal::errors::GdalError> {
 /// from our own argument validation).
 pub fn bad_argument<T: std::fmt::Display>(msg: T) -> Error<GdalErrorCode> {
     Error::new(GdalErrorCode::BadArgument, msg.to_string())
+}
+
+/// A call the **driver** would not answer — a null handle, or "this object cannot do
+/// that" — as opposed to a caller mistake.
+///
+/// It carries `GDAL_CPL_FAILURE` rather than `GDAL_BAD_ARGUMENT`, so a caller can tell
+/// "I passed the wrong thing" from "GDAL declined", which are different problems with
+/// different fixes. Unlike [`cpl_failure`], it does **not** read GDAL's error state, for
+/// the corners where the refusal left no error behind: a stale message from an earlier
+/// call would be worse than none.
+pub fn driver_failure<T: std::fmt::Display>(msg: T) -> Error<GdalErrorCode> {
+    Error::new(GdalErrorCode::CplFailure, msg.to_string())
 }
 
 /// A failure carried across `Task::compute`, which must be `Send`.

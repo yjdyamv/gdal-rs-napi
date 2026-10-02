@@ -57,7 +57,7 @@ impl JsDriver {
     fn with_driver<T>(&self, f: impl FnOnce(&gdal::Driver) -> Result<T>) -> Result<T> {
         ensure_initialized();
         let _guard = lock_gdal_shared();
-        let driver = DriverManager::get_driver_by_name(&self.name).gdal()?;
+        let driver = DriverManager::get_driver_by_name(&self.name).gdal_context("with_driver")?;
         f(&driver)
     }
 
@@ -179,7 +179,7 @@ impl JsDriver {
     pub fn delete(&self, path: String) -> Result<()> {
         ensure_initialized();
         let _guard = lock_gdal();
-        let driver = DriverManager::get_driver_by_name(&self.name).gdal()?;
+        let driver = DriverManager::get_driver_by_name(&self.name).gdal_context("delete")?;
         driver.delete(&path).gdal()
     }
 
@@ -195,7 +195,7 @@ impl JsDriver {
     pub fn rename(&self, new_name: String, old_name: String) -> Result<()> {
         ensure_initialized();
         let _guard = lock_gdal();
-        let driver = DriverManager::get_driver_by_name(&self.name).gdal()?;
+        let driver = DriverManager::get_driver_by_name(&self.name).gdal_context("rename")?;
         driver.rename(&new_name, &old_name).gdal()
     }
 
@@ -206,7 +206,7 @@ impl JsDriver {
     pub fn copy_files(&self, new_name: String, old_name: String) -> Result<()> {
         ensure_initialized();
         let _guard = lock_gdal();
-        let driver = DriverManager::get_driver_by_name(&self.name).gdal()?;
+        let driver = DriverManager::get_driver_by_name(&self.name).gdal_context("copy_files")?;
         let new_name =
             CString::new(new_name).map_err(|_| bad_argument("a path cannot contain a NUL byte"))?;
         let old_name =

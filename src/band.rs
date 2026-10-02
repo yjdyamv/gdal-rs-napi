@@ -7,9 +7,9 @@
 //! what it computes (`statistics`, `histogram`, `defaultHistogram`), uses
 //! [`DatasetRef::with_exclusive`]; a write uses `with_mut`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::{CString, c_char, c_int};
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Condvar, LazyLock, Mutex};
 
 use gdal::Dataset as GdalDataset;
 use gdal::Metadata;
@@ -67,13 +67,15 @@ fn with_band<T>(
     kind: BandKind,
     f: impl FnOnce(&mut RasterBand<'_>) -> Result<T>,
 ) -> Result<T> {
-    let mut band = dataset.rasterband(kind.parent() + 1).gdal()?;
+    let mut band = dataset
+        .rasterband(kind.parent() + 1)
+        .gdal_context("with_band")?;
     match kind {
         BandKind::Index(_) => f(&mut band),
         // GDAL keeps the mask band under the band, and hands back an all-valid
         // implicit one when the dataset has no mask at all, so this is never absent.
         BandKind::Mask(_) => {
-            let mut mask = band.open_mask_band().gdal()?;
+            let mut mask = band.open_mask_band().gdal_context("with_band")?;
             f(&mut mask)
         }
     }
@@ -436,7 +438,7 @@ impl JsRasterBand {
             with_band(dataset, self.kind, |band| {
                 Ok(band
                     .get_statistics(force, approx)
-                    .gdal()?
+                    .gdal_context("compute_statistics")?
                     .map(|statistics| BandStatistics {
                         min: statistics.min,
                         max: statistics.max,
@@ -461,7 +463,7 @@ impl JsRasterBand {
             with_band(dataset, self.kind, |band| {
                 let histogram = band
                     .histogram(min, max, buckets, include_out_of_range, approx)
-                    .gdal()?;
+                    .gdal_context("compute_histogram")?;
 
                 Ok(BandHistogram {
                     min: histogram.min(),
@@ -485,7 +487,7 @@ impl JsRasterBand {
                         (window.x as isize, window.y as isize),
                         (window.width, window.height),
                     )
-                    .gdal()?;
+                    .gdal_context("compute_checksum")?;
                 Ok(u32::from(checksum))
             })
         })
@@ -878,7 +880,7 @@ impl JsRasterBand {
     pub fn mask_flags(&self) -> Result<MaskFlags> {
         self.dataset.with(|dataset| {
             with_band(dataset, self.kind, |band| {
-                let flags = band.mask_flags().gdal()?;
+                let flags = band.mask_flags().gdal_context("mask_flags")?;
                 Ok(MaskFlags {
                     all_valid: flags.is_all_valid(),
                     per_dataset: flags.is_per_dataset(),
@@ -1420,7 +1422,10 @@ impl JsRasterBand {
         // `force` computes and caches one, so this is on the exclusive side too.
         self.dataset.with_exclusive(|dataset| {
             with_band(dataset, self.kind, |band| {
-                let Some(histogram) = band.default_histogram(force).gdal()? else {
+                let Some(histogram) = band
+                    .default_histogram(force)
+                    .gdal_context("default_histogram")?
+                else {
                     return Ok(None);
                 };
                 Ok(Some(BandHistogram {
@@ -1490,7 +1495,7 @@ impl JsRasterBand {
                 // nothing reports nothing. Reading the value back is the only
                 // reliable check — with `force` off that is a metadata lookup
                 // rather than a pass over the pixels.
-                if band.get_statistics(false, false).gdal()?.is_none() {
+                if band.get_statistics(false, false).gdal_context("set_statistics")?.is_none() {
                     return Err(bad_argument(
                         "the driver did not keep the statistics — not every format stores band metadata",
                     ));
@@ -1601,7 +1606,9 @@ impl JsRasterBand {
         // Both datasets at once: the process-wide lock is not reentrant, so the band
         // and the layer cannot each be reached through their own lock.
         with_two(&self.dataset, layer.dataset(), |raster, vector| {
-            let mut target = vector.layer(layer.index() as usize).gdal()?;
+            let mut target = vector
+                .layer(layer.index() as usize)
+                .gdal_context("polygonize_sync")?;
             with_band(raster, self.kind, |band| {
                 polygonize(band, &mut target, &request)
             })
@@ -1653,7 +1660,9 @@ impl JsRasterBand {
     ) -> Result<()> {
         let request = contour_generate_request(options)?;
         with_two(&self.dataset, layer.dataset(), |raster, vector| {
-            let mut target = vector.layer(layer.index() as usize).gdal()?;
+            let mut target = vector
+                .layer(layer.index() as usize)
+                .gdal_context("contour_generate_sync")?;
             with_band(raster, self.kind, |band| {
                 contour_generate(band, &mut target, &request)
             })
@@ -1712,7 +1721,7 @@ impl JsRasterBand {
     }
 
     #[napi(catch_unwind, ts_return_type = "Promise<Buffer>")]
-    pub fn read_pixels(&self, options: Option<ReadOptions>) -> AsyncTask<ReadBandTask> {
+    pub fn read_pixels(&self, options: Option<ReadOptions>) -> Result<AsyncTask<ReadBandTask>> {
         ReadBandTask::new(self.dataset.clone(), self.kind, None, options)
     }
 
@@ -1721,7 +1730,7 @@ impl JsRasterBand {
         &self,
         data_type: DataType,
         options: Option<ReadOptions>,
-    ) -> AsyncTask<ReadBandTask> {
+    ) -> Result<AsyncTask<ReadBandTask>> {
         ReadBandTask::new(self.dataset.clone(), self.kind, Some(data_type), options)
     }
 
@@ -1922,7 +1931,7 @@ impl JsRasterBand {
     pub fn overviews(&self) -> Result<Vec<JsBandOverview>> {
         self.dataset.with(|dataset| {
             with_band(dataset, self.kind, |band| {
-                let count = band.overview_count().gdal()?;
+                let count = band.overview_count().gdal_context("overviews")?;
                 (0..count as usize)
                     .map(|level| overview_level(band, &self.dataset, self.kind, level))
                     .collect()
@@ -2000,12 +2009,13 @@ fn write_mem(width: u32, height: u32, data_type: DataType, values: &[f64]) -> Re
     };
     let dataset = crate::dataset::create_gdal("", &options)?;
     {
-        let mut band = dataset.rasterband(1).gdal()?;
+        let mut band = dataset.rasterband(1).gdal_context("write_mem")?;
         let shape = (width as usize, height as usize);
         match data_type {
             DataType::Float64 => {
                 let mut buffer = gdal::raster::Buffer::new(shape, values.to_vec());
-                band.write((0, 0), shape, &mut buffer).gdal()?;
+                band.write((0, 0), shape, &mut buffer)
+                    .gdal_context("write_mem")?;
             }
             DataType::Uint8 => {
                 let bytes = values
@@ -2013,7 +2023,8 @@ fn write_mem(width: u32, height: u32, data_type: DataType, values: &[f64]) -> Re
                     .map(|v| u8::from(*v != 0.0))
                     .collect::<Vec<u8>>();
                 let mut buffer = gdal::raster::Buffer::new(shape, bytes);
-                band.write((0, 0), shape, &mut buffer).gdal()?;
+                band.write((0, 0), shape, &mut buffer)
+                    .gdal_context("write_mem")?;
             }
             _ => unreachable!("a band result is Float64 or Uint8"),
         }
@@ -2516,6 +2527,28 @@ impl JsRasterBand {
     }
 }
 
+/// The `into` buffers an async read is currently filling, keyed by their address.
+///
+/// A read writes through the caller's memory on a worker thread while the JS thread
+/// still has that buffer in hand, so handing the *same* buffer to a second read would
+/// have both write it at once — corrupted samples, and no error to explain them. The
+/// address catches the same buffer passed twice (and two views over one `ArrayBuffer`);
+/// it is released when the task finishes or is dropped.
+static INTO_IN_FLIGHT: LazyLock<Mutex<HashSet<usize>>> =
+    LazyLock::new(|| Mutex::new(HashSet::new()));
+
+/// Holds a buffer's address reserved in [`INTO_IN_FLIGHT`] for as long as its task lives.
+struct IntoReservation(usize);
+
+impl Drop for IntoReservation {
+    fn drop(&mut self) {
+        INTO_IN_FLIGHT
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(&self.0);
+    }
+}
+
 pub struct ReadBandTask {
     dataset: DatasetRef,
     kind: BandKind,
@@ -2525,6 +2558,9 @@ pub struct ReadBandTask {
     /// GDAL writes through it on the worker, and it goes home as the object it came in
     /// as.
     into: Option<Buffer>,
+    /// Keeps this read's claim on `into`'s memory until the task is done, so a second
+    /// read into the same buffer is refused rather than raced.
+    reservation: Option<IntoReservation>,
 }
 
 /// What a read produced. `Reused` carries nothing, because the buffer is already on the
@@ -2535,23 +2571,50 @@ pub enum ReadOutput {
 }
 
 impl ReadBandTask {
+    /// The task for a read, or an error when its `into` buffer is already being filled.
+    ///
+    /// The claim is taken here, on the JS thread, so a second read into the same buffer
+    /// is refused by the call that asks for it rather than by a promise that rejects
+    /// later. Argument mistakes on this surface are thrown synchronously (`readPixels`
+    /// with a wrongly-sized `into` rejects only because the size is resolved on the
+    /// worker), and this is one of them.
     fn new(
         dataset: DatasetRef,
         kind: BandKind,
         target: Option<DataType>,
         options: Option<ReadOptions>,
-    ) -> AsyncTask<Self> {
+    ) -> Result<AsyncTask<Self>> {
         // Taken out of the options here rather than on the worker: the buffer travels
         // with the task, not inside the description of the read.
         let mut options = options.unwrap_or_default();
         let into = options.into.take();
-        AsyncTask::new(Self {
+        // An empty buffer is refused later on its size, so reserving it buys nothing —
+        // and two empty buffers can share a dangling address.
+        let reservation = match into.as_ref().filter(|buffer| !buffer.is_empty()) {
+            Some(buffer) => {
+                let address = buffer.as_ptr() as usize;
+                let mut in_flight = INTO_IN_FLIGHT
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                if !in_flight.insert(address) {
+                    return Err(bad_argument(
+                        "this `into` buffer is already being filled by another read: a read \
+                         writes through the memory it was given, so await the first read \
+                         before reusing the buffer",
+                    ));
+                }
+                Some(IntoReservation(address))
+            }
+            None => None,
+        };
+        Ok(AsyncTask::new(Self {
             dataset,
             kind,
             target,
             options,
             into,
-        })
+            reservation,
+        }))
     }
 }
 
@@ -2573,6 +2636,10 @@ impl Task for ReadBandTask {
     }
 
     fn resolve(&mut self, _env: Env, output: Self::Output) -> napi::Result<Self::JsValue> {
+        // The read is done, so the buffer is free for the next one. Released here rather
+        // than in `Drop` so it is free by the time the promise settles — `Drop` is the
+        // backstop for a task that never reaches this.
+        self.reservation.take();
         match output.map_err(|(code, reason)| into_status_error(code, reason))? {
             ReadOutput::Allocated(bytes) => Ok(bytes.into()),
             // A buffer that came from JS resolves back to that same object, so this is
@@ -2743,7 +2810,7 @@ impl Task for PolygonizeTask {
         let (kind, layer_index) = (*kind, *layer_index);
 
         Ok(op(with_two(dataset, layer, |raster, vector| {
-            let mut target = vector.layer(layer_index).gdal()?;
+            let mut target = vector.layer(layer_index).gdal_context("compute")?;
             with_band(raster, kind, |band| polygonize(band, &mut target, request))
         })))
     }
@@ -2779,7 +2846,7 @@ impl Task for ContourGenerateTask {
         let (kind, layer_index) = (*kind, *layer_index);
 
         Ok(op(with_two(dataset, layer, |raster, vector| {
-            let mut target = vector.layer(layer_index).gdal()?;
+            let mut target = vector.layer(layer_index).gdal_context("compute")?;
             with_band(raster, kind, |band| {
                 contour_generate(band, &mut target, request)
             })
