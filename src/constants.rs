@@ -23,7 +23,7 @@ use napi_derive::napi;
 /// out of GDAL is a number it will not guess. Callers who need one of those should ask
 /// GDAL for the behaviour instead: `testCapability()` answers the capability questions
 /// by name, and `lastError().number` reports the error number that actually occurred.
-#[napi]
+#[napi(catch_unwind)]
 pub fn numeric_constants() -> HashMap<String, u32> {
     use gdal_sys::{
         CPLErr, GDALColorInterp, GDALDataType, GDALExtendedDataTypeClass, GDALPaletteInterp,

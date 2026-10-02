@@ -71,20 +71,20 @@ impl JsDriver {
 impl JsDriver {
     /// The driver's short name — `GTiff`, `GPKG`, `COG`. This is the name every
     /// other call in this binding takes, and the name `gdalinfo --formats` prints.
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn name(&self) -> String {
         self.name.clone()
     }
 
     /// The driver's long name, e.g. `GeoTIFF`.
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn long_name(&self) -> Result<String> {
         self.with_driver(|driver| Ok(driver.long_name()))
     }
 
     /// The driver's description — GDAL's own label, which is usually the long name
     /// but can differ. `GDALGetDescription` on the driver.
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn description(&self) -> Result<String> {
         self.with_driver(|driver| driver.description().gdal())
     }
@@ -102,7 +102,7 @@ impl JsDriver {
     /// gdal.driver('COG').testCapability('DCAP_CREATECOPY')  // true
     /// gdal.driver('GTiff').testCapability('DCAP_VECTOR')    // false
     /// ```
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn test_capability(&self, capability: String) -> Result<bool> {
         // A capability is stored as a metadata item with the value "YES" or "NO",
         // and an unrecognised one is simply absent. Both "absent" and "NO" mean no.
@@ -118,7 +118,7 @@ impl JsDriver {
     /// ```js
     /// gdal.driver('GTiff').metadata()['DMD_MIMETYPE']  // 'image/tiff'
     /// ```
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn metadata(&self, domain: Option<String>) -> Result<HashMap<String, String>> {
         let domain = domain.unwrap_or_default();
         self.with_driver(|driver| {
@@ -137,7 +137,7 @@ impl JsDriver {
     /// `DMD_EXTENSIONS` is the modern, space-separated item; older registrations
     /// only carry the singular `DMD_EXTENSION`, which may itself hold several. Both
     /// are read, because which one is present depends on the driver.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn file_extensions(&self) -> Result<Vec<String>> {
         let plural = self.driver_item("DMD_EXTENSIONS")?;
         let text = match plural {
@@ -156,14 +156,14 @@ impl JsDriver {
     /// the same document, pretty-printed.
     ///
     /// `null` for a driver that creates nothing, or that declares no options.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn creation_option_list(&self) -> Result<Option<String>> {
         self.driver_item("DMD_CREATIONOPTIONLIST")
     }
 
     /// The XML `DMD_OPENOPTIONLIST` — the options `open()` takes for this driver,
     /// the counterpart of `creationOptionList`.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn open_option_list(&self) -> Result<Option<String>> {
         self.driver_item("DMD_OPENOPTIONLIST")
     }
@@ -175,7 +175,7 @@ impl JsDriver {
     /// ask first. Note that this is the *dataset*, not a file: GDAL removes what it
     /// considers part of the dataset, which for a shapefile is several files and for
     /// a GeoPackage is one.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn delete(&self, path: String) -> Result<()> {
         ensure_initialized();
         let _guard = lock_gdal();
@@ -191,7 +191,7 @@ impl JsDriver {
     /// GDAL's default implementation opens the source as a **raster**, so a
     /// vector-only dataset is not recognized — GDAL's answer rather than a rule
     /// here, and the same caveat `copyFiles` carries.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn rename(&self, new_name: String, old_name: String) -> Result<()> {
         ensure_initialized();
         let _guard = lock_gdal();
@@ -202,7 +202,7 @@ impl JsDriver {
     /// Copy a dataset's files through this driver — `GDALCopyDatasetFiles`, the
     /// copy twin of `rename`. The driver decides which files that is; one GDAL
     /// cannot open as a raster says so rather than half-copying.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn copy_files(&self, new_name: String, old_name: String) -> Result<()> {
         ensure_initialized();
         let _guard = lock_gdal();
@@ -222,7 +222,7 @@ impl JsDriver {
     ///
     /// The blocking form. For the thread-pool one, `gdal.open(path, { drivers: [...] })`
     /// is the same restriction with the async surface.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn open_sync(&self, path: String, options: Option<OpenOptions>) -> Result<JsDataset> {
         let options = options.unwrap_or_default();
         let update = options.update.unwrap_or(false);
@@ -232,7 +232,7 @@ impl JsDriver {
     }
 
     /// The same, on the libuv thread pool.
-    #[napi(ts_return_type = "Promise<Dataset>")]
+    #[napi(catch_unwind, ts_return_type = "Promise<Dataset>")]
     pub fn open(&self, path: String, options: Option<OpenOptions>) -> AsyncTask<OpenTask> {
         let options = options.unwrap_or_default();
         let update = options.update.unwrap_or(false);
@@ -249,13 +249,13 @@ impl JsDriver {
 
     /// Create a raster dataset with this driver — `gdal.create(path, { driver, ... })`
     /// with the driver already named, so it cannot be passed the wrong one.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn create_sync(&self, path: String, options: DriverCreateOptions) -> Result<JsDataset> {
         create_dataset_sync(&path, &options.into_create_options(self.name.clone()))
     }
 
     /// The same, on the libuv thread pool.
-    #[napi(ts_return_type = "Promise<Dataset>")]
+    #[napi(catch_unwind, ts_return_type = "Promise<Dataset>")]
     pub fn create(&self, path: String, options: DriverCreateOptions) -> AsyncTask<OpenTask> {
         AsyncTask::new(OpenTask {
             path,
@@ -269,7 +269,7 @@ impl JsDriver {
     /// `source` is any open dataset and `options` are this driver's creation
     /// options (`{ COMPRESS: 'DEFLATE', BLOCKSIZE: 512 }`). It is the same call as
     /// `source.createCopySync(path, name, options)`, with the driver already named.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn create_copy_sync(
         &self,
         path: String,
@@ -281,7 +281,7 @@ impl JsDriver {
 
     /// The same, on the libuv thread pool — writing a whole COG is not something
     /// the event loop should wait for.
-    #[napi(ts_return_type = "Promise<Dataset>")]
+    #[napi(catch_unwind, ts_return_type = "Promise<Dataset>")]
     pub fn create_copy(
         &self,
         path: String,
@@ -299,7 +299,7 @@ impl JsDriver {
     /// The short name. Defined so that `` `${dataset.driver}` `` and
     /// `String(dataset.driver)` keep reading the way they did when `dataset.driver`
     /// was a string, and so a driver logs usefully.
-    #[napi(js_name = "toString")]
+    #[napi(catch_unwind, js_name = "toString")]
     pub fn to_js_string(&self) -> String {
         self.name.clone()
     }
@@ -336,7 +336,7 @@ impl DriverCreateOptions {
 /// Every registered GDAL/OGR driver, sorted by short name. Call this first when
 /// something fails to open: it is the quickest way to tell "the format is not
 /// compiled in" apart from "the file is bad".
-#[napi]
+#[napi(catch_unwind)]
 pub fn drivers() -> Vec<JsDriver> {
     ensure_initialized();
     // Walking the registry, not changing it — see `with_driver`.
@@ -357,7 +357,7 @@ pub fn drivers() -> Vec<JsDriver> {
 ///
 /// The lookup `gdal.drivers()` exists to make possible, without walking the array:
 /// `gdal.driver('GTiff')?.testCapability('DCAP_CREATE') ?? false`.
-#[napi]
+#[napi(catch_unwind)]
 pub fn driver(name: String) -> Result<Option<JsDriver>> {
     ensure_initialized();
     // A registry lookup, not a registration — see `with_driver`.

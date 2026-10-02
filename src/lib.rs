@@ -60,7 +60,7 @@ use crate::runtime::lock_gdal_shared;
 /// people reach for — and because both `setProjection` and `createLayer` want WKT.
 /// It needs the CRS database, so it fails if the packaged `assets/proj/proj.db`
 /// is missing — see `diagnostics`.
-#[napi]
+#[napi(catch_unwind)]
 pub fn epsg_to_wkt(code: u32) -> crate::error::Result<String> {
     runtime::ensure_initialized();
     // The CRS database and PROJ, nothing else — the same work the `SpatialRef`
@@ -79,7 +79,7 @@ pub struct Versions {
 
 /// Versions of the statically linked libraries. There is no `node` field on
 /// purpose — `process.versions.node` is already available in JS.
-#[napi]
+#[napi(catch_unwind)]
 pub fn version() -> Versions {
     runtime::ensure_initialized();
     let _guard = lock_gdal_shared();
@@ -116,7 +116,7 @@ pub struct GdalInfo {
 /// behind it, straight from GDAL's `BUILD_INFO`. It answers "is capability X in
 /// this build" — and answers it the way GDAL does, by listing only what was
 /// compiled in, so the absence of a key is the answer.
-#[napi]
+#[napi(catch_unwind)]
 pub fn info() -> GdalInfo {
     runtime::ensure_initialized();
     let _guard = lock_gdal_shared();
@@ -156,7 +156,7 @@ impl Task for InfoTask {
 }
 
 /// What `info()` answers, without holding the event loop while it waits its turn.
-#[napi(ts_return_type = "Promise<GdalInfo>")]
+#[napi(catch_unwind, ts_return_type = "Promise<GdalInfo>")]
 pub fn info_async() -> AsyncTask<InfoTask> {
     AsyncTask::new(InfoTask)
 }
@@ -184,7 +184,7 @@ pub struct LastError {
 /// callable from the shared side of the lock at all. So it reports what *this*
 /// thread last did; another thread's failure never shows up here, whether or not
 /// the two overlapped.
-#[napi]
+#[napi(catch_unwind)]
 pub fn last_error() -> Option<LastError> {
     runtime::ensure_initialized();
     let _guard = lock_gdal_shared();
@@ -216,7 +216,7 @@ pub struct DataPathsOptions {
 /// if you relocated those files or want to use your own GDAL data.
 ///
 /// Values already present in `PROJ_DATA` / `GDAL_DATA` are never overwritten.
-#[napi]
+#[napi(catch_unwind)]
 pub fn configure_data_paths(options: DataPathsOptions) {
     // Process-global like `config.set`: it writes `PROJ_DATA` / `GDAL_DATA` and can
     // register every driver, so it takes the exclusive side. It used to take no side
@@ -258,7 +258,7 @@ pub struct Diagnostics {
 
 /// First stop when something CRS-related fails: reports whether the CRS
 /// database is actually reachable and where PROJ was pointed.
-#[napi]
+#[napi(catch_unwind)]
 pub fn diagnostics() -> Diagnostics {
     runtime::ensure_initialized();
     let _guard = lock_gdal_shared();
@@ -327,7 +327,7 @@ pub struct FeatureSupport {
 }
 
 /// What this binding can do — the feature-probe counterpart of `info()`.
-#[napi]
+#[napi(catch_unwind)]
 pub fn features() -> FeatureSupport {
     FeatureSupport {
         geos: gdal::version::VersionInfo::has_geos(),
@@ -342,7 +342,7 @@ pub fn features() -> FeatureSupport {
 /// `axis` is GDAL's own label for the coordinate, `"Lat"` or `"Long"`; `precision` is
 /// the decimal places on the seconds, default 2. No dataset is involved, so it takes
 /// the shared side of the lock.
-#[napi(js_name = "decToDMS")]
+#[napi(catch_unwind, js_name = "decToDMS")]
 pub fn dec_to_dms(
     angle: f64,
     axis: String,
@@ -360,13 +360,13 @@ pub fn dec_to_dms(
 ///
 /// It writes process-global configuration, so it takes the exclusive side of the
 /// lock, exactly as `config.set` does.
-#[napi]
+#[napi(catch_unwind)]
 pub fn verbose() {
     set_debug_logging("ON");
 }
 
 /// Turn GDAL's debug logging back off — `CPL_DEBUG=OFF`.
-#[napi]
+#[napi(catch_unwind)]
 pub fn quiet() {
     set_debug_logging("OFF");
 }
@@ -385,7 +385,7 @@ fn set_debug_logging(value: &str) {
 /// answered `Unknown`. `Uint8` — this binding's spelling of the one type GDAL calls
 /// `Byte` — is accepted too, so `toDataType(band.dataType)` always works; note that
 /// `fromDataType` answers GDAL's spelling, so that one round-trips as `Byte`.
-#[napi]
+#[napi(catch_unwind)]
 pub fn to_data_type(name: String) -> crate::error::Result<u32> {
     runtime::ensure_initialized();
     let _guard = lock_gdal_shared();
@@ -416,7 +416,7 @@ pub fn to_data_type(name: String) -> crate::error::Result<u32> {
 /// The answer is this binding's spelling, not GDAL's, so it matches `band.dataType` and
 /// round-trips with `toDataType`: `fromDataType(1)` is `'Uint8'` where GDAL would say
 /// `'Byte'`, and `4` is `'Uint32'` where GDAL says `'UInt32'`.
-#[napi]
+#[napi(catch_unwind)]
 pub fn from_data_type(code: u32) -> crate::error::Result<String> {
     runtime::ensure_initialized();
     let _guard = lock_gdal_shared();

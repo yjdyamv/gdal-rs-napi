@@ -1,6 +1,7 @@
 //! Process-wide initialisation: the GDAL serialisation lock, the PROJ/GDAL data
 //! directories, and one-time driver registration.
 
+use std::cell::Cell;
 use std::ffi::CStr;
 use std::os::raw::c_char;
 use std::path::PathBuf;
@@ -17,14 +18,27 @@ use std::sync::{Mutex, OnceLock, RwLock, RwLockReadGuard, RwLockWriteGuard};
 /// * **`config.set`** — and `config.get` with it, because `CPLGetConfigOption` returns a
 ///   pointer *into* the map and drops the guard, so a concurrent `set` could free the
 ///   string before the copy happens.
-/// * **`gdal.fs` writes**: GDAL's memory file system is one process-wide tree.
-/// * **The programs** — `translate` / `warp` / `ogr2ogr` / `gdaldem`, `buildVrt`, and
-///   the `create` / `createCopy` / `with_two` paths beside them. They build datasets of
-///   their own and write files, and no dataset operation may run while one is rewriting
-///   the file it is reading.
+/// * **Program runs that open their own datasets** — the module-level `translate` /
+///   `warp` / `ogr2ogr` / `gdaldem` / `buildVrt`, which take paths and build the output
+///   themselves; and `create` / `createVector`, which make a new dataset. They are the
+///   calls whose output can be a file another thread is reading, so they exclude readers.
+/// * **`with_two`**, which holds two datasets at once: the write side is what orders the
+///   two per-dataset mutexes, so it cannot be the read side.
+/// * **A thread-safe dataset's writes and `close()`**, since a plain read on that handle
+///   deliberately overlaps.
+///
+/// Note what is **not** on this side, because the split is easy to misread. An operation
+/// on an **already-open** dataset takes the read side even where it writes — `with_mut`,
+/// and a program run over a dataset (`dataset.translateSync`, `createCopySync`,
+/// `rasterizeSync`) — because that dataset's own mutex is what serialises it. And every
+/// `gdal.fs` call takes the read side, **writes included** (`writeFile`, `mkdir`,
+/// `unlink`, `rename`, `copyFile`); only `clearCurlCache` is on the write side. That is
+/// safe for ordinary use — an `fs` write and a dataset read of a *different* path do not
+/// interfere — but it is not a promise that a write racing a read of the same path is
+/// ordered.
 ///
 /// Everything else takes the **read** side, and therefore overlaps: an open, every
-/// operation on an open dataset, the CRS and geometry modules, `gdal.fs` reads, and the
+/// operation on an open dataset, the CRS, geometry and `fs` modules, and the
 /// module-level introspection (`version` / `info` / `diagnostics` / `lastError` /
 /// `epsgToWkt`, the `geometry*` helpers, the driver-registry reads `gdal.drivers()` /
 /// `gdal.driver(name)`).
@@ -51,21 +65,98 @@ use std::sync::{Mutex, OnceLock, RwLock, RwLockReadGuard, RwLockWriteGuard};
 /// The registry the driver reads walk is frozen the same way: `ensure_initialized`
 /// registers every driver once, and nothing deregisters any of them.
 ///
-/// **Never take the write side from a closure that already holds the read side** —
-/// including transitively: a dataset operation's closure, a CRS call, a geometry
-/// predicate. `RwLock` is not reentrant, so that deadlocks the process. The rule was
-/// already the one the thread-safe path lived by; it now covers every dataset
-/// operation, and it is why the dataset closures call nothing that writes.
+/// **Never take a side from a closure that already holds one** — including
+/// transitively: a dataset operation's closure, a CRS call, a geometry predicate.
+/// `RwLock` is not reentrant, so that used to deadlock the process; `lock_gdal` /
+/// `lock_gdal_shared` now panic on a nested acquisition instead (see [`Held`]), which
+/// turns the hang into a diagnosis. The rule was already the one the thread-safe path
+/// lived by; it now covers every dataset operation, and it is why the dataset closures
+/// call nothing that locks.
 static GDAL_LOCK: RwLock<()> = RwLock::new(());
+
+/// Which side of [`GDAL_LOCK`], if either, the current thread is already inside.
+///
+/// `RwLock` is not reentrant, so a second acquisition on the same thread — a closure
+/// that calls back into anything that locks — used to hang the process with no clue
+/// why. This thread-local marker turns that from an unkillable hang into a panic.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Held {
+    None,
+    Shared,
+    Exclusive,
+}
+
+thread_local! {
+    static HELD: Cell<Held> = const { Cell::new(Held::None) };
+}
+
+/// Refuse a nested acquisition in place of the deadlock it would otherwise be.
+#[cold]
+fn reentrant_lock(side: &str) -> ! {
+    let held = HELD.with(Cell::get);
+    panic!(
+        "the GDAL lock is not reentrant: this thread already holds the {held:?} side and \
+         is trying to take the {side} side. A closure running under the lock must not \
+         call back into anything that locks — see the rules on `GDAL_LOCK`."
+    );
+}
+
+/// The write guard. Clearing the thread-local marker is why this is a wrapper rather
+/// than the bare `RwLockWriteGuard`.
+pub struct GdalWriteGuard(RwLockWriteGuard<'static, ()>);
+
+/// The read guard, with the same marker-clearing as [`GdalWriteGuard`].
+pub struct GdalReadGuard(RwLockReadGuard<'static, ()>);
+
+impl Drop for GdalWriteGuard {
+    fn drop(&mut self) {
+        HELD.with(|held| held.set(Held::None));
+    }
+}
+
+impl Drop for GdalReadGuard {
+    fn drop(&mut self) {
+        HELD.with(|held| held.set(Held::None));
+    }
+}
+
+impl std::ops::Deref for GdalWriteGuard {
+    type Target = ();
+    fn deref(&self) -> &() {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for GdalWriteGuard {
+    fn deref_mut(&mut self) -> &mut () {
+        &mut self.0
+    }
+}
+
+impl std::ops::Deref for GdalReadGuard {
+    type Target = ();
+    fn deref(&self) -> &() {
+        &self.0
+    }
+}
 
 /// Exclusive access: datasets, registers, and anything else process-global.
 ///
 /// A poisoned lock is recovered from on purpose: a panic in one operation must not
-/// brick the whole addon.
-pub fn lock_gdal() -> RwLockWriteGuard<'static, ()> {
-    GDAL_LOCK
-        .write()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+/// brick the whole addon. Taking either side again from the same thread panics rather
+/// than deadlocks — see [`Held`] and [`reentrant_lock`].
+pub fn lock_gdal() -> GdalWriteGuard {
+    HELD.with(|held| {
+        if held.get() != Held::None {
+            reentrant_lock("exclusive");
+        }
+        held.set(Held::Exclusive);
+    });
+    GdalWriteGuard(
+        GDAL_LOCK
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+    )
 }
 
 /// Shared access: work with no dataset and no global configuration in it, plus pixel
@@ -76,11 +167,21 @@ pub fn lock_gdal() -> RwLockWriteGuard<'static, ()> {
 /// deadlocks the process. Everything reached from the CRS, geometry and `fs` modules,
 /// from the module-level introspection (`version` / `info` / `diagnostics` /
 /// `lastError` / `epsgToWkt` and the `geometry*` helpers) and from the
-/// driver-registry reads is dataset-free, which is what makes them eligible.
-pub fn lock_gdal_shared() -> RwLockReadGuard<'static, ()> {
-    GDAL_LOCK
-        .read()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
+/// driver-registry reads is dataset-free, which is what makes them eligible. The panic
+/// in [`reentrant_lock`] is what makes a violation of that rule a diagnosis rather than
+/// a hang.
+pub fn lock_gdal_shared() -> GdalReadGuard {
+    HELD.with(|held| {
+        if held.get() != Held::None {
+            reentrant_lock("shared");
+        }
+        held.set(Held::Shared);
+    });
+    GdalReadGuard(
+        GDAL_LOCK
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()),
+    )
 }
 
 /// Data directories handed over from JS via `configureDataPaths`.
@@ -247,5 +348,37 @@ mod tests {
 
         assert!(one.contains("from one"), "read back {one:?}");
         assert!(two.contains("from two"), "read back {two:?}");
+    }
+
+    /// The guard exists because `RwLock` is not reentrant: nesting the same side used
+    /// to hang the whole process with nothing on stderr. A panic is the diagnosis
+    /// instead of the hang.
+    #[test]
+    #[should_panic(expected = "not reentrant")]
+    fn a_second_exclusive_lock_panics_instead_of_deadlocking() {
+        let _outer = lock_gdal();
+        let _inner = lock_gdal();
+    }
+
+    /// The shape the `srs()` bug had: the write side held, then the shared side taken
+    /// from inside it.
+    #[test]
+    #[should_panic(expected = "not reentrant")]
+    fn the_shared_lock_under_the_exclusive_one_panics() {
+        let _outer = lock_gdal();
+        let _inner = lock_gdal_shared();
+    }
+
+    /// The marker is cleared when the guard drops, including while a panic unwinds, so
+    /// a refused acquisition leaves the lock usable rather than poisoned by the guard.
+    #[test]
+    fn the_lock_is_reusable_after_a_reentrant_panic() {
+        let caught = std::panic::catch_unwind(|| {
+            let _outer = lock_gdal();
+            let _inner = lock_gdal();
+        });
+        assert!(caught.is_err());
+        // Would deadlock here if the panic had left the marker — or the lock — held.
+        let _again = lock_gdal();
     }
 }

@@ -730,13 +730,13 @@ impl JsDataset {
 impl JsDataset {
     /// Path this dataset was opened from. Available without touching GDAL, and
     /// still readable after `close()`.
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn path(&self) -> String {
         self.path.clone()
     }
 
     /// Whether this handle is read concurrently. True only for `openThreadSafe`.
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn thread_safe(&self) -> bool {
         self.dataset.is_concurrent()
     }
@@ -748,7 +748,7 @@ impl JsDataset {
     ///
     /// `String(dataset.driver)` and `dataset.driver.name` both give the short name,
     /// which is what this getter returned before it handed back an object.
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn driver(&self) -> Result<JsDriver> {
         let name = self
             .dataset
@@ -760,14 +760,14 @@ impl JsDataset {
     /// usually `path`. It differs where GDAL names the dataset itself: a
     /// `/vsimem/` dataset reports the name it was created under, and a subdataset
     /// reports the subdataset string.
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn description(&self) -> Result<String> {
         self.dataset.with(|dataset| dataset.description().gdal())
     }
 
     /// Raster dimensions as one object, the shape `gdalinfo` prints. `width` and
     /// `height` remain as the flat accessors; this is the same pair grouped.
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn raster_size(&self) -> Result<RasterSize> {
         self.dataset.with(|dataset| {
             let (width, height) = dataset.raster_size();
@@ -787,7 +787,7 @@ impl JsDataset {
     /// a dataset with nothing behind it at all — a `MEM` one — comes back empty. An
     /// empty list is not an error, so a caller copying files should read it as
     /// "nothing to copy".
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn get_file_list(&self) -> Result<Vec<String>> {
         self.dataset.with(file_list)
     }
@@ -799,7 +799,7 @@ impl JsDataset {
     /// bounding box of a rotated raster is larger than the raster's own rectangle —
     /// which is the honest answer rather than a wrong small one. A **vector**
     /// dataset's is what its layers cover between them, the union of their extents.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn get_envelope(&self) -> Result<Option<GeometryEnvelope>> {
         ensure_initialized();
         self.dataset.with_exclusive(|dataset| {
@@ -855,20 +855,20 @@ impl JsDataset {
     }
 
     /// Raster width in pixels.
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn width(&self) -> Result<u32> {
         self.dataset
             .with(|dataset| Ok(dataset.raster_size().0 as u32))
     }
 
     /// Raster height in pixels.
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn height(&self) -> Result<u32> {
         self.dataset
             .with(|dataset| Ok(dataset.raster_size().1 as u32))
     }
 
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn band_count(&self) -> Result<u32> {
         self.dataset
             .with(|dataset| Ok(dataset.raster_count() as u32))
@@ -876,7 +876,7 @@ impl JsDataset {
 
     /// Six affine geotransform coefficients, or `null` when the dataset has none
     /// (which is normal for an unreferenced raster).
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn geo_transform(&self) -> Result<Option<Vec<f64>>> {
         self.dataset
             .with(|dataset| Ok(dataset.geo_transform().ok().map(|gt| gt.to_vec())))
@@ -884,7 +884,7 @@ impl JsDataset {
 
     /// Set the geotransform: `[originX, pixelWidth, rowRotation, originY,
     /// columnRotation, pixelHeight]`.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn set_geo_transform(&self, transform: Vec<f64>) -> Result<()> {
         let array: [f64; 6] = transform.try_into().map_err(|values: Vec<f64>| {
             bad_argument(format!(
@@ -908,7 +908,7 @@ impl JsDataset {
     /// dataset.setProjection(gdal.epsgToWkt(4326))
     /// dataset.setProjection(gdal.SpatialRef.fromEpsg(3857))
     /// ```
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn set_projection(&self, projection: Either<String, &JsSpatialRef>) -> Result<()> {
         // Resolve a `SpatialRef` before taking the lock: `wkt()` takes it itself,
         // and the lock is not reentrant.
@@ -921,7 +921,7 @@ impl JsDataset {
     }
 
     /// CRS as WKT, or `null` when the dataset has no projection.
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn projection(&self) -> Result<Option<String>> {
         self.dataset.with(|dataset| {
             let wkt = dataset.projection();
@@ -931,7 +931,7 @@ impl JsDataset {
 
     /// The same CRS as `projection`, as an object — ready to hand to
     /// `CoordinateTransform`. `null` when the dataset has no projection.
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn spatial_ref(&self) -> Result<Option<JsSpatialRef>> {
         ensure_initialized();
         self.dataset.with(|dataset| {
@@ -947,7 +947,7 @@ impl JsDataset {
     ///
     /// `IMAGE_STRUCTURE` lives here rather than on a band, which is how you check
     /// what a `createCopy` to COG actually produced.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn metadata(&self, domain: Option<String>) -> Result<HashMap<String, String>> {
         let domain = domain.unwrap_or_default();
         self.dataset.with(|dataset| {
@@ -961,12 +961,12 @@ impl JsDataset {
         })
     }
 
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn metadata_domains(&self) -> Result<Vec<String>> {
         self.dataset.with(|dataset| Ok(dataset.metadata_domains()))
     }
 
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn set_metadata_item(
         &self,
         key: String,
@@ -979,7 +979,7 @@ impl JsDataset {
     }
 
     /// How many ground control points the dataset carries.
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn gcp_count(&self) -> Result<u32> {
         ensure_initialized();
         self.dataset.with_exclusive(|dataset| {
@@ -990,7 +990,7 @@ impl JsDataset {
 
     /// The CRS the ground control points are expressed in, or `null` when there is
     /// none. Distinct from `projection`, which is the raster's own georeferencing.
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn gcp_projection(&self) -> Result<Option<String>> {
         ensure_initialized();
         self.dataset.with_exclusive(|dataset| {
@@ -1003,7 +1003,7 @@ impl JsDataset {
 
     /// The root group of the multidimensional model, or `null` when this dataset has
     /// none. It is the way in to `MDArray`, `Attribute` and `Dimension`.
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn root(&self) -> Result<Option<crate::multidim::JsGroup>> {
         ensure_initialized();
         self.dataset.with_exclusive(|dataset| {
@@ -1019,7 +1019,7 @@ impl JsDataset {
     }
 
     /// The ground control points, in order — `[]` when there are none.
-    #[napi(js_name = "getGCPs")]
+    #[napi(catch_unwind, js_name = "getGCPs")]
     pub fn get_gcps(&self) -> Result<Vec<Gcp>> {
         ensure_initialized();
         self.dataset.with_exclusive(|dataset| {
@@ -1054,7 +1054,7 @@ impl JsDataset {
     /// rather than an affine `geoTransform` — and the warper uses it when a warp is
     /// asked for `-tps` or the source has no transform. `projection` is the CRS the
     /// points are expressed in; pass `null` to leave the stored one alone.
-    #[napi(js_name = "setGCPs")]
+    #[napi(catch_unwind, js_name = "setGCPs")]
     pub fn set_gcps(&self, gcps: Vec<Gcp>, projection: Option<String>) -> Result<()> {
         ensure_initialized();
         // The C struct holds `const char *`, so the strings have to outlive the call.
@@ -1102,7 +1102,7 @@ impl JsDataset {
     }
 
     /// Band at `index`, **0-based** (GDAL itself is 1-based).
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn band(&self, index: u32) -> Result<JsRasterBand> {
         ensure_initialized();
         let data_type = self.dataset.with(|dataset| {
@@ -1124,7 +1124,7 @@ impl JsDataset {
         ))
     }
 
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn bands(&self) -> Result<Vec<JsRasterBand>> {
         let band_count = self.dataset.with(|dataset| Ok(dataset.raster_count()))?;
         (0..band_count as u32)
@@ -1134,7 +1134,7 @@ impl JsDataset {
 
     /// Create a new vector layer, with `epsg` as its CRS. Lay the fields out by
     /// writing a feature whose properties name them — see `Layer.createFeature`.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn create_layer(&self, options: CreateLayerOptions) -> Result<JsLayer> {
         ensure_initialized();
         self.dataset.ensure_vector_capable()?;
@@ -1226,7 +1226,7 @@ impl JsDataset {
     /// const target = gdal.createSync('places.gpkg', { driver: 'GPKG' })
     /// target.copyLayer(source.layer(0), 'places')
     /// ```
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn copy_layer(
         &self,
         source: &JsLayer,
@@ -1284,7 +1284,7 @@ impl JsDataset {
     }
 
     /// Number of vector layers.
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn layer_count(&self) -> Result<u32> {
         self.dataset.ensure_vector_capable()?;
         self.dataset
@@ -1292,7 +1292,7 @@ impl JsDataset {
     }
 
     /// Layer at `index`, **0-based**.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn layer(&self, index: u32) -> Result<JsLayer> {
         ensure_initialized();
         self.dataset.ensure_vector_capable()?;
@@ -1308,7 +1308,7 @@ impl JsDataset {
         Ok(JsLayer::new(self.dataset.clone(), index as usize))
     }
 
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn layer_by_name(&self, name: String) -> Result<JsLayer> {
         ensure_initialized();
         self.dataset.ensure_vector_capable()?;
@@ -1327,7 +1327,7 @@ impl JsDataset {
         }
     }
 
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn layers(&self) -> Result<Vec<JsLayer>> {
         self.dataset.ensure_vector_capable()?;
         let layer_count = self
@@ -1353,7 +1353,7 @@ impl JsDataset {
     /// ```js
     /// dataset.executeSql('SELECT name, population FROM places WHERE population > 1000')
     /// ```
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn execute_sql(&self, sql: String, dialect: Option<String>) -> Result<Vec<FeatureRecord>> {
         ensure_initialized();
         self.dataset.ensure_vector_capable()?;
@@ -1380,7 +1380,7 @@ impl JsDataset {
     ///   options: { ALL_TOUCHED: true },
     /// })
     /// ```
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn rasterize_sync(
         &self,
         geometries: Vec<Either<&JsGeometry, Unknown<'_>>>,
@@ -1399,7 +1399,7 @@ impl JsDataset {
 
     /// The same, on the thread pool: burning geometry means reading and writing the
     /// raster.
-    #[napi(ts_return_type = "Promise<void>")]
+    #[napi(catch_unwind, ts_return_type = "Promise<void>")]
     pub fn rasterize(
         &self,
         geometries: Vec<Either<&JsGeometry, Unknown<'_>>>,
@@ -1422,7 +1422,7 @@ impl JsDataset {
     /// `dstWkt` is the CRS to warp to. With no `dstWkt` this reports the grid the
     /// dataset already has, so the interesting call names one — and the answer is
     /// what `reprojectImage` needs for the destination it is given.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn suggested_warp_output_sync(
         &self,
         options: Option<SuggestedWarpOptions>,
@@ -1432,7 +1432,7 @@ impl JsDataset {
             .with_exclusive(|dataset| suggested_warp_output(dataset, &request))
     }
 
-    #[napi(ts_return_type = "Promise<SuggestedWarpOutput>")]
+    #[napi(catch_unwind, ts_return_type = "Promise<SuggestedWarpOutput>")]
     pub fn suggested_warp_output(
         &self,
         options: Option<SuggestedWarpOptions>,
@@ -1449,7 +1449,7 @@ impl JsDataset {
     /// — `suggestedWarpOutput` is what says what those should be for a given
     /// `dstWkt`. `srcWkt` and `dstWkt` supply (or override) the two CRSes, so a
     /// dataset with no projection is still usable.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn reproject_image_sync(
         &self,
         dest: &JsDataset,
@@ -1463,7 +1463,7 @@ impl JsDataset {
 
     /// The same, on the thread pool: a warp reads the source and writes the
     /// destination.
-    #[napi(ts_return_type = "Promise<void>")]
+    #[napi(catch_unwind, ts_return_type = "Promise<void>")]
     pub fn reproject_image(
         &self,
         dest: &JsDataset,
@@ -1482,7 +1482,7 @@ impl JsDataset {
     /// `Create` — the COG driver is the one people ask for. `driver` is a short
     /// name such as `COG` or `JPEG`, and `options` are that driver's creation
     /// options (`{ COMPRESS: 'DEFLATE', BLOCKSIZE: 512 }`).
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn create_copy_sync(
         &self,
         path: String,
@@ -1492,7 +1492,7 @@ impl JsDataset {
         create_copy_sync_with(&driver, &path, &self.dataset, options.as_ref())
     }
 
-    #[napi(ts_return_type = "Promise<Dataset>")]
+    #[napi(catch_unwind, ts_return_type = "Promise<Dataset>")]
     pub fn create_copy(
         &self,
         path: String,
@@ -1507,13 +1507,13 @@ impl JsDataset {
         )?))
     }
 
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn flush_sync(&self) -> Result<()> {
         self.dataset
             .with_mut(|dataset| dataset.flush_cache().gdal())
     }
 
-    #[napi(ts_return_type = "Promise<void>")]
+    #[napi(catch_unwind, ts_return_type = "Promise<void>")]
     pub fn flush(&self) -> AsyncTask<FlushTask> {
         AsyncTask::new(FlushTask {
             dataset: self.dataset.clone(),
@@ -1528,7 +1528,7 @@ impl JsDataset {
     /// you want to keep back first, with `gdal.fs.readFile(dataset.path)`, and
     /// `flushSync()` before reading if the dataset was written to: GDAL keeps the
     /// dirty blocks in memory until then, exactly as it would for a file on disk.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn close(&self) -> Result<()> {
         self.dataset.close()?;
         if let Some(mem_file) = &self.mem_file {
@@ -1549,7 +1549,7 @@ impl JsDataset {
     ///
     /// The source wants a geotransform, and slope or aspect want a CRS with metric
     /// units — without one GDAL computes in pixel units, and says so.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn dem_process_sync(
         &self,
         dest: String,
@@ -1566,7 +1566,7 @@ impl JsDataset {
         Ok(JsDataset::wrap(dataset, dest))
     }
 
-    #[napi(ts_return_type = "Promise<Dataset>")]
+    #[napi(catch_unwind, ts_return_type = "Promise<Dataset>")]
     pub fn dem_process(
         &self,
         dest: String,
@@ -1593,7 +1593,7 @@ impl JsDataset {
     /// By name rather than by index because deleting shifts every later index, so
     /// a list of indices to delete is a trap. Not every driver can do it — GeoPackage
     /// can, an ESRI Shapefile cannot, and GDAL says so when asked.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn delete_layer(&self, name: String) -> Result<()> {
         ensure_initialized();
         self.dataset.ensure_vector_capable()?;
@@ -1615,12 +1615,12 @@ impl JsDataset {
     ///
     /// The same call, with the "NONE" resampling that GDAL reads as "delete them",
     /// which is how `gdaladdo -clean` prunes a pyramid.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn remove_overviews_sync(&self) -> Result<()> {
         self.dataset.with_mut(remove_overviews)
     }
 
-    #[napi(ts_return_type = "Promise<void>")]
+    #[napi(catch_unwind, ts_return_type = "Promise<void>")]
     pub fn remove_overviews(&self) -> AsyncTask<BuildOverviewsTask> {
         AsyncTask::new(BuildOverviewsTask {
             dataset: self.dataset.clone(),
@@ -1640,14 +1640,14 @@ impl JsDataset {
     /// `{ update: true }` they go inside the file, while a read-only dataset gets
     /// an external `.ovr` beside it. That mirrors `gdaladdo`, where the same
     /// choice is `-ro`.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn build_overviews_sync(&self, options: Option<BuildOverviewsOptions>) -> Result<()> {
         let request = build_overviews_request(options)?;
         self.dataset
             .with_mut(|dataset| write_overviews(dataset, &request))
     }
 
-    #[napi(ts_return_type = "Promise<void>")]
+    #[napi(catch_unwind, ts_return_type = "Promise<void>")]
     pub fn build_overviews(
         &self,
         options: Option<BuildOverviewsOptions>,
@@ -1665,7 +1665,7 @@ impl JsDataset {
     /// documentation can be pasted in: `['-of', 'COG', '-co', 'COMPRESS=DEFLATE']`.
     /// There is no need to name the source or the destination — this dataset is
     /// the source and `dest` is the destination.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn translate_sync(&self, dest: String, args: Option<Vec<String>>) -> Result<JsDataset> {
         let args = args.unwrap_or_default();
         let dataset = self.dataset.with_exclusive(|source| {
@@ -1674,7 +1674,7 @@ impl JsDataset {
         Ok(JsDataset::wrap(dataset, dest))
     }
 
-    #[napi(ts_return_type = "Promise<Dataset>")]
+    #[napi(catch_unwind, ts_return_type = "Promise<Dataset>")]
     pub fn translate(
         &self,
         dest: String,
@@ -1693,7 +1693,7 @@ impl JsDataset {
     }
 
     /// Run `gdalwarp` with this dataset as its only source.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn warp_sync(&self, dest: String, args: Option<Vec<String>>) -> Result<JsDataset> {
         let args = args.unwrap_or_default();
         let dataset = self.dataset.with_exclusive(|source| {
@@ -1702,7 +1702,7 @@ impl JsDataset {
         Ok(JsDataset::wrap(dataset, dest))
     }
 
-    #[napi(ts_return_type = "Promise<Dataset>")]
+    #[napi(catch_unwind, ts_return_type = "Promise<Dataset>")]
     pub fn warp(
         &self,
         dest: String,
@@ -1725,7 +1725,7 @@ impl JsDataset {
     /// An existing layer is replaced by default; `-overwrite` drops the destination
     /// *file* first, which is what ogr2ogr's own flag does, and `-append` asks for
     /// the other behaviour.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn vector_translate_sync(
         &self,
         dest: String,
@@ -1738,7 +1738,7 @@ impl JsDataset {
         Ok(JsDataset::wrap(dataset, dest))
     }
 
-    #[napi(ts_return_type = "Promise<Dataset>")]
+    #[napi(catch_unwind, ts_return_type = "Promise<Dataset>")]
     pub fn vector_translate(
         &self,
         dest: String,
@@ -1858,7 +1858,7 @@ impl Task for OpenTask {
 /// GDAL sniffs the content, which covers GTiff, PNG, JPEG, VRT, GeoJSON and GPKG,
 /// but not a format a driver only knows by its extension. When the name matters, use
 /// `gdal.fs.writeFile('/vsimem/data.tif', bytes)` and open that path.
-#[napi(ts_return_type = "Promise<Dataset>")]
+#[napi(catch_unwind, ts_return_type = "Promise<Dataset>")]
 pub fn open(source: Either<String, Buffer>, options: Option<OpenOptions>) -> AsyncTask<OpenTask> {
     let OpenOptions {
         update,
@@ -1889,7 +1889,7 @@ pub fn open(source: Either<String, Buffer>, options: Option<OpenOptions>) -> Asy
 }
 
 /// The blocking twin of [`open`], bytes included.
-#[napi]
+#[napi(catch_unwind)]
 pub fn open_sync(
     source: Either<String, Buffer>,
     options: Option<OpenOptions>,
@@ -1920,19 +1920,19 @@ pub fn open_sync(
 #[napi]
 impl JsDataset {
     /// [`Self::raster_size`], off the event loop.
-    #[napi(getter, ts_return_type = "Promise<RasterSize>")]
+    #[napi(catch_unwind, getter, ts_return_type = "Promise<RasterSize>")]
     pub fn raster_size_async(&self) -> AsyncTask<DatasetPropertyTask<RasterSize>> {
         self.property(DatasetProperty::RasterSize)
     }
 
     /// [`Self::geo_transform`], off the event loop.
-    #[napi(getter, ts_return_type = "Promise<Array<number> | null>")]
+    #[napi(catch_unwind, getter, ts_return_type = "Promise<Array<number> | null>")]
     pub fn geo_transform_async(&self) -> AsyncTask<DatasetPropertyTask<Option<Vec<f64>>>> {
         self.property(DatasetProperty::GeoTransform)
     }
 
     /// [`Self::spatial_ref`], off the event loop.
-    #[napi(getter, ts_return_type = "Promise<JsSpatialRef | null>")]
+    #[napi(catch_unwind, getter, ts_return_type = "Promise<JsSpatialRef | null>")]
     pub fn spatial_ref_async(&self) -> AsyncTask<SpatialRefTask> {
         self.spatial_ref_task()
     }
@@ -1968,7 +1968,7 @@ pub(crate) fn create_dataset_sync(path: &str, options: &CreateOptions) -> Result
 /// are in the README — most drivers end up reopening the file per thread, so a high
 /// read concurrency costs file descriptors.
 #[cfg(gd_thread_safe)]
-#[napi(ts_return_type = "Promise<Dataset>")]
+#[napi(catch_unwind, ts_return_type = "Promise<Dataset>")]
 pub fn open_thread_safe(path: String) -> AsyncTask<OpenTask> {
     AsyncTask::new(OpenTask {
         path,
@@ -1977,7 +1977,7 @@ pub fn open_thread_safe(path: String) -> AsyncTask<OpenTask> {
 }
 
 #[cfg(gd_thread_safe)]
-#[napi]
+#[napi(catch_unwind)]
 pub fn open_thread_safe_sync(path: String) -> Result<JsDataset> {
     Ok(JsDataset::wrap_ref(open_thread_safe_gdal(&path)?, path))
 }
@@ -1985,7 +1985,7 @@ pub fn open_thread_safe_sync(path: String) -> Result<JsDataset> {
 /// Create a raster dataset. `options.driver` must name a driver that supports
 /// `Create` (GTiff, GPKG, MEM, ...); `band_count` defaults to 1 and
 /// `data_type` to `Uint8`.
-#[napi(ts_return_type = "Promise<Dataset>")]
+#[napi(catch_unwind, ts_return_type = "Promise<Dataset>")]
 pub fn create(path: String, options: CreateOptions) -> AsyncTask<OpenTask> {
     AsyncTask::new(OpenTask {
         path,
@@ -1993,13 +1993,13 @@ pub fn create(path: String, options: CreateOptions) -> AsyncTask<OpenTask> {
     })
 }
 
-#[napi]
+#[napi(catch_unwind)]
 pub fn create_sync(path: String, options: CreateOptions) -> Result<JsDataset> {
     Ok(JsDataset::wrap(create_gdal(&path, &options)?, path))
 }
 
 /// Create an empty vector dataset. Add layers with `dataset.createLayer(...)`.
-#[napi(ts_return_type = "Promise<Dataset>")]
+#[napi(catch_unwind, ts_return_type = "Promise<Dataset>")]
 pub fn create_vector(path: String, driver: String) -> AsyncTask<OpenTask> {
     AsyncTask::new(OpenTask {
         path,
@@ -2007,7 +2007,7 @@ pub fn create_vector(path: String, driver: String) -> AsyncTask<OpenTask> {
     })
 }
 
-#[napi]
+#[napi(catch_unwind)]
 pub fn create_vector_sync(path: String, driver: String) -> Result<JsDataset> {
     Ok(JsDataset::wrap(create_vector_gdal(&path, &driver)?, path))
 }
@@ -2020,7 +2020,7 @@ pub fn create_vector_sync(path: String, driver: String) -> Result<JsDataset> {
 // ---------------------------------------------------------------------------
 
 /// `gdal_translate <args> source dest`, as one call.
-#[napi(ts_return_type = "Promise<Dataset>")]
+#[napi(catch_unwind, ts_return_type = "Promise<Dataset>")]
 pub fn translate(
     dest: String,
     source: String,
@@ -2036,7 +2036,7 @@ pub fn translate(
     )
 }
 
-#[napi]
+#[napi(catch_unwind)]
 pub fn translate_sync(
     dest: String,
     source: String,
@@ -2049,7 +2049,7 @@ pub fn translate_sync(
 }
 
 /// `gdalwarp <args> sources... dest`, as one call. Several sources merge.
-#[napi(ts_return_type = "Promise<Dataset>")]
+#[napi(catch_unwind, ts_return_type = "Promise<Dataset>")]
 pub fn warp(
     dest: String,
     sources: Vec<String>,
@@ -2065,7 +2065,7 @@ pub fn warp(
     )
 }
 
-#[napi]
+#[napi(catch_unwind)]
 pub fn warp_sync(
     dest: String,
     sources: Vec<String>,
@@ -2077,7 +2077,7 @@ pub fn warp_sync(
 }
 
 /// `ogr2ogr <args> dest sources...`, as one call.
-#[napi(ts_return_type = "Promise<Dataset>")]
+#[napi(catch_unwind, ts_return_type = "Promise<Dataset>")]
 pub fn vector_translate(
     dest: String,
     sources: Vec<String>,
@@ -2093,7 +2093,7 @@ pub fn vector_translate(
     )
 }
 
-#[napi]
+#[napi(catch_unwind)]
 pub fn vector_translate_sync(
     dest: String,
     sources: Vec<String>,
@@ -2115,7 +2115,7 @@ pub fn vector_translate_sync(
 /// One source is the "wrap this raster as a VRT without copying it" case; several
 /// are merged into a single VRT. An empty `dest` builds it in memory, as
 /// `translate` does.
-#[napi(ts_return_type = "Promise<Dataset>")]
+#[napi(catch_unwind, ts_return_type = "Promise<Dataset>")]
 pub fn build_vrt(
     dest: String,
     sources: Vec<String>,
@@ -2128,7 +2128,7 @@ pub fn build_vrt(
     })
 }
 
-#[napi]
+#[napi(catch_unwind)]
 pub fn build_vrt_sync(
     dest: String,
     sources: Vec<String>,
@@ -2209,7 +2209,7 @@ fn program_task_paths(
 ///
 /// `onProgress` runs on the JS thread while the work happens on a worker, and
 /// returning `false` from it cancels — see the progress section of the README.
-#[napi(ts_return_type = "Promise<Dataset>")]
+#[napi(catch_unwind, ts_return_type = "Promise<Dataset>")]
 pub fn dem_process(
     dest: String,
     source: String,
@@ -2228,7 +2228,7 @@ pub fn dem_process(
     }))
 }
 
-#[napi]
+#[napi(catch_unwind)]
 pub fn dem_process_sync(
     dest: String,
     source: String,

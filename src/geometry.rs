@@ -217,7 +217,7 @@ fn take_owned_string(ptr: *mut c_char) -> String {
 #[napi]
 impl JsGeometry {
     /// Parse a WKT string: `'POINT (10 20)'`, `'POLYGON ((…))'`, …
-    #[napi(factory)]
+    #[napi(catch_unwind, factory)]
     pub fn from_wkt(wkt: String) -> Result<Self> {
         ensure_initialized();
         let _guard = lock_gdal_shared();
@@ -225,7 +225,7 @@ impl JsGeometry {
     }
 
     /// Parse a WKB buffer, as `geometryToWkb` produces.
-    #[napi(factory)]
+    #[napi(catch_unwind, factory)]
     pub fn from_wkb(wkb: Buffer) -> Result<Self> {
         ensure_initialized();
         let _guard = lock_gdal_shared();
@@ -234,7 +234,7 @@ impl JsGeometry {
 
     /// Parse a GeoJSON geometry — the same `{ type, coordinates }` object every
     /// other part of this binding takes and returns.
-    #[napi(factory)]
+    #[napi(catch_unwind, factory)]
     pub fn from_json(geometry: Value) -> Result<Self> {
         ensure_initialized();
         let _guard = lock_gdal_shared();
@@ -244,7 +244,7 @@ impl JsGeometry {
     /// The canonical type name — `Point`, `LineString`, `Polygon`,
     /// `MultiPolygon`, `GeometryCollection`, … with a ` Z` / ` M` suffix when the
     /// coordinates carry one.
-    #[napi(getter, js_name = "type")]
+    #[napi(catch_unwind, getter, js_name = "type")]
     pub fn geometry_type(&self) -> Result<String> {
         ensure_initialized();
         let _guard = lock_gdal_shared();
@@ -254,7 +254,7 @@ impl JsGeometry {
     /// Whether the geometry holds nothing — an empty collection, or a ring with
     /// no points. Not the same as "absent": a `null` where a geometry is expected
     /// is `null`.
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn is_empty(&self) -> Result<bool> {
         ensure_initialized();
         let _guard = lock_gdal_shared();
@@ -265,7 +265,7 @@ impl JsGeometry {
     /// or a `LineString` and is `0` for anything else. A polygon's points live in
     /// its rings; this does not walk into them, and saying so beats returning a
     /// number that looks like an answer.
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn point_count(&self) -> Result<u32> {
         ensure_initialized();
         let _guard = lock_gdal_shared();
@@ -273,7 +273,7 @@ impl JsGeometry {
     }
 
     /// The geometry as WKT.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn to_wkt(&self) -> Result<String> {
         ensure_initialized();
         let _guard = lock_gdal_shared();
@@ -281,7 +281,7 @@ impl JsGeometry {
     }
 
     /// The geometry as WKB, as a `Buffer`.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn to_wkb(&self) -> Result<Buffer> {
         ensure_initialized();
         let _guard = lock_gdal_shared();
@@ -290,7 +290,7 @@ impl JsGeometry {
 
     /// The geometry as a GeoJSON object — exactly what `featuresSync()` puts in a
     /// feature's `geometry`.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn to_json(&self) -> Result<Value> {
         ensure_initialized();
         let _guard = lock_gdal_shared();
@@ -299,7 +299,7 @@ impl JsGeometry {
 
     /// The same as `toJson()`. Both names exist because one reads better at a
     /// call site than the other, and neither costs anything.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn to_object(&self) -> Result<Value> {
         self.to_json()
     }
@@ -311,7 +311,7 @@ impl JsGeometry {
     ///
     /// Typed as `any` because the nesting depth is the geometry's type; the
     /// accessors below are the typed way to the same numbers.
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn coordinates(&self) -> Result<Option<Value>> {
         ensure_initialized();
         let _guard = lock_gdal_shared();
@@ -323,20 +323,20 @@ impl JsGeometry {
 
     /// A `Point`'s x, or `null` — for every other shape this is `null` rather than
     /// a wrong number, so it can be read without checking `type` first.
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn x(&self) -> Result<Option<f64>> {
         self.point_scalar(gdal_sys::OGR_G_GetX)
     }
 
     /// A `Point`'s y. `null` for anything else.
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn y(&self) -> Result<Option<f64>> {
         self.point_scalar(gdal_sys::OGR_G_GetY)
     }
 
     /// A `Point`'s z — `null` unless the geometry actually carries a Z, so a 2D
     /// point reports nothing rather than a `0` that reads like a height.
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn z(&self) -> Result<Option<f64>> {
         ensure_initialized();
         let _guard = lock_gdal_shared();
@@ -350,7 +350,7 @@ impl JsGeometry {
     /// `[x, y]`, or `[x, y, z]` when the geometry carries a Z. A `Point` yields
     /// one. `null` for a polygon or a collection, which have `rings` and
     /// `children` instead.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn points(&self) -> Result<Option<Vec<Vec<f64>>>> {
         ensure_initialized();
         let _guard = lock_gdal_shared();
@@ -362,7 +362,7 @@ impl JsGeometry {
 
     /// A polygon's rings, exterior first, each ring a point list. `null` for
     /// anything that is not a polygon.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn rings(&self) -> Result<Option<Vec<Vec<Vec<f64>>>>> {
         ensure_initialized();
         let _guard = lock_gdal_shared();
@@ -374,7 +374,7 @@ impl JsGeometry {
 
     /// A polygon's exterior ring — the same as `rings[0]`. `null` for anything
     /// else, including a polygon with no rings at all.
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn exterior_ring(&self) -> Result<Option<Vec<Vec<f64>>>> {
         ensure_initialized();
         let _guard = lock_gdal_shared();
@@ -386,7 +386,7 @@ impl JsGeometry {
 
     /// A polygon's holes, in order. `[]` for a polygon that has none — an answer
     /// rather than an absence — and `null` for anything that is not a polygon.
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn interior_rings(&self) -> Result<Option<Vec<Vec<Vec<f64>>>>> {
         ensure_initialized();
         let _guard = lock_gdal_shared();
@@ -406,7 +406,7 @@ impl JsGeometry {
     ///
     /// Each part is **copied out** of GDAL, so it stays valid on its own — and so
     /// a caller can walk a tree without worrying about which handle owns what.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn children(&self) -> Result<Option<Vec<JsGeometry>>> {
         ensure_initialized();
         let _guard = lock_gdal_shared();
@@ -432,7 +432,7 @@ impl JsGeometry {
     /// Note this is the box *of this geometry*, not of any CRS: a line that
     /// crosses the antimeridian gets a box that spans the world, which is what
     /// GDAL's own envelope says too.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn envelope(&self) -> Result<Option<GeometryEnvelope>> {
         ensure_initialized();
         let _guard = lock_gdal_shared();
@@ -450,7 +450,7 @@ impl JsGeometry {
 
     /// Area in the square units of the geometry's coordinates. Zero for anything
     /// that is not a surface — a point or a line.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn area(&self) -> Result<f64> {
         ensure_initialized();
         let _guard = lock_gdal_shared();
@@ -459,7 +459,7 @@ impl JsGeometry {
 
     /// Length in the units of the geometry's coordinates: the perimeter of a
     /// polygon, the length of a line, zero for a point.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn length(&self) -> Result<f64> {
         ensure_initialized();
         let _guard = lock_gdal_shared();
@@ -468,7 +468,7 @@ impl JsGeometry {
 
     /// A copy. Only needed when two independent handles to the same shape are
     /// wanted — nothing else here mutates in place.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn clone(&self) -> Result<JsGeometry> {
         ensure_initialized();
         let _guard = lock_gdal_shared();
@@ -476,7 +476,7 @@ impl JsGeometry {
     }
 
     /// The same geometry with its Z coordinate dropped, as a new object.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn flatten_to_2d(&self) -> Result<JsGeometry> {
         ensure_initialized();
         let _guard = lock_gdal_shared();
@@ -488,7 +488,7 @@ impl JsGeometry {
     /// The same geometry with every segment no longer than `maxLength`, as a new
     /// object — `OGR_G_Segmentize`. This is what makes a line follow a projection
     /// instead of cutting the corner.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn segmentize(&self, max_length: f64) -> Result<JsGeometry> {
         // Written as a positive test because NaN fails every comparison: `<= 0`
         // would let it through.
@@ -507,7 +507,7 @@ impl JsGeometry {
 
     /// The same geometry with X and Y exchanged, as a new object — the fix for a
     /// file whose coordinates came in the wrong order.
-    #[napi(js_name = "swapXY")]
+    #[napi(catch_unwind, js_name = "swapXY")]
     pub fn swap_xy(&self) -> Result<JsGeometry> {
         ensure_initialized();
         let _guard = lock_gdal_shared();
@@ -521,7 +521,7 @@ impl JsGeometry {
     /// Both ends are named because a bare OGR geometry carries no CRS of its own —
     /// unlike a dataset or a layer, which know theirs. For a feature read with
     /// `featuresSync()`, the layer's `spatialRefWkt` is the `from`.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn transform(&self, from: &JsSpatialRef, to: &JsSpatialRef) -> Result<JsGeometry> {
         ensure_initialized();
         let _guard = lock_gdal_shared();
@@ -539,43 +539,43 @@ impl JsGeometry {
 #[napi]
 impl JsGeometry {
     /// Whether the two geometries share any point at all.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn intersects(&self, other: &JsGeometry) -> Result<bool> {
         self.predicate(other, gdal_sys::OGR_G_Intersects)
     }
 
     /// Whether `other` lies entirely inside this geometry.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn contains(&self, other: &JsGeometry) -> Result<bool> {
         self.predicate(other, gdal_sys::OGR_G_Contains)
     }
 
     /// The inverse of `contains`.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn within(&self, other: &JsGeometry) -> Result<bool> {
         self.predicate(other, gdal_sys::OGR_G_Within)
     }
 
     /// Whether the interiors cross — the relation two lines have at a point.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn crosses(&self, other: &JsGeometry) -> Result<bool> {
         self.predicate(other, gdal_sys::OGR_G_Crosses)
     }
 
     /// Whether the two touch at their boundaries and nowhere else.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn touches(&self, other: &JsGeometry) -> Result<bool> {
         self.predicate(other, gdal_sys::OGR_G_Touches)
     }
 
     /// Whether the two overlap without either containing the other.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn overlaps(&self, other: &JsGeometry) -> Result<bool> {
         self.predicate(other, gdal_sys::OGR_G_Overlaps)
     }
 
     /// Whether the two share nothing at all.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn disjoint(&self, other: &JsGeometry) -> Result<bool> {
         self.predicate(other, gdal_sys::OGR_G_Disjoint)
     }
@@ -583,14 +583,14 @@ impl JsGeometry {
     /// Whether the two are geometrically identical — which is not the same as
     /// `===`, and not the same as one spelling. Two differently-written WKTs for
     /// the same square are equal here.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn equals(&self, other: &JsGeometry) -> Result<bool> {
         self.predicate(other, gdal_sys::OGR_G_Equals)
     }
 
     /// The shortest distance between the two, in the units of their coordinates.
     /// Zero when they intersect.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn distance(&self, other: &JsGeometry) -> Result<f64> {
         require_geos()?;
         ensure_initialized();
@@ -601,14 +601,14 @@ impl JsGeometry {
     /// Whether the geometry is well-formed — no self-intersecting rings, no
     /// repeated points. `false` for a geometry that is merely empty is not the
     /// same thing: see `isEmpty`.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn is_valid(&self) -> Result<bool> {
         self.unary(gdal_sys::OGR_G_IsValid)
     }
 
     /// Whether the geometry has no self-intersections — the weaker question a
     /// line can answer.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn is_simple(&self) -> Result<bool> {
         self.unary(gdal_sys::OGR_G_IsSimple)
     }
@@ -617,7 +617,7 @@ impl JsGeometry {
     ///
     /// `quadSegments` is how many segments GDAL uses to approximate a quarter
     /// circle (default 30, as everywhere in GDAL): more is smoother and heavier.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn buffer(&self, distance: f64, quad_segments: Option<i32>) -> Result<JsGeometry> {
         require_geos()?;
         if !distance.is_finite() {
@@ -635,7 +635,7 @@ impl JsGeometry {
     }
 
     /// The representative point of the geometry, as a new `Point`.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn centroid(&self) -> Result<JsGeometry> {
         require_geos()?;
         ensure_initialized();
@@ -652,7 +652,7 @@ impl JsGeometry {
     }
 
     /// The smallest convex polygon containing the geometry, as a new object.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn convex_hull(&self) -> Result<JsGeometry> {
         require_geos()?;
         ensure_initialized();
@@ -661,7 +661,7 @@ impl JsGeometry {
     }
 
     /// The geometry simplified within `tolerance`, as a new object — Douglas-Peucker.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn simplify(&self, tolerance: f64) -> Result<JsGeometry> {
         require_geos()?;
         if !(tolerance.is_finite() && tolerance >= 0.0) {
@@ -675,32 +675,32 @@ impl JsGeometry {
     }
 
     /// The union of the two, as a new object.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn union(&self, other: &JsGeometry) -> Result<JsGeometry> {
         self.overlay(other, gdal_sys::OGR_G_Union)
     }
 
     /// The part the two share, as a new object.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn intersection(&self, other: &JsGeometry) -> Result<JsGeometry> {
         self.overlay(other, gdal_sys::OGR_G_Intersection)
     }
 
     /// The part of this geometry that `other` does not cover, as a new object.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn difference(&self, other: &JsGeometry) -> Result<JsGeometry> {
         self.overlay(other, gdal_sys::OGR_G_Difference)
     }
 
     /// The part covered by exactly one of the two, as a new object.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn sym_difference(&self, other: &JsGeometry) -> Result<JsGeometry> {
         self.overlay(other, gdal_sys::OGR_G_SymDifference)
     }
 
     /// Whether the geometry is a ring — closed and not self-intersecting, the
     /// question a `LinearRing` answers yes to. No GEOS needed.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn is_ring(&self) -> Result<bool> {
         ensure_initialized();
         let _guard = lock_gdal_shared();
@@ -709,7 +709,7 @@ impl JsGeometry {
 
     /// A valid version of the geometry, as a new object — GEOS's repair for a
     /// self-intersecting polygon.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn make_valid(&self) -> Result<JsGeometry> {
         require_geos()?;
         ensure_initialized();
@@ -719,7 +719,7 @@ impl JsGeometry {
 
     /// The boundary of the geometry, as a new object: a polygon's rings, a line's
     /// endpoints. Needs GEOS.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn boundary(&self) -> Result<JsGeometry> {
         require_geos()?;
         ensure_initialized();
@@ -729,7 +729,7 @@ impl JsGeometry {
 
     /// The geometry simplified within `tolerance` while keeping its topology —
     /// `simplify`'s shape-preserving cousin. Needs GEOS.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn simplify_preserve_topology(&self, tolerance: f64) -> Result<JsGeometry> {
         require_geos()?;
         if !(tolerance.is_finite() && tolerance >= 0.0) {
@@ -750,7 +750,7 @@ impl JsGeometry {
     /// A point guaranteed to lie on the geometry, as a new `Point` — the
     /// representative point `centroid` is not: a centroid can fall outside a
     /// concave shape. Needs GEOS.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn point_on_surface(&self) -> Result<JsGeometry> {
         require_geos()?;
         ensure_initialized();
@@ -760,7 +760,7 @@ impl JsGeometry {
 
     /// The union of the parts of a collection, as one geometry, without a second
     /// operand — `union` for a geometry that is already many. Needs GEOS.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn unary_union(&self) -> Result<JsGeometry> {
         require_geos()?;
         ensure_initialized();
@@ -771,7 +771,7 @@ impl JsGeometry {
     /// The union of every polygon in this geometry — OGR's `UnionCascaded`, which is
     /// what a `MULTIPOLYGON` wants and is cheaper than folding `union()` over the parts.
     /// The reference exposes it under this name. Needs GEOS.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn union_cascaded(&self) -> Result<JsGeometry> {
         require_geos()?;
         ensure_initialized();
@@ -782,7 +782,7 @@ impl JsGeometry {
     /// A concave hull around the geometry: the tight shape `convexHull` is too
     /// generous to be. `ratio` runs from 0 (tightest) to 1 (the convex hull);
     /// `allowHoles` defaults to false. Needs GEOS.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn concave_hull(&self, ratio: f64, allow_holes: Option<bool>) -> Result<JsGeometry> {
         require_geos()?;
         if !(ratio.is_finite() && (0.0..=1.0).contains(&ratio)) {
@@ -804,7 +804,7 @@ impl JsGeometry {
     /// The geometry put into a canonical form — rings wound the same way, points
     /// where GEOS would put them — as a new object. Same shape, standard spelling;
     /// needed when two geometries are to be compared byte for byte. Requires GEOS.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn normalize(&self) -> Result<JsGeometry> {
         require_geos()?;
         ensure_initialized();
@@ -814,7 +814,7 @@ impl JsGeometry {
 
     /// The geometry snapped to a `grid_size` precision grid, as a new object — how
     /// points an epsilon apart are made to be the same point. Needs GEOS.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn set_precision(&self, grid_size: f64) -> Result<JsGeometry> {
         require_geos()?;
         if !(grid_size.is_finite() && grid_size >= 0.0) {
@@ -828,7 +828,7 @@ impl JsGeometry {
     }
 
     /// The geometry as GML — the XML encoding OGR can also read. No GEOS needed.
-    #[napi(js_name = "toGML")]
+    #[napi(catch_unwind, js_name = "toGML")]
     pub fn to_gml(&self) -> Result<String> {
         ensure_initialized();
         let _guard = lock_gdal_shared();
@@ -839,7 +839,7 @@ impl JsGeometry {
 
     /// The geometry as KML. `altitudeMode` is KML's own (`'clampToGround'`,
     /// `'relativeToGround'`, `'absolute'`); omit it for GDAL's default.
-    #[napi(js_name = "toKML")]
+    #[napi(catch_unwind, js_name = "toKML")]
     pub fn to_kml(&self, altitude_mode: Option<String>) -> Result<String> {
         ensure_initialized();
         let _guard = lock_gdal_shared();

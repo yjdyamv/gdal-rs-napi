@@ -157,7 +157,7 @@ trampoline_pool! {
 /// The shell owns this: `addPixelFunc` there keeps the function itself, and the
 /// trampoline reaches it by slot through the global dispatcher. Not meant to be called
 /// on its own.
-#[napi]
+#[napi(catch_unwind)]
 pub fn register_pixel_func(env: Env, name: String) -> Result<u32> {
     ensure_initialized();
     let name_text = CString::new(name.clone())
@@ -218,7 +218,11 @@ unsafe fn dispatch(
     line_space: c_int,
     args: gdal_sys::CSLConstList,
 ) -> gdal_sys::CPLErr::Type {
-    let outcome = unsafe {
+    // A panic must not unwind into GDAL, which would be undefined behaviour. This is
+    // the same rule `programs::progress_trampoline` follows; here a panicking pixel
+    // function counts as a failure and is reported through GDAL, like a returned
+    // error.
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
         evaluate(
             slot,
             papo_sources,
@@ -232,11 +236,15 @@ unsafe fn dispatch(
             line_space,
             args,
         )
-    };
+    }));
     match outcome {
-        Ok(()) => gdal_sys::CPLErr::CE_None,
-        Err(message) => {
+        Ok(Ok(())) => gdal_sys::CPLErr::CE_None,
+        Ok(Err(message)) => {
             report(&message);
+            gdal_sys::CPLErr::CE_Failure
+        }
+        Err(_) => {
+            report("the pixel function panicked");
             gdal_sys::CPLErr::CE_Failure
         }
     }

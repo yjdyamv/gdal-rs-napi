@@ -160,7 +160,7 @@ pub struct FileStat {
 /// const bytes = gdal.fs.readFile('/vsimem/data.tif')
 /// const { size, isFile } = gdal.fs.stat('/vsimem/data.tif')
 /// ```
-#[napi(namespace = "fs")]
+#[napi(catch_unwind, namespace = "fs")]
 pub fn read_file(path: String) -> Result<Buffer> {
     ensure_initialized();
     let _guard = lock_gdal_shared();
@@ -210,7 +210,7 @@ pub fn read_file(path: String) -> Result<Buffer> {
 /// gdal.fs.writeFile('/vsimem/data.tif', bytes)
 /// gdal.fs.writeFile('/tmp/note.txt', Buffer.from('hello'))
 /// ```
-#[napi(namespace = "fs")]
+#[napi(catch_unwind, namespace = "fs")]
 pub fn write_file(path: String, data: Buffer) -> Result<()> {
     ensure_initialized();
     let _guard = lock_gdal_shared();
@@ -232,13 +232,13 @@ pub fn write_file(path: String, data: Buffer) -> Result<()> {
 }
 
 /// Whether anything is at this path.
-#[napi(namespace = "fs")]
+#[napi(catch_unwind, namespace = "fs")]
 pub fn exists(path: String) -> bool {
     stat_of(&path).is_some()
 }
 
 /// What is at this path, or `null` when there is nothing there.
-#[napi(namespace = "fs")]
+#[napi(catch_unwind, namespace = "fs")]
 pub fn stat(path: String) -> Option<FileStat> {
     let (_, stat) = stat_of(&path)?;
     let mode = mode_of(&stat);
@@ -251,7 +251,7 @@ pub fn stat(path: String) -> Option<FileStat> {
 }
 
 /// Create a directory. Like `mkdir(2)`, the parent has to be there already.
-#[napi(namespace = "fs")]
+#[napi(catch_unwind, namespace = "fs")]
 pub fn mkdir(path: String) -> Result<()> {
     ensure_initialized();
     let _guard = lock_gdal_shared();
@@ -262,7 +262,7 @@ pub fn mkdir(path: String) -> Result<()> {
 }
 
 /// Create a directory and every missing parent, like `mkdir -p`.
-#[napi(namespace = "fs")]
+#[napi(catch_unwind, namespace = "fs")]
 pub fn mkdir_recursive(path: String) -> Result<()> {
     ensure_initialized();
     let _guard = lock_gdal_shared();
@@ -273,7 +273,7 @@ pub fn mkdir_recursive(path: String) -> Result<()> {
 }
 
 /// Remove an empty directory.
-#[napi(namespace = "fs")]
+#[napi(catch_unwind, namespace = "fs")]
 pub fn rmdir(path: String) -> Result<()> {
     ensure_initialized();
     let _guard = lock_gdal_shared();
@@ -284,7 +284,7 @@ pub fn rmdir(path: String) -> Result<()> {
 }
 
 /// Remove a directory and everything under it, like `rm -rf`.
-#[napi(namespace = "fs")]
+#[napi(catch_unwind, namespace = "fs")]
 pub fn rmdir_recursive(path: String) -> Result<()> {
     ensure_initialized();
     let _guard = lock_gdal_shared();
@@ -295,7 +295,7 @@ pub fn rmdir_recursive(path: String) -> Result<()> {
 }
 
 /// Remove a file.
-#[napi(namespace = "fs")]
+#[napi(catch_unwind, namespace = "fs")]
 pub fn unlink(path: String) -> Result<()> {
     ensure_initialized();
     let _guard = lock_gdal_shared();
@@ -309,7 +309,7 @@ pub fn unlink(path: String) -> Result<()> {
 ///
 /// A rename stays inside one file system: moving a file out of `/vsimem/` and onto
 /// disk is a copy and a delete, which is `copyFile` / `unlink`, not this.
-#[napi(namespace = "fs")]
+#[napi(catch_unwind, namespace = "fs")]
 pub fn rename(from: String, to: String) -> Result<()> {
     ensure_initialized();
     let _guard = lock_gdal_shared();
@@ -324,7 +324,7 @@ pub fn rename(from: String, to: String) -> Result<()> {
 ///
 /// Unlike `rename`, this crosses file systems — `/vsicurl/` to `/vsimem/`, say —
 /// which is exactly what a copy is for.
-#[napi(namespace = "fs")]
+#[napi(catch_unwind, namespace = "fs")]
 pub fn copy_file(from: String, to: String) -> Result<()> {
     ensure_initialized();
     let _guard = lock_gdal_shared();
@@ -351,7 +351,7 @@ pub fn copy_file(from: String, to: String) -> Result<()> {
 ///
 /// The `.` and `..` entries GDAL reports for a real directory are left out, the way
 /// `fs.readdir` leaves them out, so an empty directory reads as `[]`.
-#[napi(namespace = "fs")]
+#[napi(catch_unwind, namespace = "fs")]
 pub fn read_dir(path: String, recursive: Option<bool>) -> Result<Vec<String>> {
     ensure_initialized();
     let _guard = lock_gdal_shared();
@@ -370,7 +370,7 @@ pub fn read_dir(path: String, recursive: Option<bool>) -> Result<Vec<String>> {
 /// so `/vsimem/out/**/*.tif` is a whole tree. The pattern names the file system,
 /// which is the point: `/vsimem/part*.tif` and `/vsizip/archive.zip/*.tif` are the
 /// same call here but not the same source. No matches is an empty array.
-#[napi(namespace = "fs")]
+#[napi(catch_unwind, namespace = "fs")]
 pub fn glob(pattern: String) -> Result<Vec<String>> {
     ensure_initialized();
     let _guard = lock_gdal_shared();
@@ -392,7 +392,7 @@ pub fn glob(pattern: String) -> Result<Vec<String>> {
 /// Free space in bytes on the file system holding this path.
 ///
 /// `0` when GDAL cannot say — a virtual file system with no size, a `/vsicurl/` URL.
-#[napi(namespace = "fs")]
+#[napi(catch_unwind, namespace = "fs")]
 pub fn disk_free_space(path: String) -> Result<f64> {
     ensure_initialized();
     let _guard = lock_gdal_shared();
@@ -406,7 +406,7 @@ pub fn disk_free_space(path: String) -> Result<f64> {
 /// `false` for the remote ones — `/vsicurl/`, `/vsis3/` — which is what a caller
 /// wants to know before treating a read as cheap. Local here includes `/vsimem/`,
 /// whose bytes do live in this process.
-#[napi(namespace = "fs")]
+#[napi(catch_unwind, namespace = "fs")]
 pub fn is_local(path: String) -> Result<bool> {
     ensure_initialized();
     let _guard = lock_gdal_shared();
@@ -419,7 +419,7 @@ pub fn is_local(path: String) -> Result<bool> {
 /// `/vsicurl/`, `/vsiaz/` and the rest. A no-op when nothing was fetched.
 ///
 /// It clears process-global state, so it takes the exclusive side of the lock.
-#[napi(namespace = "fs")]
+#[napi(catch_unwind, namespace = "fs")]
 pub fn clear_curl_cache() {
     let _guard = lock_gdal();
     unsafe { gdal_sys::VSICurlClearCache() };

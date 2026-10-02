@@ -28,7 +28,7 @@ use crate::runtime::{c_string, ensure_initialized, lock_gdal};
 /// gdal.config.get('GDAL_NUM_THREADS')            // null until something sets it
 /// gdal.config.get('GDAL_NUM_THREADS', 'ALL_CPUS') // 'ALL_CPUS'
 /// ```
-#[napi(namespace = "config")]
+#[napi(catch_unwind, namespace = "config")]
 pub fn get(key: String, default_value: Option<String>) -> Result<Option<String>> {
     ensure_initialized();
     // The exclusive side, and the one read-only call here that needs it. Not
@@ -72,7 +72,7 @@ pub fn get(key: String, default_value: Option<String>) -> Result<Option<String>>
 /// gdal.config.set('CPL_CURL_VERBOSE', 'YES') // any curl-backed driver
 /// gdal.config.set('MY_OPTION', null)         // clear it again
 /// ```
-#[napi(namespace = "config")]
+#[napi(catch_unwind, namespace = "config")]
 pub fn set(key: String, value: Option<String>) -> Result<()> {
     ensure_initialized();
     let _guard = lock_gdal();

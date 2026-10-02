@@ -145,19 +145,19 @@ impl JsGroup {
 #[napi]
 impl JsGroup {
     /// The group's own name — the empty string for a root group.
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn name(&self) -> String {
         c_string(unsafe { gdal_sys::GDALGroupGetName(self.handle) })
     }
 
     /// The name including its parents, e.g. `/group/sub`.
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn full_name(&self) -> String {
         c_string(unsafe { gdal_sys::GDALGroupGetFullName(self.handle) })
     }
 
     /// The names of the arrays in this group.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn array_names(&self) -> Result<Vec<String>> {
         ensure_initialized();
         let _guard = lock_gdal();
@@ -167,7 +167,7 @@ impl JsGroup {
     }
 
     /// The names of the sub-groups of this group.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn group_names(&self) -> Result<Vec<String>> {
         ensure_initialized();
         let _guard = lock_gdal();
@@ -177,7 +177,7 @@ impl JsGroup {
     }
 
     /// The group's own attributes — a whole group can carry metadata as attributes.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn attributes(&self) -> Result<Vec<JsAttribute>> {
         ensure_initialized();
         let _guard = lock_gdal();
@@ -199,7 +199,7 @@ impl JsGroup {
     }
 
     /// This group's dimensions, by name and size.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn dimensions(&self) -> Result<Vec<JsDimension>> {
         ensure_initialized();
         let _guard = lock_gdal();
@@ -207,7 +207,7 @@ impl JsGroup {
     }
 
     /// One array by name, or `null` when this group has no such array.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn open_array(&self, name: String) -> Result<Option<JsMdArray>> {
         ensure_initialized();
         let _guard = lock_gdal();
@@ -215,7 +215,7 @@ impl JsGroup {
     }
 
     /// One sub-group by name, or `null`.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn open_group(&self, name: String) -> Result<Option<JsGroup>> {
         ensure_initialized();
         let _guard = lock_gdal();
@@ -230,7 +230,7 @@ impl JsGroup {
     }
 
     /// One attribute by name, or `null`.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn open_attribute(&self, name: String) -> Result<Option<JsAttribute>> {
         ensure_initialized();
         let _guard = lock_gdal();
@@ -243,7 +243,7 @@ impl JsGroup {
     }
 
     /// One dimension by name, or `null`.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn open_dimension(&self, name: String) -> Result<Option<JsDimension>> {
         ensure_initialized();
         let _guard = lock_gdal();
@@ -254,7 +254,7 @@ impl JsGroup {
     }
 
     /// GDAL's own metadata about the group — `IMAGE_STRUCTURE` and friends.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn structural_info(&self) -> Result<HashMap<String, String>> {
         ensure_initialized();
         let _guard = lock_gdal();
@@ -301,24 +301,24 @@ impl JsMdArray {
 
 #[napi]
 impl JsMdArray {
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn name(&self) -> String {
         c_string(unsafe { gdal_sys::GDALMDArrayGetName(self.handle) })
     }
 
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn full_name(&self) -> String {
         c_string(unsafe { gdal_sys::GDALMDArrayGetFullName(self.handle) })
     }
 
     /// How many dimensions the array has.
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn dimension_count(&self) -> u32 {
         (unsafe { gdal_sys::GDALMDArrayGetDimensionCount(self.handle) }) as u32
     }
 
     /// The size along each dimension, in order.
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn shape(&self) -> Result<Vec<u32>> {
         ensure_initialized();
         let _guard = lock_gdal();
@@ -330,7 +330,7 @@ impl JsMdArray {
     }
 
     /// The array's sample type — `'Float32'`, `'Int16'`, `'String'`, `'Compound'`.
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn data_type(&self) -> Result<String> {
         ensure_initialized();
         let _guard = lock_gdal();
@@ -341,7 +341,7 @@ impl JsMdArray {
     }
 
     /// The array's unit, or `null`.
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn unit(&self) -> Result<Option<String>> {
         ensure_initialized();
         let _guard = lock_gdal();
@@ -350,7 +350,7 @@ impl JsMdArray {
     }
 
     /// The array's missing-data value, or `null` when it has none.
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn no_data_value(&self) -> Result<Option<f64>> {
         ensure_initialized();
         let _guard = lock_gdal();
@@ -361,7 +361,7 @@ impl JsMdArray {
     }
 
     /// The offset of a scaled array. `null` when it carries none.
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn offset(&self) -> Result<Option<f64>> {
         ensure_initialized();
         let _guard = lock_gdal();
@@ -371,7 +371,7 @@ impl JsMdArray {
     }
 
     /// The scale of a scaled array. `null` when it carries none.
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn scale(&self) -> Result<Option<f64>> {
         ensure_initialized();
         let _guard = lock_gdal();
@@ -381,7 +381,7 @@ impl JsMdArray {
     }
 
     /// The array's CRS, or `null` when it has none.
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn srs(&self) -> Result<Option<JsSpatialRef>> {
         ensure_initialized();
         let _guard = lock_gdal();
@@ -399,11 +399,13 @@ impl JsMdArray {
             }
             wkt
         };
-        Ok(Some(JsSpatialRef::from_definition(wkt)?))
+        // Not the `fromDefinition` factory: it takes the shared side of the lock, and
+        // this already holds the write side. Same call, without the nested lock.
+        Ok(Some(JsSpatialRef::build_from_definition(&wkt)?))
     }
 
     /// The array's dimensions, in order.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn dimensions(&self) -> Result<Vec<JsDimension>> {
         ensure_initialized();
         let _guard = lock_gdal();
@@ -411,7 +413,7 @@ impl JsMdArray {
     }
 
     /// The array's attributes.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn attributes(&self) -> Result<Vec<JsAttribute>> {
         ensure_initialized();
         let _guard = lock_gdal();
@@ -433,7 +435,7 @@ impl JsMdArray {
     }
 
     /// One attribute by name, or `null`.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn open_attribute(&self, name: String) -> Result<Option<JsAttribute>> {
         ensure_initialized();
         let _guard = lock_gdal();
@@ -446,7 +448,7 @@ impl JsMdArray {
     }
 
     /// GDAL's own metadata about the array.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn structural_info(&self) -> Result<HashMap<String, String>> {
         ensure_initialized();
         let _guard = lock_gdal();
@@ -459,75 +461,102 @@ impl JsMdArray {
     /// multidimensional counterpart of `readPixels`. `start` and `count` are one
     /// entry per dimension; with none, the whole array is read. A `String` or
     /// `Compound` array has no plain byte form and is refused.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn read(&self, options: Option<MdReadOptions>) -> Result<Buffer> {
         ensure_initialized();
         let _guard = lock_gdal();
 
         let data_type = unsafe { gdal_sys::GDALMDArrayGetDataType(self.handle) };
-        if !is_numeric(data_type) {
-            unsafe { gdal_sys::GDALExtendedDataTypeRelease(data_type) };
-            return Err(bad_argument(
-                "only a numeric MDArray can be read as bytes; a String or Compound one cannot",
-            ));
-        }
-        let sample_bytes = unsafe { gdal_sys::GDALExtendedDataTypeGetSize(data_type) };
+        // The type handle is released once on every path out, which the closure makes
+        // structural rather than a `Release` repeated at each early return.
+        let outcome = (|| -> Result<Vec<u8>> {
+            if !is_numeric(data_type) {
+                return Err(bad_argument(
+                    "only a numeric MDArray can be read as bytes; a String or Compound one cannot",
+                ));
+            }
+            let sample_bytes = unsafe { gdal_sys::GDALExtendedDataTypeGetSize(data_type) };
 
-        let shape: Vec<u64> = self
-            .dimension_list()
-            .into_iter()
-            .map(|dimension| dimension.size() as u64)
-            .collect();
-        let options = options.unwrap_or_default();
-        let start: Vec<u64> = match options.start {
-            Some(start) if start.len() == shape.len() => {
-                start.iter().map(|value| *value as u64).collect()
-            }
-            Some(start) => {
-                unsafe { gdal_sys::GDALExtendedDataTypeRelease(data_type) };
-                return Err(bad_argument(format!(
-                    "start has to name every dimension: {} of them, got {}",
-                    shape.len(),
-                    start.len()
-                )));
-            }
-            None => vec![0; shape.len()],
-        };
-        let count: Vec<usize> = match options.count {
-            Some(count) if count.len() == shape.len() => {
-                count.iter().map(|c| *c as usize).collect()
-            }
-            Some(count) => {
-                unsafe { gdal_sys::GDALExtendedDataTypeRelease(data_type) };
-                return Err(bad_argument(format!(
-                    "count has to name every dimension: {} of them, got {}",
-                    shape.len(),
-                    count.len()
-                )));
-            }
-            None => shape.iter().map(|size| *size as usize).collect(),
-        };
+            let shape: Vec<u64> = self
+                .dimension_list()
+                .into_iter()
+                .map(|dimension| dimension.size() as u64)
+                .collect();
+            let options = options.unwrap_or_default();
+            let start: Vec<u64> = match options.start {
+                Some(start) if start.len() == shape.len() => {
+                    start.iter().map(|value| *value as u64).collect()
+                }
+                Some(start) => {
+                    return Err(bad_argument(format!(
+                        "start has to name every dimension: {} of them, got {}",
+                        shape.len(),
+                        start.len()
+                    )));
+                }
+                None => vec![0; shape.len()],
+            };
+            let count: Vec<usize> = match options.count {
+                Some(count) if count.len() == shape.len() => {
+                    count.iter().map(|c| *c as usize).collect()
+                }
+                Some(count) => {
+                    return Err(bad_argument(format!(
+                        "count has to name every dimension: {} of them, got {}",
+                        shape.len(),
+                        count.len()
+                    )));
+                }
+                None => shape.iter().map(|size| *size as usize).collect(),
+            };
 
-        let elements: usize = count.iter().product();
-        let mut bytes = vec![0u8; elements * sample_bytes];
-        let status = unsafe {
-            gdal_sys::GDALMDArrayRead(
-                self.handle,
-                start.as_ptr(),
-                count.as_ptr(),
-                std::ptr::null(),
-                std::ptr::null(),
-                data_type,
-                bytes.as_mut_ptr().cast(),
-                std::ptr::null(),
-                0,
-            )
-        };
+            // The window has to sit inside the array. GDAL would otherwise read
+            // whatever an out-of-range start or count pointed at, so it is checked
+            // here rather than left to it.
+            for (axis, ((&start, &count), &size)) in
+                start.iter().zip(&count).zip(&shape).enumerate()
+            {
+                let end = start.checked_add(count as u64);
+                if start > size || end.is_none_or(|end| end > size) {
+                    return Err(bad_argument(format!(
+                        "the window on dimension {axis} starts at {start} for {count} element(s), \
+                         which runs past that dimension's size of {size}"
+                    )));
+                }
+            }
+
+            // `checked_mul` rather than `*`: a window large enough to overflow `usize`
+            // is refused, not wrapped into a small allocation the read would then
+            // overrun.
+            let bytes = count
+                .iter()
+                .try_fold(1usize, |product, &count| product.checked_mul(count))
+                .and_then(|elements| elements.checked_mul(sample_bytes))
+                .ok_or_else(|| {
+                    bad_argument("the requested window is too large to read in one piece")
+                })?;
+
+            let mut data = vec![0u8; bytes];
+            let status = unsafe {
+                gdal_sys::GDALMDArrayRead(
+                    self.handle,
+                    start.as_ptr(),
+                    count.as_ptr(),
+                    std::ptr::null(),
+                    std::ptr::null(),
+                    data_type,
+                    data.as_mut_ptr().cast(),
+                    std::ptr::null(),
+                    0,
+                )
+            };
+            if status == 0 {
+                return Err(bad_argument("this array could not be read"));
+            }
+            Ok(data)
+        })();
         unsafe { gdal_sys::GDALExtendedDataTypeRelease(data_type) };
-        if status == 0 {
-            return Err(bad_argument("this array could not be read"));
-        }
-        Ok(bytes.into())
+        Ok(outcome?.into())
     }
 
     /// A classic 2D view of the array, as a `Dataset` — the bridge back to the
@@ -538,7 +567,7 @@ impl JsMdArray {
     /// `HORIZONTAL_Y`; failing that, the last two. A file that leaves the axes
     /// untagged — a classic netCDF, for one — lands on that fallback, so pass
     /// `xDim` and `yDim` to say which is which.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn as_dataset(&self, options: Option<MdAsDatasetOptions>) -> Result<Option<JsDataset>> {
         ensure_initialized();
         let _guard = lock_gdal();
@@ -588,7 +617,7 @@ impl JsMdArray {
     }
 
     /// The array's validity mask, as another `MDArray`.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn get_mask(&self) -> Result<JsMdArray> {
         ensure_initialized();
         let _guard = lock_gdal();
@@ -601,7 +630,7 @@ impl JsMdArray {
 
     /// A view of the array under a GDAL view expression, e.g. `[0,::2]`. A new
     /// array; the original is unchanged.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn get_view(&self, expression: String) -> Result<JsMdArray> {
         ensure_initialized();
         let _guard = lock_gdal();
@@ -658,18 +687,18 @@ impl JsAttribute {
 
 #[napi]
 impl JsAttribute {
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn name(&self) -> String {
         c_string(unsafe { gdal_sys::GDALAttributeGetName(self.handle) })
     }
 
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn full_name(&self) -> String {
         c_string(unsafe { gdal_sys::GDALAttributeGetFullName(self.handle) })
     }
 
     /// The attribute's type as this binding names it — `'String'`, `'Float64'`, …
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn data_type(&self) -> Result<String> {
         ensure_initialized();
         let _guard = lock_gdal();
@@ -681,7 +710,7 @@ impl JsAttribute {
 
     /// The attribute's value — a string, a number, or an array of either, according
     /// to its type and how many elements it holds.
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn value(&self) -> Result<serde_json::Value> {
         ensure_initialized();
         let _guard = lock_gdal();
@@ -766,31 +795,31 @@ impl JsDimension {
 
 #[napi]
 impl JsDimension {
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn name(&self) -> String {
         c_string(unsafe { gdal_sys::GDALDimensionGetName(self.handle) })
     }
 
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn full_name(&self) -> String {
         c_string(unsafe { gdal_sys::GDALDimensionGetFullName(self.handle) })
     }
 
     /// How many elements the dimension has.
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn size(&self) -> u32 {
         (unsafe { gdal_sys::GDALDimensionGetSize(self.handle) }) as u32
     }
 
     /// The axis type: `HORIZONTAL_X` / `HORIZONTAL_Y` / `VERTICAL` / `TEMPORAL` /
     /// `PARAMETRIC`, or the empty string when GDAL does not say.
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn type_name(&self) -> String {
         c_string(unsafe { gdal_sys::GDALDimensionGetType(self.handle) })
     }
 
     /// The direction the values run in — `EAST`, `NORTH`, `UP`, … — or `null`.
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn direction(&self) -> Option<String> {
         let direction = c_string(unsafe { gdal_sys::GDALDimensionGetDirection(self.handle) });
         if direction.is_empty() {
@@ -801,7 +830,7 @@ impl JsDimension {
     }
 
     /// The coordinate variable this dimension indexes by, if it has one.
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn indexing_variable(&self) -> Result<Option<JsMdArray>> {
         ensure_initialized();
         let _guard = lock_gdal();

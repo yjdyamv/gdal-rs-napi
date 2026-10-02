@@ -115,7 +115,7 @@ impl DataType {
 
 /// Bytes per sample. Handy for turning the raw buffer returned by `readPixels`
 /// into a typed array: `new Float32Array(buf.buffer, buf.byteOffset, buf.length / gdal.bytesPerSample(t))`.
-#[napi]
+#[napi(catch_unwind)]
 pub fn bytes_per_sample(data_type: DataType) -> u32 {
     data_type.size() as u32
 }

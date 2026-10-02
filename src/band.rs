@@ -617,18 +617,18 @@ impl JsRasterBand {
     /// **0-based**, unlike GDAL's own 1-based band numbering. A mask band reports the
     /// index of the band it is the mask of — `band.mask.index === band.index` — since
     /// a mask has no number of its own (`id` is 0 for one).
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn index(&self) -> u32 {
         self.kind.parent() as u32
     }
 
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn data_type(&self) -> DataType {
         self.data_type
     }
 
     /// Band size in pixels: `[width, height]`.
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn size(&self) -> Result<Vec<u32>> {
         self.dataset.with(|dataset| {
             with_band(dataset, self.kind, |band| {
@@ -639,7 +639,7 @@ impl JsRasterBand {
     }
 
     /// Native block size: `[width, height]`.
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn block_size(&self) -> Result<Vec<u32>> {
         self.dataset.with(|dataset| {
             with_band(dataset, self.kind, |band| {
@@ -649,13 +649,13 @@ impl JsRasterBand {
         })
     }
 
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn no_data_value(&self) -> Result<Option<f64>> {
         self.dataset
             .with(|dataset| with_band(dataset, self.kind, |band| Ok(band.no_data_value())))
     }
 
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn set_no_data_value(&self, value: Option<f64>) -> Result<()> {
         self.dataset.with_mut(|dataset| {
             with_band(dataset, self.kind, |band| {
@@ -667,7 +667,7 @@ impl JsRasterBand {
     /// GDAL's colour interpretation for this band, e.g. `Red`, `GrayIndex`.
     /// Debug-formatted rather than mapped, so it stays correct as GDAL grows
     /// interpretation values.
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn color_interpretation(&self) -> Result<String> {
         self.dataset.with(|dataset| {
             with_band(dataset, self.kind, |band| {
@@ -684,7 +684,7 @@ impl JsRasterBand {
     /// `Cmyk` one, and so on. Note this is the *table's* interpretation — what the
     /// entries are — where `colorInterpretation` is the *band's* claim about its
     /// samples (`GrayIndex`, `PaletteIndex`, `RedBand`, ...).
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn palette_interpretation(&self) -> Result<Option<String>> {
         self.dataset.with(|dataset| {
             with_band(dataset, self.kind, |band| {
@@ -707,7 +707,7 @@ impl JsRasterBand {
     /// Not every driver has one to give: a band with no colour table answers `null`
     /// rather than an empty array, and `PaletteIndex` is a claim a band can make with
     /// no table behind it.
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn color_table(&self) -> Result<Option<Vec<ColorTableEntry>>> {
         self.dataset.with(|dataset| {
             with_band(dataset, self.kind, |band| {
@@ -742,7 +742,7 @@ impl JsRasterBand {
     /// sidecar next to the raster. This writes the table only — it does not change
     /// `colorInterpretation`, which is the band's own claim about its samples and is a
     /// separate thing to be right about.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn set_color_table(
         &self,
         entries: Vec<ColorTableEntry>,
@@ -772,7 +772,7 @@ impl JsRasterBand {
     /// It is GDAL's numbering, where `index` is this API's 0-based convention,
     /// and the two differ by exactly one. Zero for a band that is not in the
     /// dataset's band list, such as a mask band.
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn id(&self) -> Result<u32> {
         self.dataset.with(|dataset| {
             with_band(dataset, self.kind, |band| {
@@ -783,7 +783,7 @@ impl JsRasterBand {
 
     /// Free-text description the format carries for this band, or `null` when it
     /// has none.
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn description(&self) -> Result<Option<String>> {
         self.dataset.with(|dataset| {
             with_band(dataset, self.kind, |band| {
@@ -803,7 +803,7 @@ impl JsRasterBand {
     /// `description` getter and from any other GDAL tool. It is not the same
     /// thing as `setMetadataItem('DESCRIPTION', ...)`: GDAL keeps the two in
     /// different places, and `metadata()` does not show this one.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn set_description(&self, value: Option<String>) -> Result<()> {
         let text = optional_c_string(value, "a description")?;
         self.dataset.with_mut(|dataset| {
@@ -824,7 +824,7 @@ impl JsRasterBand {
     /// The read side (`metadata()`) has been here all along; the write side was missing,
     /// and the reference's own tests walk straight into the hole — they set a band's
     /// metadata and read it back. `domain` defaults to GDAL's default domain.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn set_metadata_item(
         &self,
         key: String,
@@ -857,7 +857,7 @@ impl JsRasterBand {
     ///
     /// A band has no access mode of its own, so this follows how its dataset was
     /// opened: `open()` is read-only, `{ update: true }` and `create` are not.
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn read_only(&self) -> Result<bool> {
         self.dataset.with(|dataset| {
             let access = unsafe { gdal_sys::GDALGetAccess(dataset.c_dataset()) } as u32;
@@ -874,7 +874,7 @@ impl JsRasterBand {
     /// `noData` for one GDAL *derives* rather than stores. They are not exclusive —
     /// a stored per-dataset mask can also be built from an alpha channel — so they are
     /// answered separately instead of being folded into one name.
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn mask_flags(&self) -> Result<MaskFlags> {
         self.dataset.with(|dataset| {
             with_band(dataset, self.kind, |band| {
@@ -904,7 +904,7 @@ impl JsRasterBand {
     /// It is a full `RasterBand`, so everything that reads one works — and a write
     /// (`writePixels`, `fill`) writes the mask. `index` reports the band this is the
     /// mask *of*, and `id` is 0, because a mask has no band number.
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn mask(&self) -> JsRasterBand {
         JsRasterBand::masked(self.dataset.clone(), self.kind.parent())
     }
@@ -925,7 +925,7 @@ impl JsRasterBand {
     ///
     /// A write, so the dataset has to be writable, and a thread-safe (read-only)
     /// dataset refuses it like any other write.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn create_mask(&self, per_dataset: Option<bool>) -> Result<()> {
         let per_dataset = per_dataset.unwrap_or(false);
         self.dataset.with_mut(|dataset| {
@@ -938,7 +938,7 @@ impl JsRasterBand {
     /// Scale, or `null` when the band has none. The value a sample stands for is
     /// `raw * scale + offset`, which is what makes a reflectance or DEM raster
     /// mean anything beyond its raw integers.
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn scale(&self) -> Result<Option<f64>> {
         self.dataset
             .with(|dataset| with_band(dataset, self.kind, |band| Ok(band.scale())))
@@ -946,7 +946,7 @@ impl JsRasterBand {
 
     /// Offset, or `null` when the band has none — the other half of
     /// `raw * scale + offset`.
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn offset(&self) -> Result<Option<f64>> {
         self.dataset
             .with(|dataset| with_band(dataset, self.kind, |band| Ok(band.offset())))
@@ -962,7 +962,7 @@ impl JsRasterBand {
     /// There is no "clear": GDAL's setter takes a number, and `0` is a scale
     /// like any other rather than a way back to `null`. `setNoDataValue(null)`
     /// and `setUnitType(null)` are the two setters that can unset anything.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn set_scale(&self, scale: f64) -> Result<()> {
         self.dataset
             .with_mut(|dataset| with_band(dataset, self.kind, |band| band.set_scale(scale).gdal()))
@@ -970,7 +970,7 @@ impl JsRasterBand {
 
     /// Write the band's offset — the other half of `raw * scale + offset`. The
     /// same rules as `setScale` apply, and there is likewise no way to unset it.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn set_offset(&self, offset: f64) -> Result<()> {
         self.dataset.with_mut(|dataset| {
             with_band(dataset, self.kind, |band| band.set_offset(offset).gdal())
@@ -978,7 +978,7 @@ impl JsRasterBand {
     }
 
     /// The band's unit, e.g. `metre` or `DN`, or `null` when it has none.
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn unit_type(&self) -> Result<Option<String>> {
         self.dataset
             .with(|dataset| with_band(dataset, self.kind, |band| Ok(non_empty(band.unit()))))
@@ -990,7 +990,7 @@ impl JsRasterBand {
     /// `unitType === null`: GDAL's `GDALSetRasterUnitType` reads a null pointer as
     /// "remove", and the getter then reports an empty string that this binding
     /// maps to `null`.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn set_unit_type(&self, value: Option<String>) -> Result<()> {
         let unit = optional_c_string(value, "a unit type")?;
         self.dataset.with_mut(|dataset| {
@@ -1012,7 +1012,7 @@ impl JsRasterBand {
     /// format that stores band statistics reads straight from the file, but a
     /// raster nobody has asked about reports `null` here. Use `statistics()` when
     /// you need the number itself.
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn minimum(&self) -> Result<Option<f64>> {
         self.dataset.with(|dataset| {
             with_band(dataset, self.kind, |band| {
@@ -1027,7 +1027,7 @@ impl JsRasterBand {
     /// GDAL's cached maximum — the counterpart of `minimum`, with the same
     /// "cache, not a computation" rule. `statistics({ force: false })` is the way
     /// to read it without a full pass.
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn maximum(&self) -> Result<Option<f64>> {
         self.dataset.with(|dataset| {
             with_band(dataset, self.kind, |band| {
@@ -1041,7 +1041,7 @@ impl JsRasterBand {
 
     /// Category names, indexed by pixel value: in a paletted raster
     /// `categoryNames[3]` is the label for value 3. Empty when the band has none.
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn category_names(&self) -> Result<Vec<String>> {
         self.dataset.with(|dataset| {
             with_band(dataset, self.kind, |band| {
@@ -1058,7 +1058,7 @@ impl JsRasterBand {
     /// The list is positional: `setCategoryNames(['water', 'land'])` labels value
     /// 0 `water` and value 1 `land`, which is the order `categoryNames` reads
     /// back. Names are copied into GDAL's own store, so the array is not retained.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn set_category_names(&self, names: Vec<String>) -> Result<()> {
         let list = string_list(&names)?;
         let result = self.dataset.with_mut(|dataset| {
@@ -1073,7 +1073,7 @@ impl JsRasterBand {
         result
     }
 
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn metadata(&self, domain: Option<String>) -> Result<HashMap<String, String>> {
         let domain = domain.unwrap_or_default();
         self.dataset.with(|dataset| {
@@ -1089,7 +1089,7 @@ impl JsRasterBand {
         })
     }
 
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn metadata_domains(&self) -> Result<Vec<String>> {
         self.dataset
             .with(|dataset| with_band(dataset, self.kind, |band| Ok(band.metadata_domains())))
@@ -1098,7 +1098,7 @@ impl JsRasterBand {
     /// How many overview levels this band already has. Cheap: a query, not a
     /// computation. Zero is the common answer for a raster nobody ran `gdaladdo`
     /// over, and it is what `buildOverviews` is for.
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn overview_count(&self) -> Result<i32> {
         self.dataset
             .with(|dataset| with_band(dataset, self.kind, |band| band.overview_count().gdal()))
@@ -1107,7 +1107,7 @@ impl JsRasterBand {
     /// Whether GDAL can compute overviews on demand for this band — some network
     /// sources can, and they generally have no fixed `overviews` at all. A read:
     /// nothing is built.
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn has_arbitrary_overviews(&self) -> Result<bool> {
         self.dataset.with(|dataset| {
             with_band(dataset, self.kind, |band| {
@@ -1118,14 +1118,14 @@ impl JsRasterBand {
 
     /// Flush this band's cached writes to disk — `GDALFlushRasterCache`. The
     /// dataset's `flush()` covers the whole file; this is the per-band one.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn flush_sync(&self) -> Result<()> {
         ensure_initialized();
         self.flush_pending()
     }
 
     /// The same on the thread pool.
-    #[napi(ts_return_type = "Promise<void>")]
+    #[napi(catch_unwind, ts_return_type = "Promise<void>")]
     pub fn flush(&self) -> AsyncTask<FlushBandTask> {
         AsyncTask::new(FlushBandTask {
             dataset: self.dataset.clone(),
@@ -1138,7 +1138,7 @@ impl JsRasterBand {
     /// A band is a window onto a dataset, and some things can only be asked of the
     /// whole: which files it is made of, its size, its CRS. `wrapVRT` is the caller
     /// that needs it, to point a VRT back at its sources.
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn dataset(&self) -> Result<JsDataset> {
         ensure_initialized();
         let path = self
@@ -1152,7 +1152,7 @@ impl JsRasterBand {
     /// however the dataset was opened, so a plain raster is a way into the
     /// multidimensional model too: `dataset.band(0).asMDArray().shape` is
     /// `[height, width]`.
-    #[napi(js_name = "asMDArray")]
+    #[napi(catch_unwind, js_name = "asMDArray")]
     pub fn as_md_array(&self) -> Result<crate::multidim::JsMdArray> {
         ensure_initialized();
         let dataset = self.dataset.clone();
@@ -1195,7 +1195,7 @@ impl JsRasterBand {
     /// up front, so the result is independent of the source: closing the source does
     /// not invalidate it. That is the difference from a VRT, which would read through
     /// to the source and dangle once it is closed.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn as_type(&self, data_type: DataType) -> Result<JsRasterBand> {
         ensure_initialized();
         let BandKind::Index(index) = self.kind else {
@@ -1223,110 +1223,110 @@ impl JsRasterBand {
     /// The arithmetic here is **eager**: the result is computed once and materialised,
     /// rather than a lazy VRT that reads through to its sources — see `docs/PARITY.md`
     /// for why (a VRT shares the source handle and would dangle once it is closed).
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn add(&self, other: Either<&JsRasterBand, f64>) -> Result<JsRasterBand> {
         self.binary(other, DataType::Float64, |a, b| a + b)
     }
 
     /// The difference: this band minus `other`, elementwise.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn sub(&self, other: Either<&JsRasterBand, f64>) -> Result<JsRasterBand> {
         self.binary(other, DataType::Float64, |a, b| a - b)
     }
 
     /// The product, elementwise.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn mul(&self, other: Either<&JsRasterBand, f64>) -> Result<JsRasterBand> {
         self.binary(other, DataType::Float64, |a, b| a * b)
     }
 
     /// The quotient: this band divided by `other`, elementwise.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn div(&self, other: Either<&JsRasterBand, f64>) -> Result<JsRasterBand> {
         self.binary(other, DataType::Float64, |a, b| a / b)
     }
 
     /// This band raised to `other`, elementwise.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn pow(&self, other: Either<&JsRasterBand, f64>) -> Result<JsRasterBand> {
         self.binary(other, DataType::Float64, f64::powf)
     }
 
     /// The absolute value of each sample.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn abs(&self) -> Result<JsRasterBand> {
         self.unary(DataType::Float64, f64::abs)
     }
 
     /// The square root of each sample.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn sqrt(&self) -> Result<JsRasterBand> {
         self.unary(DataType::Float64, f64::sqrt)
     }
 
     /// The natural logarithm of each sample.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn log(&self) -> Result<JsRasterBand> {
         self.unary(DataType::Float64, f64::ln)
     }
 
     /// The base-10 logarithm of each sample.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn log10(&self) -> Result<JsRasterBand> {
         self.unary(DataType::Float64, f64::log10)
     }
 
     /// `1` where a sample equals `other`, `0` elsewhere — a **`Uint8`** band, the way
     /// a GDAL mask is.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn eq(&self, other: Either<&JsRasterBand, f64>) -> Result<JsRasterBand> {
         self.binary(other, DataType::Uint8, |a, b| flag(a == b))
     }
 
     /// `1` where a sample differs from `other`, `0` elsewhere.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn not_eq(&self, other: Either<&JsRasterBand, f64>) -> Result<JsRasterBand> {
         self.binary(other, DataType::Uint8, |a, b| flag(a != b))
     }
 
     /// `1` where a sample is below `other`, `0` elsewhere.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn lt(&self, other: Either<&JsRasterBand, f64>) -> Result<JsRasterBand> {
         self.binary(other, DataType::Uint8, |a, b| flag(a < b))
     }
 
     /// `1` where a sample is below or equal to `other`, `0` elsewhere.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn lte(&self, other: Either<&JsRasterBand, f64>) -> Result<JsRasterBand> {
         self.binary(other, DataType::Uint8, |a, b| flag(a <= b))
     }
 
     /// `1` where a sample is above `other`, `0` elsewhere.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn gt(&self, other: Either<&JsRasterBand, f64>) -> Result<JsRasterBand> {
         self.binary(other, DataType::Uint8, |a, b| flag(a > b))
     }
 
     /// `1` where a sample is above or equal to `other`, `0` elsewhere.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn gte(&self, other: Either<&JsRasterBand, f64>) -> Result<JsRasterBand> {
         self.binary(other, DataType::Uint8, |a, b| flag(a >= b))
     }
 
     /// `1` where both samples are non-zero, `0` elsewhere — the logical AND.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn and(&self, other: Either<&JsRasterBand, f64>) -> Result<JsRasterBand> {
         self.binary(other, DataType::Uint8, |a, b| flag(a != 0.0 && b != 0.0))
     }
 
     /// `1` where either sample is non-zero, `0` elsewhere — the logical OR.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn or(&self, other: Either<&JsRasterBand, f64>) -> Result<JsRasterBand> {
         self.binary(other, DataType::Uint8, |a, b| flag(a != 0.0 || b != 0.0))
     }
 
     /// `1` where a sample is zero, `0` elsewhere — the logical NOT.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn not(&self) -> Result<JsRasterBand> {
         self.unary(DataType::Uint8, |a| flag(a == 0.0))
     }
@@ -1334,7 +1334,7 @@ impl JsRasterBand {
     /// `thenValue` where a sample of this band is non-zero, `elseValue` elsewhere —
     /// the ternary operator, elementwise, as a `Float64` band. Each is a band or a
     /// constant.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn if_then_else(
         &self,
         then_value: Either<&JsRasterBand, f64>,
@@ -1365,7 +1365,7 @@ impl JsRasterBand {
     ///
     /// Returns `null` only when `force: false` and there was no cached value to
     /// give back.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn statistics_sync(
         &self,
         options: Option<StatisticsOptions>,
@@ -1373,7 +1373,7 @@ impl JsRasterBand {
         self.compute_statistics(statistics_request(options))
     }
 
-    #[napi(ts_return_type = "Promise<BandStatistics | null>")]
+    #[napi(catch_unwind, ts_return_type = "Promise<BandStatistics | null>")]
     pub fn statistics(&self, options: Option<StatisticsOptions>) -> AsyncTask<StatisticsTask> {
         AsyncTask::new(StatisticsTask {
             dataset: self.dataset.clone(),
@@ -1388,12 +1388,12 @@ impl JsRasterBand {
     /// `statistics()` hands back the pair to use. Values outside the range are
     /// dropped unless `includeOutOfRange` folds them into the end buckets, so
     /// `counts` does not necessarily sum to the pixel count.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn histogram_sync(&self, options: HistogramOptions) -> Result<BandHistogram> {
         self.compute_histogram(histogram_request(options)?)
     }
 
-    #[napi(ts_return_type = "Promise<BandHistogram>")]
+    #[napi(catch_unwind, ts_return_type = "Promise<BandHistogram>")]
     pub fn histogram(&self, options: HistogramOptions) -> Result<AsyncTask<HistogramTask>> {
         // Resolved here rather than in `compute`, so a bad range or bucket count
         // is thrown by the call instead of surfacing as a rejected promise.
@@ -1413,7 +1413,7 @@ impl JsRasterBand {
     /// — or the format itself — left behind. `force: true` lets GDAL compute one
     /// if nothing is stored, which reads the whole band, hence the default of
     /// `false`.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn default_histogram(&self, force: Option<bool>) -> Result<Option<BandHistogram>> {
         ensure_initialized();
         let force = force.unwrap_or(false);
@@ -1440,7 +1440,7 @@ impl JsRasterBand {
     /// `defaultHistogram()` return. The same caveat as `setStatistics` applies: a
     /// read-only handle does not fail, because GDAL's PAM layer writes to a
     /// `<file>.aux.xml` sidecar instead.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn set_default_histogram(&self, histogram: BandHistogram) -> Result<()> {
         ensure_initialized();
         if histogram.counts.is_empty() {
@@ -1472,7 +1472,7 @@ impl JsRasterBand {
     /// fail: GDAL's PAM layer writes them to a `<file>.aux.xml` sidecar next to
     /// the raster instead, which is worth knowing before pointing this at a
     /// directory you thought was read-only.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn set_statistics(&self, statistics: BandStatistics) -> Result<()> {
         self.dataset.with_mut(|dataset| {
             with_band(dataset, self.kind, |band| {
@@ -1509,14 +1509,14 @@ impl JsRasterBand {
     /// `outHeight` are refused rather than ignored, because a checksum is of the
     /// samples as they are and silently resampling into it would change the number
     /// for no reason anyone asked for.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn checksum_sync(&self, options: Option<ReadOptions>) -> Result<u32> {
         self.compute_checksum(&checksum_options(options)?)
     }
 
     /// The same, on the thread pool: a checksum of a large raster reads all of it,
     /// so it costs what a read costs.
-    #[napi(ts_return_type = "Promise<number>")]
+    #[napi(catch_unwind, ts_return_type = "Promise<number>")]
     pub fn checksum(&self, options: Option<ReadOptions>) -> Result<AsyncTask<ChecksumTask>> {
         let options = checksum_options(options)?;
         Ok(AsyncTask::new(ChecksumTask {
@@ -1532,12 +1532,12 @@ impl JsRasterBand {
     /// It works in place, so the dataset has to be writable, and the band needs a
     /// no-data value: without one there is no telling a hole from data, and that is
     /// reported rather than guessed at.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn fill_no_data_sync(&self, options: Option<FillNoDataOptions>) -> Result<()> {
         self.apply_fill_no_data(fill_nodata_request(options)?)
     }
 
-    #[napi(ts_return_type = "Promise<void>")]
+    #[napi(catch_unwind, ts_return_type = "Promise<void>")]
     pub fn fill_no_data(
         &self,
         options: Option<FillNoDataOptions>,
@@ -1563,12 +1563,12 @@ impl JsRasterBand {
     /// band.sieveFilterSync({ threshold: 10 })                        // 4-connected
     /// band.sieveFilterSync({ threshold: 10, connectedness: 8 })
     /// ```
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn sieve_filter_sync(&self, options: SieveFilterOptions) -> Result<()> {
         self.apply_sieve_filter(sieve_filter_request(options)?)
     }
 
-    #[napi(ts_return_type = "Promise<void>")]
+    #[napi(catch_unwind, ts_return_type = "Promise<void>")]
     pub fn sieve_filter(&self, options: SieveFilterOptions) -> Result<AsyncTask<SieveFilterTask>> {
         let request = sieve_filter_request(options)?;
         Ok(AsyncTask::new(SieveFilterTask {
@@ -1591,7 +1591,7 @@ impl JsRasterBand {
     /// raster.band(0).polygonizeSync(layer)     // 4-connected, into the field `DN`
     /// await raster.band(0).polygonize(layer, { connectedness: 8, fieldName: 'value' })
     /// ```
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn polygonize_sync(
         &self,
         layer: &JsLayer,
@@ -1610,7 +1610,7 @@ impl JsRasterBand {
 
     /// The same, on the thread pool: polygonizing reads the whole band and writes
     /// features.
-    #[napi(ts_return_type = "Promise<void>")]
+    #[napi(catch_unwind, ts_return_type = "Promise<void>")]
     pub fn polygonize(
         &self,
         layer: &JsLayer,
@@ -1645,7 +1645,7 @@ impl JsRasterBand {
     /// band.contourGenerateSync(layer, { levels: [0, 100, 200, 300] })
     /// await band.contourGenerate(layer, { interval: 50, base: 0, idField: 'id' })
     /// ```
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn contour_generate_sync(
         &self,
         layer: &JsLayer,
@@ -1662,7 +1662,7 @@ impl JsRasterBand {
 
     /// The same, on the thread pool: contouring reads the whole band and writes a
     /// feature per line.
-    #[napi(ts_return_type = "Promise<void>")]
+    #[napi(catch_unwind, ts_return_type = "Promise<void>")]
     pub fn contour_generate(
         &self,
         layer: &JsLayer,
@@ -1696,13 +1696,13 @@ impl JsRasterBand {
     ///
     /// With `options.into` the read writes through that buffer instead of allocating
     /// one, and hands it straight back.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn read_pixels_sync(&self, options: Option<ReadOptions>) -> Result<Buffer> {
         self.read_sync_any(None, options.unwrap_or_default())
     }
 
     /// Read, asking GDAL to convert to `data_type`.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn read_as_sync(
         &self,
         data_type: DataType,
@@ -1711,12 +1711,12 @@ impl JsRasterBand {
         self.read_sync_any(Some(data_type), options.unwrap_or_default())
     }
 
-    #[napi(ts_return_type = "Promise<Buffer>")]
+    #[napi(catch_unwind, ts_return_type = "Promise<Buffer>")]
     pub fn read_pixels(&self, options: Option<ReadOptions>) -> AsyncTask<ReadBandTask> {
         ReadBandTask::new(self.dataset.clone(), self.kind, None, options)
     }
 
-    #[napi(ts_return_type = "Promise<Buffer>")]
+    #[napi(catch_unwind, ts_return_type = "Promise<Buffer>")]
     pub fn read_as(
         &self,
         data_type: DataType,
@@ -1728,7 +1728,7 @@ impl JsRasterBand {
     /// Write raw sample bytes into a window. `data` must hold at least
     /// `width * height` samples of this band's sample type (`outWidth` /
     /// `outHeight` are ignored: GDAL does not resample on write).
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn write_pixels_sync(&self, data: Buffer, options: Option<ReadOptions>) -> Result<()> {
         let options = options.unwrap_or_default();
         self.write_sync(data.as_ref(), &options)
@@ -1740,13 +1740,13 @@ impl JsRasterBand {
     ///
     /// There is no imaginary component: this binding has no complex sample type,
     /// so GDAL is always asked for a real fill.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn fill(&self, value: f64) -> Result<()> {
         self.dataset
             .with_mut(|dataset| with_band(dataset, self.kind, |band| band.fill(value, None).gdal()))
     }
 
-    #[napi(ts_return_type = "Promise<void>")]
+    #[napi(catch_unwind, ts_return_type = "Promise<void>")]
     pub fn write_pixels(
         &self,
         data: Buffer,
@@ -1769,7 +1769,7 @@ impl JsRasterBand {
     ///
     /// A window outside the band is an error, not zeroes: the window is checked
     /// against the band before GDAL is asked, and what does not fit is reported.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn get_pixel(&self, x: u32, y: u32) -> Result<f64> {
         let bytes = self.read_sync(None, &window(x, y, 1, 1))?;
         sample_as_number(&bytes, self.data_type)
@@ -1777,7 +1777,7 @@ impl JsRasterBand {
 
     /// Write one sample from a JS number. The value is converted to the band's type,
     /// so out-of-range integers wrap as GDAL wraps them.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn set_pixel(&self, x: u32, y: u32, value: f64) -> Result<()> {
         let bytes = number_as_sample(value, self.data_type)?;
         self.write_sync(&bytes, &window(x, y, 1, 1))
@@ -1794,7 +1794,7 @@ impl JsRasterBand {
     /// the prelude. So the view stays where this binding has always put it, one line
     /// on the JS side: `new Float32Array(bytes.buffer, bytes.byteOffset,
     /// bytes.byteLength / 4)`.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn read_values(&self, x: u32, y: u32, width: u32, height: u32) -> Result<Buffer> {
         let bytes = self.read_sync(None, &window(x, y, width, height))?;
         Ok(bytes.into())
@@ -1806,7 +1806,7 @@ impl JsRasterBand {
     /// Bytes rather than a typed array, because every typed array is one line away
     /// from its bytes (`Buffer.from(values.buffer, values.byteOffset, values.byteLength)`)
     /// and one method that takes all ten of them would be ten signatures to read.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn write_values(
         &self,
         x: u32,
@@ -1825,7 +1825,7 @@ impl JsRasterBand {
     /// and bottom edges it is smaller than `blockSize`. GDAL's own block read pads
     /// those with whatever it likes; a value that was never in the file is not worth
     /// handing to JS, so it is left out instead.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn read_block(&self, x: u32, y: u32) -> Result<Buffer> {
         let options = self.block_window(x, y)?;
         let bytes = self.read_sync(None, &options)?;
@@ -1835,7 +1835,7 @@ impl JsRasterBand {
     /// Write into the block holding `(x, y)`, clipped to the band the same way
     /// `readBlock` reads. `data` has to hold the whole clipped block: no resampling
     /// and no partial writes.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn write_block(&self, x: u32, y: u32, data: Buffer) -> Result<()> {
         let options = self.block_window(x, y)?;
         self.write_sync(data.as_ref(), &options)
@@ -1855,7 +1855,7 @@ impl JsRasterBand {
     /// the walk holds the event loop for its duration. That is the price of not using
     /// napi's async-iterator support, which is behind an experimental feature and
     /// cannot be named from here at all — for a long walk, run it in a worker.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn read_chunks_sync(
         &self,
         options: Option<ChunkOptions>,
@@ -1897,7 +1897,7 @@ impl JsRasterBand {
     /// callback runs on the JS thread while the worker holds the process-wide GDAL
     /// lock, so, like `onProgress`, it must not call back into this library. Resolves
     /// to the number of strips handed out.
-    #[napi(ts_return_type = "Promise<number>")]
+    #[napi(catch_unwind, ts_return_type = "Promise<number>")]
     pub fn read_chunks(
         &self,
         options: Option<ChunkOptions>,
@@ -1918,7 +1918,7 @@ impl JsRasterBand {
     /// and reading it gives the pixels that were stored rather than a fresh
     /// resampling — `readPixels({ outWidth, outHeight })` makes GDAL *pick* a level
     /// and resample through it instead.
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn overviews(&self) -> Result<Vec<JsBandOverview>> {
         self.dataset.with(|dataset| {
             with_band(dataset, self.kind, |band| {
@@ -2073,25 +2073,25 @@ pub struct JsBandOverview {
 #[napi]
 impl JsBandOverview {
     /// **0-based**, as GDAL counts a band's overviews.
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn index(&self) -> u32 {
         self.level as u32
     }
 
     /// Size of the level in pixels: `[width, height]`.
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn size(&self) -> Vec<u32> {
         vec![self.width, self.height]
     }
 
     /// The level's sample type, which is the band's.
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn data_type(&self) -> DataType {
         self.data_type
     }
 
     /// Read the whole level, in its own sample type, as raw bytes.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn read_sync(&self) -> Result<Buffer> {
         let bytes = self.dataset.with(|dataset| {
             with_band(dataset, self.kind, |band| {
@@ -2103,7 +2103,7 @@ impl JsBandOverview {
 
     /// The same read on the thread pool. A level is small next to its band, but it is
     /// still every pixel in it.
-    #[napi(ts_return_type = "Promise<Buffer>")]
+    #[napi(catch_unwind, ts_return_type = "Promise<Buffer>")]
     pub fn read(&self) -> AsyncTask<ReadOverviewTask> {
         AsyncTask::new(ReadOverviewTask {
             dataset: self.dataset.clone(),
@@ -2416,97 +2416,101 @@ fn op<T>(result: Result<T>) -> OpResult<T> {
 impl JsRasterBand {
     /// [`Self::size`], off the event loop — the same answer, with the wait for the lock
     /// on the thread pool rather than on the JS thread.
-    #[napi(getter, ts_return_type = "Promise<Array<number>>")]
+    #[napi(catch_unwind, getter, ts_return_type = "Promise<Array<number>>")]
     pub fn size_async(&self) -> AsyncTask<BandPropertyTask<Vec<u32>>> {
         self.property(BandProperty::Size)
     }
 
     /// [`Self::block_size`], off the event loop.
-    #[napi(getter, ts_return_type = "Promise<Array<number>>")]
+    #[napi(catch_unwind, getter, ts_return_type = "Promise<Array<number>>")]
     pub fn block_size_async(&self) -> AsyncTask<BandPropertyTask<Vec<u32>>> {
         self.property(BandProperty::BlockSize)
     }
 
     /// [`Self::data_type`], off the event loop.
-    #[napi(getter, ts_return_type = "Promise<DataType>")]
+    #[napi(catch_unwind, getter, ts_return_type = "Promise<DataType>")]
     pub fn data_type_async(&self) -> AsyncTask<BandPropertyTask<String>> {
         self.property(BandProperty::DataType)
     }
 
     /// [`Self::color_interpretation`], off the event loop.
-    #[napi(getter, ts_return_type = "Promise<string>")]
+    #[napi(catch_unwind, getter, ts_return_type = "Promise<string>")]
     pub fn color_interpretation_async(&self) -> AsyncTask<BandPropertyTask<String>> {
         self.property(BandProperty::ColorInterpretation)
     }
 
     /// [`Self::description`], off the event loop.
-    #[napi(getter, ts_return_type = "Promise<string | null>")]
+    #[napi(catch_unwind, getter, ts_return_type = "Promise<string | null>")]
     pub fn description_async(&self) -> AsyncTask<BandPropertyTask<Option<String>>> {
         self.property(BandProperty::Description)
     }
 
     /// [`Self::unit_type`], off the event loop.
-    #[napi(getter, ts_return_type = "Promise<string | null>")]
+    #[napi(catch_unwind, getter, ts_return_type = "Promise<string | null>")]
     pub fn unit_type_async(&self) -> AsyncTask<BandPropertyTask<Option<String>>> {
         self.property(BandProperty::UnitType)
     }
 
     /// [`Self::no_data_value`], off the event loop.
-    #[napi(getter, ts_return_type = "Promise<number | null>")]
+    #[napi(catch_unwind, getter, ts_return_type = "Promise<number | null>")]
     pub fn no_data_value_async(&self) -> AsyncTask<BandPropertyTask<Option<f64>>> {
         self.property(BandProperty::NoDataValue)
     }
 
     /// [`Self::scale`], off the event loop.
-    #[napi(getter, ts_return_type = "Promise<number | null>")]
+    #[napi(catch_unwind, getter, ts_return_type = "Promise<number | null>")]
     pub fn scale_async(&self) -> AsyncTask<BandPropertyTask<Option<f64>>> {
         self.property(BandProperty::Scale)
     }
 
     /// [`Self::offset`], off the event loop.
-    #[napi(getter, ts_return_type = "Promise<number | null>")]
+    #[napi(catch_unwind, getter, ts_return_type = "Promise<number | null>")]
     pub fn offset_async(&self) -> AsyncTask<BandPropertyTask<Option<f64>>> {
         self.property(BandProperty::Offset)
     }
 
     /// [`Self::minimum`], off the event loop.
-    #[napi(getter, ts_return_type = "Promise<number | null>")]
+    #[napi(catch_unwind, getter, ts_return_type = "Promise<number | null>")]
     pub fn minimum_async(&self) -> AsyncTask<BandPropertyTask<Option<f64>>> {
         self.property(BandProperty::Minimum)
     }
 
     /// [`Self::maximum`], off the event loop.
-    #[napi(getter, ts_return_type = "Promise<number | null>")]
+    #[napi(catch_unwind, getter, ts_return_type = "Promise<number | null>")]
     pub fn maximum_async(&self) -> AsyncTask<BandPropertyTask<Option<f64>>> {
         self.property(BandProperty::Maximum)
     }
 
     /// [`Self::id`], off the event loop.
-    #[napi(getter, ts_return_type = "Promise<number>")]
+    #[napi(catch_unwind, getter, ts_return_type = "Promise<number>")]
     pub fn id_async(&self) -> AsyncTask<BandPropertyTask<u32>> {
         self.property(BandProperty::Id)
     }
 
     /// [`Self::read_only`], off the event loop.
-    #[napi(getter, ts_return_type = "Promise<boolean>")]
+    #[napi(catch_unwind, getter, ts_return_type = "Promise<boolean>")]
     pub fn read_only_async(&self) -> AsyncTask<BandPropertyTask<bool>> {
         self.property(BandProperty::ReadOnly)
     }
 
     /// [`Self::has_arbitrary_overviews`], off the event loop.
-    #[napi(getter, ts_return_type = "Promise<boolean>")]
+    #[napi(catch_unwind, getter, ts_return_type = "Promise<boolean>")]
     pub fn has_arbitrary_overviews_async(&self) -> AsyncTask<BandPropertyTask<bool>> {
         self.property(BandProperty::HasArbitraryOverviews)
     }
 
     /// [`Self::category_names`], off the event loop.
-    #[napi(getter, ts_return_type = "Promise<Array<string>>")]
+    #[napi(catch_unwind, getter, ts_return_type = "Promise<Array<string>>")]
     pub fn category_names_async(&self) -> AsyncTask<BandPropertyTask<Vec<String>>> {
         self.property(BandProperty::CategoryNames)
     }
 
     /// [`Self::color_table`], off the event loop.
-    #[napi(getter, ts_return_type = "Promise<Array<ColorTableEntry> | null>")]
+    #[napi(
+        catch_unwind,
+        getter,
+        ts_return_type = "Promise<Array<ColorTableEntry> | null>"
+    )]
     pub fn color_table_async(&self) -> AsyncTask<BandPropertyTask<Option<Vec<ColorTableEntry>>>> {
         self.property(BandProperty::ColorTable)
     }

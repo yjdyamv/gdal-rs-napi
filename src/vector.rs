@@ -811,12 +811,12 @@ fn named_column(value: *const std::ffi::c_char) -> Option<String> {
 #[napi]
 impl JsLayer {
     /// Position of this layer in the dataset, 0-based.
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn index(&self) -> u32 {
         self.index as u32
     }
 
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn name(&self) -> Result<String> {
         ensure_initialized();
         self.dataset.with_exclusive(|dataset| {
@@ -832,19 +832,19 @@ impl JsLayer {
     /// driver without support warns and carries on as if there were no transaction, so
     /// a `false` there is worth reading before relying on the grouping. Beginning a
     /// transaction inside one is the failure this can report.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn start_transaction(&self) -> Result<()> {
         self.transaction(gdal_sys::OGR_L_StartTransaction, "start")
     }
 
     /// Keep everything the transaction wrote. GDAL's `CommitTransaction`.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn commit_transaction(&self) -> Result<()> {
         self.transaction(gdal_sys::OGR_L_CommitTransaction, "commit")
     }
 
     /// Throw everything the transaction wrote away. GDAL's `RollbackTransaction`.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn rollback_transaction(&self) -> Result<()> {
         self.transaction(gdal_sys::OGR_L_RollbackTransaction, "roll back")
     }
@@ -871,7 +871,7 @@ impl JsLayer {
 
     /// The field the layer stores its feature ids in, or `null` when it has none and
     /// GDAL generates them — the catalogue calls this the `FIDColumn`.
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn fid_column(&self) -> Result<Option<String>> {
         ensure_initialized();
         self.dataset.with_exclusive(|dataset| {
@@ -884,7 +884,7 @@ impl JsLayer {
 
     /// The field the layer keeps its geometry in, or `null` for a layer with none —
     /// GDAL's `GeometryColumn`, empty exactly when there is no geometry.
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn geom_column(&self) -> Result<Option<String>> {
         ensure_initialized();
         self.dataset.with_exclusive(|dataset| {
@@ -901,7 +901,7 @@ impl JsLayer {
     ///
     /// A name GDAL does not know answers `false` rather than throwing: the call is a
     /// question, and "no" is one of its answers.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn test_capability(&self, capability: String) -> Result<bool> {
         ensure_initialized();
         self.dataset.with_exclusive(|dataset| {
@@ -916,7 +916,7 @@ impl JsLayer {
 
     /// Feature count, or `null` when the driver cannot answer without a full
     /// scan. Use the count only as a hint: filter it if you need certainty.
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn feature_count(&self) -> Result<Option<i64>> {
         ensure_initialized();
         self.dataset.with_exclusive(|dataset| {
@@ -926,7 +926,7 @@ impl JsLayer {
     }
 
     /// The layer's geometry type, e.g. `Point`, `MultiPolygon`, `Unknown`.
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn geometry_type(&self) -> Result<String> {
         ensure_initialized();
         self.dataset.with_exclusive(|dataset| {
@@ -935,7 +935,7 @@ impl JsLayer {
         })
     }
 
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn fields(&self) -> Result<Vec<FieldInfo>> {
         ensure_initialized();
         self.dataset.with_exclusive(|dataset| {
@@ -946,7 +946,7 @@ impl JsLayer {
 
     /// One field by name, or `null`. The lookup `fields` exists to make possible
     /// without walking the array.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn field(&self, name: String) -> Result<Option<FieldInfo>> {
         ensure_initialized();
         self.dataset.with_exclusive(|dataset| {
@@ -971,7 +971,7 @@ impl JsLayer {
     /// ```js
     /// layer.addField({ name: 'population', fieldType: 'Integer64' })
     /// ```
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn add_field(&self, field: FieldDefinition) -> Result<()> {
         ensure_initialized();
         // Built before the lock, so a typo in the type name is thrown by the call
@@ -988,7 +988,7 @@ impl JsLayer {
     /// By name rather than by index for the same reason `deleteLayer` is: dropping
     /// one shifts every later index, so a list of indices is a trap. The data in
     /// the column goes with it, and there is no undo beyond a transaction.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn delete_field(&self, name: String) -> Result<()> {
         ensure_initialized();
         self.dataset.with_mut(|dataset| {
@@ -1006,7 +1006,7 @@ impl JsLayer {
     // The names have to be exactly the fields the layer already has, each once: a
     // partial list is rejected here rather than handed to GDAL, whose own answer to
     // one is to build a malformed schema.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn reorder_fields(&self, names: Vec<String>) -> Result<()> {
         ensure_initialized();
         self.dataset.with_mut(|dataset| {
@@ -1038,7 +1038,7 @@ impl JsLayer {
 
     /// Bounding box as `[minX, minY, maxX, maxY]`, or `null` when the layer has
     /// no extent (an empty layer, typically).
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn extent(&self) -> Result<Option<Vec<f64>>> {
         ensure_initialized();
         self.dataset.with_exclusive(|dataset| {
@@ -1054,13 +1054,13 @@ impl JsLayer {
     ///
     /// `extent` is the shorter spelling this binding started with; a port from
     /// gdal-async will be looking for `getExtent()`, and both go through one read.
-    #[napi(js_name = "getExtent")]
+    #[napi(catch_unwind, js_name = "getExtent")]
     pub fn get_extent(&self) -> Result<Option<Vec<f64>>> {
         self.extent()
     }
 
     /// The layer's CRS as WKT, or `null` when it has none.
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn spatial_ref_wkt(&self) -> Result<Option<String>> {
         ensure_initialized();
         self.dataset.with_exclusive(|dataset| {
@@ -1073,7 +1073,7 @@ impl JsLayer {
     }
 
     /// The same CRS as `spatialRefWkt`, as an object.
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn spatial_ref(&self) -> Result<Option<JsSpatialRef>> {
         ensure_initialized();
         self.dataset.with_exclusive(|dataset| {
@@ -1096,7 +1096,7 @@ impl JsLayer {
     ///
     /// A driver that cannot alter its schema answers with an error naming it, rather
     /// than silently doing nothing.
-    #[napi(js_name = "setSpatialRef")]
+    #[napi(catch_unwind, js_name = "setSpatialRef")]
     pub fn set_spatial_ref(&self, spatial_ref: Either<String, &JsSpatialRef>) -> Result<()> {
         /// `ALTER_GEOM_FIELD_DEFN_SRS_FLAG` from `ogr_core.h`: take the SRS from the new
         /// definition and leave the field's name, type and nullability as they are.
@@ -1149,7 +1149,7 @@ impl JsLayer {
         })
     }
 
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn metadata(
         &self,
         domain: Option<String>,
@@ -1173,7 +1173,7 @@ impl JsLayer {
     ///
     /// Materialising the whole layer is the simple half of the API; `features()` is
     /// the same read on the thread pool, and `openCursor` is the one that streams.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn features_sync(&self) -> Result<Vec<FeatureRecord>> {
         self.read_features()
     }
@@ -1184,7 +1184,7 @@ impl JsLayer {
     /// which is the difference that matters for a layer too large to want to block
     /// on. It is still all-or-nothing — one array of every visible feature — so a
     /// layer that will not fit in memory wants `openCursor` instead.
-    #[napi(ts_return_type = "Promise<Array<FeatureRecord>>")]
+    #[napi(catch_unwind, ts_return_type = "Promise<Array<FeatureRecord>>")]
     pub fn features(&self) -> AsyncTask<FeaturesTask> {
         AsyncTask::new(FeaturesTask {
             dataset: self.dataset.clone(),
@@ -1218,7 +1218,7 @@ impl JsLayer {
     }
 
     /// A single feature by id, or `null`.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn feature(&self, fid: i64) -> Result<Option<FeatureRecord>> {
         ensure_initialized();
         self.dataset.with_exclusive(|dataset| {
@@ -1240,7 +1240,7 @@ impl JsLayer {
     /// scalars a `String` holding comma-joined text (see `inferred_field_type`
     /// for why not a list field). A `null` or a nested object creates nothing.
     /// Fields that already exist keep their declared type, lists included.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn create_feature(
         &self,
         geometry: Option<Either<&JsGeometry, Unknown<'_>>>,
@@ -1261,7 +1261,7 @@ impl JsLayer {
     /// Only the fields you name change, and unlike `createFeature` an unknown
     /// property is an error rather than a new column. A `null` geometry leaves
     /// the current geometry alone.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn update_feature(
         &self,
         fid: i64,
@@ -1281,7 +1281,7 @@ impl JsLayer {
     ///
     /// A snapshot taken at the call, like `fields`: it describes the schema now,
     /// and a later `addField` does not change what an earlier read returned.
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn defn(&self) -> Result<FeatureDefn> {
         ensure_initialized();
         self.dataset.with_exclusive(|dataset| {
@@ -1302,7 +1302,7 @@ impl JsLayer {
     /// feature.fields.get('population')   // 4500
     /// feature.fields.set('population', 4600)   // written straight through
     /// ```
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn get_feature(&self, fid: i64) -> Result<Option<JsFeature>> {
         ensure_initialized();
         self.dataset.with_exclusive(|dataset| {
@@ -1324,7 +1324,7 @@ impl JsLayer {
     /// See `FeatureCursor` for the one-cursor-per-layer rule: GDAL keeps the
     /// reading position on the layer, not in the cursor, which is what lets
     /// batches resume — and what makes a second reader rewind the first.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn open_cursor(&self, options: Option<CursorOptions>) -> Result<JsFeatureCursor> {
         let batch_size = options
             .unwrap_or_default()
@@ -1348,7 +1348,7 @@ impl JsLayer {
     /// An id that is not there is an error rather than a silent no-op, and not
     /// every driver supports deleting at all — GDAL decides, and its answer is
     /// passed on.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn delete_feature(&self, fid: i64) -> Result<()> {
         ensure_initialized();
         // A write, so `with_mut`: a read-only dataset refuses it, which is also
@@ -1361,7 +1361,7 @@ impl JsLayer {
 
     /// Limit the layer to features matching an OGR SQL `WHERE` clause, e.g.
     /// `"population > 1000 AND name LIKE 'A%'"`. Pass `null` to clear.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn set_attribute_filter(&self, query: Option<String>) -> Result<()> {
         ensure_initialized();
         self.dataset.with_mut(|dataset| {
@@ -1374,7 +1374,7 @@ impl JsLayer {
         })
     }
 
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn set_spatial_filter_rect(
         &self,
         min_x: f64,
@@ -1400,7 +1400,7 @@ impl JsLayer {
     /// ```js
     /// layer.setSpatialFilter({ type: 'Polygon', coordinates: [ring] })
     /// ```
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn set_spatial_filter(
         &self,
         geometry: Option<Either<&JsGeometry, Unknown<'_>>>,
@@ -1419,7 +1419,7 @@ impl JsLayer {
         })
     }
 
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn clear_spatial_filter(&self) -> Result<()> {
         ensure_initialized();
         self.dataset.with_mut(|dataset| {
@@ -1432,7 +1432,7 @@ impl JsLayer {
     /// The spatial filter currently in force, as a `Geometry`, or `null` when there
     /// is none — the read side of `setSpatialFilter`. A rectangle set with
     /// `setSpatialFilterRect` comes back as a polygon, which is what GDAL stores.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn get_spatial_filter(&self) -> Result<Option<JsGeometry>> {
         ensure_initialized();
         self.dataset.with_exclusive(|dataset| {
@@ -1451,7 +1451,7 @@ impl JsLayer {
     /// Write the layer's pending changes to disk — `OGR_L_SyncToDisk`. The dataset
     /// `flush()` covers the whole file; this is the per-layer one a bulk write into a
     /// single layer wants.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn flush_sync(&self) -> Result<()> {
         ensure_initialized();
         self.flush_pending()
@@ -1459,7 +1459,7 @@ impl JsLayer {
 
     /// The same on the thread pool — a bulk write to commit is exactly what should
     /// not hold up the event loop.
-    #[napi(ts_return_type = "Promise<void>")]
+    #[napi(catch_unwind, ts_return_type = "Promise<void>")]
     pub fn flush(&self) -> AsyncTask<FlushLayerTask> {
         AsyncTask::new(FlushLayerTask {
             dataset: self.dataset.clone(),
@@ -1531,25 +1531,25 @@ impl JsFeatureCursor {
 
 #[napi]
 impl JsFeatureCursor {
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn batch_size(&self) -> u32 {
         self.batch_size as u32
     }
 
     /// True once a read has come back empty. `read()` returning `[]` says the
     /// same thing; this is for a `while (!cursor.finished)` loop.
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn finished(&self) -> bool {
         self.state.finished.load(Ordering::Relaxed)
     }
 
     /// The next batch, or an empty array once the layer is exhausted.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn read_sync(&self) -> Result<Vec<FeatureRecord>> {
         self.next_batch()
     }
 
-    #[napi(ts_return_type = "Promise<Array<FeatureRecord>>")]
+    #[napi(catch_unwind, ts_return_type = "Promise<Array<FeatureRecord>>")]
     pub fn read(&self) -> AsyncTask<CursorTask> {
         AsyncTask::new(CursorTask {
             dataset: self.dataset.clone(),
@@ -1562,7 +1562,7 @@ impl JsFeatureCursor {
     /// Stop reading. Idempotent, and it does not touch GDAL on purpose: every
     /// other way of reading this layer rewinds it anyway, so leaving the position
     /// where it stopped costs nothing.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn close(&self) {
         self.state.closed.store(true, Ordering::Relaxed);
     }
@@ -1819,7 +1819,7 @@ pub(crate) fn json_value(unknown: Unknown<'_>) -> Result<Value> {
         .map_err(|err| bad_argument(format!("expected a Geometry or a GeoJSON object: {err}")))
 }
 
-#[napi]
+#[napi(catch_unwind)]
 pub fn geometry_type_of(geometry: Value) -> Result<String> {
     ensure_initialized();
     // A geometry built from GeoJSON and then asked its type: no dataset, no global
@@ -1832,28 +1832,28 @@ pub fn geometry_type_of(geometry: Value) -> Result<String> {
 /// object, and they are dataset-free the same way: building one from a string or
 /// bytes and taking it back out touches no dataset, so they share the lock with the
 /// rest of the geometry work.
-#[napi]
+#[napi(catch_unwind)]
 pub fn geometry_to_wkt(geometry: Value) -> Result<String> {
     ensure_initialized();
     let _guard = lock_gdal_shared();
     from_geojson(&geometry)?.wkt().gdal()
 }
 
-#[napi]
+#[napi(catch_unwind)]
 pub fn geometry_to_wkb(geometry: Value) -> Result<Buffer> {
     ensure_initialized();
     let _guard = lock_gdal_shared();
     Ok(from_geojson(&geometry)?.wkb().gdal()?.into())
 }
 
-#[napi]
+#[napi(catch_unwind)]
 pub fn geometry_from_wkt(wkt: String) -> Result<Value> {
     ensure_initialized();
     let _guard = lock_gdal_shared();
     to_geojson(&gdal::vector::Geometry::from_wkt(&wkt).gdal()?)
 }
 
-#[napi]
+#[napi(catch_unwind)]
 pub fn geometry_from_wkb(wkb: Buffer) -> Result<Value> {
     ensure_initialized();
     let _guard = lock_gdal_shared();
@@ -1950,13 +1950,13 @@ impl JsFeature {
 impl JsFeature {
     /// The feature's id — the number `feature(fid)` and `updateFeature(fid, …)`
     /// take.
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn fid(&self) -> i64 {
         self.fid
     }
 
     /// The schema this feature belongs to — the same object `layer.defn` returns.
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn defn(&self) -> Result<FeatureDefn> {
         ensure_initialized();
         self.dataset.with_exclusive(|dataset| {
@@ -1966,14 +1966,14 @@ impl JsFeature {
     }
 
     /// The geometry as GeoJSON, or `null` when the feature has none.
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn geometry(&self) -> Result<Value> {
         Ok(self.record()?.geometry)
     }
 
     /// Replace the geometry — a `Geometry` object or the GeoJSON `createFeature`
     /// takes.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn set_geometry(&self, geometry: Either<&JsGeometry, Unknown<'_>>) -> Result<()> {
         let geometry = match geometry {
             Either::A(object) => object.to_json()?,
@@ -1989,7 +1989,7 @@ impl JsFeature {
     }
 
     /// The feature's fields, read and written through the layer.
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn fields(&self) -> JsFeatureFields {
         JsFeatureFields {
             dataset: self.dataset.clone(),
@@ -2000,7 +2000,7 @@ impl JsFeature {
 
     /// The whole feature as the plain record `feature(fid)` would have returned —
     /// `fid`, `properties` and `geometry`.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn to_object(&self) -> Result<FeatureRecord> {
         self.record()
     }
@@ -2037,7 +2037,7 @@ impl JsFeatureFields {
 #[napi]
 impl JsFeatureFields {
     /// Field names, in schema order.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn names(&self) -> Result<Vec<String>> {
         Ok(self
             .record()?
@@ -2048,7 +2048,7 @@ impl JsFeatureFields {
     }
 
     /// How many fields the feature has.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn count(&self) -> Result<u32> {
         Ok(self
             .record()?
@@ -2059,7 +2059,7 @@ impl JsFeatureFields {
 
     /// One field's value. An unknown name is an error rather than `null`, so a
     /// typo reads as one — `has` is the question that answers `false`.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn get(&self, name: String) -> Result<Value> {
         let record = self.record()?;
         match record.properties.get(&name) {
@@ -2068,14 +2068,14 @@ impl JsFeatureFields {
         }
     }
 
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn has(&self, name: String) -> Result<bool> {
         Ok(self.record()?.properties.get(&name).is_some())
     }
 
     /// Write one field, straight through to the layer — the same write
     /// `updateFeature(fid, null, { name: value })` makes.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn set(&self, name: String, value: Value) -> Result<()> {
         let mut properties = Map::new();
         properties.insert(name, value);
@@ -2089,13 +2089,13 @@ impl JsFeatureFields {
     }
 
     /// Every field as an object — the `properties` of the copied-out record.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn to_object(&self) -> Result<Value> {
         Ok(self.record()?.properties)
     }
 
     /// Every value, in field order.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn to_array(&self) -> Result<Vec<Value>> {
         Ok(self
             .record()?

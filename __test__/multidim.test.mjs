@@ -54,6 +54,31 @@ function fixtures() {
   return built
 }
 
+// A second fixture, the first one plus a CRS. It is a **projected** CRS on purpose:
+// the netCDF writer gives a geographic one no `grid_mapping`, so the array's own `srs`
+// stays null — while a projected one it does keep, which is the case that used to
+// deadlock. `MDArray.srs` took the write lock and then the `SpatialRef` constructor
+// took the shared side again on the same thread.
+let crsBuilt
+function crsFixture() {
+  crsBuilt ??= (async () => {
+    const raster = join(scratch, 'multidim-crs-source.tif')
+    const created = await gdal.create(raster, {
+      driver: 'GTiff',
+      width: 4,
+      height: 3,
+      bands: 1,
+    })
+    created.band(0).writePixelsSync(bytesOf(ramp(4, 3)))
+    created.setProjection(gdal.epsgToWkt(32633))
+    await created.close()
+    const netcdf = join(scratch, 'multidim-crs.nc')
+    await gdal.translate(netcdf, raster, ['-of', 'netCDF', '-a_srs', 'EPSG:32633'])
+    return netcdf
+  })()
+  return crsBuilt
+}
+
 test('a multidimensional file opens with a root group, a raster one without', async () => {
   const { raster, netcdf } = await fixtures()
 
@@ -170,6 +195,22 @@ test('an MDArray reads a hyperslab in its own sample type', async () => {
     () => array.read({ count: [1, 2, 3] }),
     /count has to name every dimension: 2 of them, got 3/,
   )
+
+  await dataset.close()
+})
+
+test('an MDArray reports the CRS the file carries', async () => {
+  const netcdf = await crsFixture()
+  const dataset = await gdal.open(netcdf, { multidimensional: true })
+  const array = dataset.root.openArray('Band1')
+
+  // Reading this used to hang the process: `srs` held the exclusive lock and then the
+  // `SpatialRef` constructor tried to take the shared side on the same thread.
+  const srs = array.srs
+  assert.notEqual(srs, null)
+  assert.equal(srs.authName, 'EPSG')
+  assert.equal(srs.authCode, 32633)
+  assert.match(srs.wkt, /UTM zone 33N/)
 
   await dataset.close()
 })

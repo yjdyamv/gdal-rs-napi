@@ -95,19 +95,27 @@ impl JsSpatialRef {
     pub(crate) fn inner(&self) -> &SpatialRef {
         &self.inner
     }
+
+    /// Build from a CRS definition **without taking the lock** — for a caller that
+    /// already holds it. `MDArray::srs` reads the array's CRS inside the dataset lock
+    /// and would deadlock going through the `fromDefinition` factory, which takes the
+    /// shared side again.
+    pub(crate) fn build_from_definition(definition: &str) -> Result<Self> {
+        Ok(Self::wrap(SpatialRef::from_definition(definition).gdal()?))
+    }
 }
 
 #[napi]
 impl JsSpatialRef {
     /// From an EPSG code — `4326`, not `"EPSG:4326"`.
-    #[napi(factory)]
+    #[napi(catch_unwind, factory)]
     pub fn from_epsg(code: u32) -> Result<Self> {
         ensure_initialized();
         let _guard = lock_gdal_shared();
         Ok(Self::wrap(SpatialRef::from_epsg(code).gdal()?))
     }
 
-    #[napi(factory)]
+    #[napi(catch_unwind, factory)]
     pub fn from_wkt(wkt: String) -> Result<Self> {
         ensure_initialized();
         let _guard = lock_gdal_shared();
@@ -115,7 +123,7 @@ impl JsSpatialRef {
     }
 
     /// From a PROJ string, e.g. `+proj=longlat +datum=WGS84 +no_defs`.
-    #[napi(factory)]
+    #[napi(catch_unwind, factory)]
     pub fn from_proj4(proj4: String) -> Result<Self> {
         ensure_initialized();
         let _guard = lock_gdal_shared();
@@ -124,14 +132,14 @@ impl JsSpatialRef {
 
     /// The general entry point: `EPSG:4326`, a WKT string, PROJJSON, or a PROJ
     /// string. Whatever `gdalinfo` would accept as a CRS description.
-    #[napi(factory)]
+    #[napi(catch_unwind, factory)]
     pub fn from_definition(definition: String) -> Result<Self> {
         ensure_initialized();
         let _guard = lock_gdal_shared();
-        Ok(Self::wrap(SpatialRef::from_definition(&definition).gdal()?))
+        Self::build_from_definition(&definition)
     }
 
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn wkt(&self) -> Result<String> {
         ensure_initialized();
         let _guard = lock_gdal_shared();
@@ -139,28 +147,28 @@ impl JsSpatialRef {
     }
 
     /// The same WKT, indented. Lovely in a terminal, and slower to produce.
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn pretty_wkt(&self) -> Result<String> {
         ensure_initialized();
         let _guard = lock_gdal_shared();
         self.inner.to_pretty_wkt().gdal()
     }
 
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn proj4(&self) -> Result<String> {
         ensure_initialized();
         let _guard = lock_gdal_shared();
         self.inner.to_proj4().gdal()
     }
 
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn proj_json(&self) -> Result<String> {
         ensure_initialized();
         let _guard = lock_gdal_shared();
         self.inner.to_projjson().gdal()
     }
 
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn name(&self) -> Result<Option<String>> {
         ensure_initialized();
         let _guard = lock_gdal_shared();
@@ -168,14 +176,14 @@ impl JsSpatialRef {
     }
 
     /// The authority that defines this CRS, e.g. `EPSG`.
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn auth_name(&self) -> Result<Option<String>> {
         ensure_initialized();
         let _guard = lock_gdal_shared();
         Ok(self.inner.auth_name())
     }
 
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn auth_code(&self) -> Result<Option<i32>> {
         ensure_initialized();
         let _guard = lock_gdal_shared();
@@ -188,21 +196,21 @@ impl JsSpatialRef {
     ///
     /// This reads what the CRS already knows. It does **not** search the CRS
     /// database — that is `identifyEpsg`, which is why that one is a promise.
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn authority(&self) -> Result<Option<String>> {
         ensure_initialized();
         let _guard = lock_gdal_shared();
         Ok(self.inner.authority().ok())
     }
 
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn axis_mapping(&self) -> Result<String> {
         ensure_initialized();
         let _guard = lock_gdal_shared();
         Ok(axis_mapping_to_str(self.inner.axis_mapping_strategy()).to_string())
     }
 
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn linear_unit(&self) -> Result<Option<UnitInfo>> {
         ensure_initialized();
         let _guard = lock_gdal_shared();
@@ -212,7 +220,7 @@ impl JsSpatialRef {
         }))
     }
 
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn angular_unit(&self) -> Result<Option<UnitInfo>> {
         ensure_initialized();
         let _guard = lock_gdal_shared();
@@ -222,35 +230,35 @@ impl JsSpatialRef {
         }))
     }
 
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn is_geographic(&self) -> Result<bool> {
         ensure_initialized();
         let _guard = lock_gdal_shared();
         Ok(self.inner.is_geographic())
     }
 
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn is_projected(&self) -> Result<bool> {
         ensure_initialized();
         let _guard = lock_gdal_shared();
         Ok(self.inner.is_projected())
     }
 
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn is_compound(&self) -> Result<bool> {
         ensure_initialized();
         let _guard = lock_gdal_shared();
         Ok(self.inner.is_compound())
     }
 
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn is_vertical(&self) -> Result<bool> {
         ensure_initialized();
         let _guard = lock_gdal_shared();
         Ok(self.inner.is_vertical())
     }
 
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn area_of_use(&self) -> Result<Option<AreaOfUse>> {
         ensure_initialized();
         let _guard = lock_gdal_shared();
@@ -265,7 +273,7 @@ impl JsSpatialRef {
 
     /// Whether this is the same CRS as `other`, compared by definition rather than
     /// by spelling: two differently-written WKTs for WGS 84 are equal here.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn equals(&self, other: &JsSpatialRef) -> Result<bool> {
         ensure_initialized();
         let _guard = lock_gdal_shared();
@@ -277,7 +285,7 @@ impl JsSpatialRef {
     /// Returns a new object rather than mutating this one, so a `SpatialRef` you
     /// have stored keeps meaning what it meant, and a `CoordinateTransform` built
     /// from it cannot change under you.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn with_axis_mapping(&self, mapping: String) -> Result<JsSpatialRef> {
         ensure_initialized();
         let _guard = lock_gdal_shared();
@@ -290,7 +298,7 @@ impl JsSpatialRef {
 
     /// Build a CRS from an **ESRI WKT** string — the `.prj` ArcGIS writes, whose
     /// dialect differs from OGC WKT. GDAL morphs it on the way in.
-    #[napi(factory, js_name = "fromESRI")]
+    #[napi(catch_unwind, factory, js_name = "fromESRI")]
     pub fn from_esri(esri_wkt: String) -> Result<Self> {
         ensure_initialized();
         let _guard = lock_gdal_shared();
@@ -298,7 +306,7 @@ impl JsSpatialRef {
     }
 
     /// This CRS as XML — OSR's own serialization, alongside `wkt` and `projJson`.
-    #[napi(js_name = "toXML")]
+    #[napi(catch_unwind, js_name = "toXML")]
     pub fn to_xml(&self) -> Result<String> {
         ensure_initialized();
         let _guard = lock_gdal_shared();
@@ -307,7 +315,7 @@ impl JsSpatialRef {
 
     /// Whether the CRS is internally consistent — the check a hand-written WKT
     /// wants. `false` is a real answer, not an error.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn validate(&self) -> Result<bool> {
         ensure_initialized();
         let _guard = lock_gdal_shared();
@@ -316,7 +324,7 @@ impl JsSpatialRef {
 
     /// The geographic CRS underneath this one — WGS 84 for a UTM zone, say. A new
     /// object; this one is unchanged.
-    #[napi(js_name = "cloneGeogCS")]
+    #[napi(catch_unwind, js_name = "cloneGeogCS")]
     pub fn clone_geog_cs(&self) -> Result<JsSpatialRef> {
         ensure_initialized();
         let _guard = lock_gdal_shared();
@@ -342,7 +350,7 @@ impl JsSpatialRef {
     }
 
     /// Rewrite the CRS in ESRI's dialect, in place — the reverse of `fromESRI`.
-    #[napi(js_name = "morphToESRI")]
+    #[napi(catch_unwind, js_name = "morphToESRI")]
     pub fn morph_to_esri(&self) -> Result<()> {
         ensure_initialized();
         let _guard = lock_gdal_shared();
@@ -350,7 +358,7 @@ impl JsSpatialRef {
     }
 
     /// Rewrite the CRS from ESRI's dialect into OGC's, in place.
-    #[napi(js_name = "morphFromESRI")]
+    #[napi(catch_unwind, js_name = "morphFromESRI")]
     pub fn morph_from_esri(&self) -> Result<()> {
         ensure_initialized();
         let _guard = lock_gdal_shared();
@@ -364,7 +372,7 @@ impl JsSpatialRef {
 
     /// Reset this CRS, in place, to a well-known geographic one — `"WGS84"`,
     /// `"NAD27"`, or any other name `OSRSetWellKnownGeogCS` accepts.
-    #[napi(js_name = "setWellKnownGeogCS")]
+    #[napi(catch_unwind, js_name = "setWellKnownGeogCS")]
     pub fn set_well_known_geog_cs(&self, name: String) -> Result<()> {
         ensure_initialized();
         let _guard = lock_gdal_shared();
@@ -379,7 +387,7 @@ impl JsSpatialRef {
     /// Whether the **EPSG authority** reads this CRS as latitude,longitude. It is
     /// the authority's own order, independent of the one in force here, which
     /// `axisMapping` reports (`traditional` unless `withAxisMapping` changed it).
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn epsg_treats_as_lat_long(&self) -> Result<bool> {
         ensure_initialized();
         let _guard = lock_gdal_shared();
@@ -388,7 +396,7 @@ impl JsSpatialRef {
 
     /// Whether the CRS is geocentric — an Earth-centred XYZ system rather than a
     /// projected or geographic one.
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn is_geocentric(&self) -> Result<bool> {
         ensure_initialized();
         let _guard = lock_gdal_shared();
@@ -397,7 +405,7 @@ impl JsSpatialRef {
 
     /// Whether the CRS is *local* — a `LOCAL_CS` such as an engineering grid with no
     /// relation to the Earth. It is the one kind PROJ will not transform.
-    #[napi(getter)]
+    #[napi(catch_unwind, getter)]
     pub fn is_local(&self) -> Result<bool> {
         ensure_initialized();
         let _guard = lock_gdal_shared();
@@ -407,7 +415,7 @@ impl JsSpatialRef {
     /// Whether two CRSes share a geographic basis — same datum, same ellipsoid —
     /// whatever their projections are. Weaker than `equals`, which compares the whole
     /// definition.
-    #[napi(js_name = "isSameGeogCS")]
+    #[napi(catch_unwind, js_name = "isSameGeogCS")]
     pub fn is_same_geog_cs(&self, other: &JsSpatialRef) -> Result<bool> {
         ensure_initialized();
         let _guard = lock_gdal_shared();
@@ -418,7 +426,7 @@ impl JsSpatialRef {
     }
 
     /// Whether two CRSes share a vertical component. `false` when either has none.
-    #[napi(js_name = "isSameVertCS")]
+    #[napi(catch_unwind, js_name = "isSameVertCS")]
     pub fn is_same_vert_cs(&self, other: &JsSpatialRef) -> Result<bool> {
         ensure_initialized();
         let _guard = lock_gdal_shared();
@@ -431,7 +439,7 @@ impl JsSpatialRef {
     /// A named attribute out of the CRS, the way `gdalinfo` reaches into a WKT —
     /// `getAttrValue('PROJCS')`, `getAttrValue('UNIT', 0)`. `null` when there is no
     /// such node; `child` defaults to 0.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn get_attr_value(&self, name: String, child: Option<i32>) -> Result<Option<String>> {
         ensure_initialized();
         let _guard = lock_gdal_shared();
@@ -449,7 +457,7 @@ impl JsSpatialRef {
     /// Work out the CRS's EPSG code from its definition and set it, in place — for a
     /// hand-built WKT that carries no authority. A code GDAL cannot determine leaves
     /// the CRS alone rather than failing.
-    #[napi(js_name = "autoIdentifyEPSG")]
+    #[napi(catch_unwind, js_name = "autoIdentifyEPSG")]
     pub fn auto_identify_epsg(&self) -> Result<()> {
         ensure_initialized();
         let _guard = lock_gdal_shared();
@@ -608,7 +616,7 @@ fn build_transform_options(options: &CoordinateTransformOptions) -> Result<GdalT
 impl JsCoordinateTransform {
     /// From a source CRS to a target one, optionally telling GDAL how to choose
     /// the operation.
-    #[napi(constructor)]
+    #[napi(catch_unwind, constructor)]
     pub fn new(
         from: &JsSpatialRef,
         to: &JsSpatialRef,
@@ -636,7 +644,7 @@ impl JsCoordinateTransform {
     }
 
     /// Transform one coordinate: `[x, y]` in, `[x, y]` out.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn transform_point(&self, x: f64, y: f64) -> Result<Vec<f64>> {
         ensure_initialized();
         let _guard = lock_gdal_shared();
@@ -654,7 +662,7 @@ impl JsCoordinateTransform {
     /// Two dimensions only: a vertical or geocentric transformation needs a z,
     /// which this does not carry. The whole array is moved in one call, on this
     /// thread; `transformPoints` is the same work on the pool.
-    #[napi(js_name = "transformPointsSync")]
+    #[napi(catch_unwind, js_name = "transformPointsSync")]
     pub fn transform_points_sync(&self, points: Float64Array) -> Result<Float64Array> {
         ensure_initialized();
         let _guard = lock_gdal_shared();
@@ -671,7 +679,7 @@ impl JsCoordinateTransform {
     /// the transform is rebuilt where the work runs, from the two CRSes and the axis
     /// order they were built with, because a `CoordTransform` cannot cross threads.
     /// Both forms run the same body, so their answers cannot drift apart.
-    #[napi(ts_return_type = "Promise<Float64Array>")]
+    #[napi(catch_unwind, ts_return_type = "Promise<Float64Array>")]
     pub fn transform_points(&self, points: Float64Array) -> Result<AsyncTask<TransformPointsTask>> {
         let flat = points.as_ref();
         // Checked at the call rather than on the pool: a caller mistake should throw
@@ -695,7 +703,7 @@ impl JsCoordinateTransform {
     /// non-linear projection, so GDAL walks each edge with `densify` extra points.
     /// The result is a bounding box in the target CRS, which is at least as large
     /// as the true one.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn transform_bounds(&self, bounds: Vec<f64>, densify: Option<i32>) -> Result<Vec<f64>> {
         ensure_initialized();
 
@@ -726,7 +734,7 @@ impl JsCoordinateTransform {
     /// bulk data, and this one hands back GDAL's own GeoJSON, which a threaded
     /// return cannot name a type for (`serde_json::Value` has no napi type name). The
     /// bulk case — the coordinates themselves — is the array.
-    #[napi]
+    #[napi(catch_unwind)]
     pub fn transform_geometry(&self, geometry: Either<&JsGeometry, Unknown<'_>>) -> Result<Value> {
         ensure_initialized();
 
@@ -834,7 +842,7 @@ impl Task for IdentifyEpsgTask {
 ///
 /// Searches the CRS database, so this can take a moment — hence a promise. Returns
 /// `null` when nothing matches, which is an answer rather than a failure.
-#[napi(ts_return_type = "Promise<string | null>")]
+#[napi(catch_unwind, ts_return_type = "Promise<string | null>")]
 pub fn identify_epsg(wkt: String) -> AsyncTask<IdentifyEpsgTask> {
     AsyncTask::new(IdentifyEpsgTask { wkt })
 }
