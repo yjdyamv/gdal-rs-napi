@@ -87,7 +87,11 @@ impl ProgressSink for JsProgressSink {
             return false;
         }
 
-        *self.answer.0.lock().unwrap() = None;
+        *self
+            .answer
+            .0
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
         let answer = Arc::clone(&self.answer);
 
         // Announce the wait before the blocking send, and keep it announced through the
@@ -126,9 +130,11 @@ impl ProgressSink for JsProgressSink {
         // reading it without waiting reports the previous answer. GDAL's callback is
         // synchronous, so wait for this call's answer.
         let (slot, signal) = &*self.answer;
-        let mut answer = slot.lock().unwrap();
+        let mut answer = slot.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
         while answer.is_none() {
-            answer = signal.wait(answer).unwrap();
+            answer = signal
+                .wait(answer)
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
         }
         let keep_going = answer.unwrap_or(true);
 

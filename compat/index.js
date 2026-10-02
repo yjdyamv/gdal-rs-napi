@@ -445,13 +445,15 @@ class BandPixels {
   }
 
   read(x, y, width, height, data, type) {
-    const bytes = this._band._native.readPixelsSync({
-      x,
-      y,
-      width,
-      height,
-      dataType: dataTypeName(type),
-    })
+    const window = { x, y, width, height }
+    // A requested `type` has to go through `readAsSync`: the native reader takes no
+    // per-call type option, so putting `dataType` in the window would be ignored — the
+    // bytes would come back in the band's own type and then be reinterpreted as the
+    // requested one, at the wrong length.
+    const bytes =
+      type === undefined
+        ? this._band._native.readPixelsSync(window)
+        : this._band._native.readAsSync(dataTypeName(type), window)
     const code = type === undefined ? this._band.dataType : normalizeCode(type)
     const TypedArray = TYPED_ARRAY_BY_CODE[code] ?? Uint8Array
     const count = width * height
@@ -658,7 +660,11 @@ class Dataset {
   constructor(nativeDataset) {
     this._native = nativeDataset
     this.bands = new RasterBandCollection(nativeDataset.bands().map((band) => new RasterBand(band)))
-    this.layers = new LayerCollection(nativeDataset.layers().map((layer) => new Layer(layer)))
+    // A thread-safe dataset (`open(path, 'rs' | 'rt')`) is a read-only raster with no
+    // vector side at all, and asking it for layers throws. It gets an empty collection
+    // rather than taking the whole constructor down with it.
+    const layers = nativeDataset.threadSafe ? [] : nativeDataset.layers()
+    this.layers = new LayerCollection(layers.map((layer) => new Layer(layer)))
   }
 
   get description() {

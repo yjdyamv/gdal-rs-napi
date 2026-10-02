@@ -610,16 +610,19 @@ impl JsGeometry {
     /// Whether the geometry is well-formed — no self-intersecting rings, no
     /// repeated points. `false` for a geometry that is merely empty is not the
     /// same thing: see `isEmpty`.
+    ///
+    /// Needs no GEOS: OGR has its own implementation when GEOS is absent, so this
+    /// asks GDAL rather than refusing the question the way the predicates do.
     #[napi(catch_unwind)]
     pub fn is_valid(&self) -> Result<bool> {
-        self.unary(gdal_sys::OGR_G_IsValid)
+        self.unary_without_geos(gdal_sys::OGR_G_IsValid)
     }
 
     /// Whether the geometry has no self-intersections — the weaker question a
-    /// line can answer.
+    /// line can answer. Needs no GEOS, like `isValid`.
     #[napi(catch_unwind)]
     pub fn is_simple(&self) -> Result<bool> {
-        self.unary(gdal_sys::OGR_G_IsSimple)
+        self.unary_without_geos(gdal_sys::OGR_G_IsSimple)
     }
 
     /// The area within `distance` of the geometry, as a new polygon.
@@ -883,12 +886,13 @@ impl JsGeometry {
         Ok(unsafe { predicate(self.handle(), other.handle()) } != 0)
     }
 
-    /// A GEOS predicate of one geometry.
-    fn unary(
+    /// A one-geometry predicate that needs no GEOS — `OGR_G_IsValid` and
+    /// `OGR_G_IsSimple` have OGR implementations of their own, so requiring GEOS here
+    /// would refuse an answer GDAL can give.
+    fn unary_without_geos(
         &self,
         predicate: unsafe extern "C" fn(gdal_sys::OGRGeometryH) -> std::ffi::c_int,
     ) -> Result<bool> {
-        require_geos()?;
         ensure_initialized();
         let _guard = lock_gdal_shared();
         Ok(unsafe { predicate(self.handle()) } != 0)

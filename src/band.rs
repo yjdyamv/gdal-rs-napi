@@ -1819,8 +1819,9 @@ impl JsRasterBand {
         sample_as_number(&bytes, self.data_type)
     }
 
-    /// Write one sample from a JS number. The value is converted to the band's type,
-    /// so out-of-range integers wrap as GDAL wraps them.
+    /// Write one sample from a JS number. The value is converted to the band's type:
+    /// a float truncates towards zero, and an out-of-range integer clamps to the
+    /// type's bounds rather than wrapping.
     #[napi(catch_unwind)]
     pub fn set_pixel(&self, x: u32, y: u32, value: f64) -> Result<()> {
         let bytes = number_as_sample(value, self.data_type)?;
@@ -1938,9 +1939,9 @@ impl JsRasterBand {
     ///
     /// Each strip is handed to `onChunk` and the walk reads the next only once that
     /// call has come back — return `false` to stop, exactly as the sync form does. The
-    /// callback runs on the JS thread while the worker holds the process-wide GDAL
-    /// lock, so, like `onProgress`, it must not call back into this library. Resolves
-    /// to the number of strips handed out.
+    /// callback runs on the JS thread with the GDAL lock **released between strips**,
+    /// so it may call back into this library; it holds no lock while it waits.
+    /// Resolves to the number of strips handed out.
     #[napi(catch_unwind, ts_return_type = "Promise<number>")]
     pub fn read_chunks(
         &self,
@@ -2244,12 +2245,26 @@ fn read_overview_bytes(band: &mut RasterBand<'_>, level: usize) -> Result<Vec<u8
         )
     };
     let data_type = unsafe { gdal_sys::GDALGetRasterDataType(overview) };
-    // Allocate for the **overview's** own type, which is what `GDALRasterIO` is asked
-    // to write into this buffer: sizing it from the parent band instead would overflow
-    // the allocation if a driver ever gave a level a different type.
-    let sample_bytes = crate::dtype::bytes_per_sample(DataType::from_code(data_type)) as usize;
+    // Size the buffer from the overview's own GDAL type code, not from the binding's
+    // `DataType`: that enum has no complex or half-float variants and folds them into
+    // `Unknown`, whose `size()` is one byte — so a complex level would be
+    // under-allocated and `GDALRasterIO` would write past the buffer.
+    // `GDALGetDataTypeSizeBytes` is GDAL's own answer for every code, complex included.
+    let sample_bytes = unsafe { gdal_sys::GDALGetDataTypeSizeBytes(data_type) };
+    if sample_bytes <= 0 {
+        return Err(bad_argument(
+            "this overview's sample type has no byte size GDAL can report",
+        ));
+    }
+    let sample_bytes = sample_bytes as usize;
 
-    let mut bytes = vec![0u8; width as usize * height as usize * sample_bytes];
+    // `checked_mul` rather than `*`: an overview large enough to overflow `usize` is
+    // refused, not wrapped into a small allocation the read would then overrun.
+    let len = (width as usize)
+        .checked_mul(height as usize)
+        .and_then(|pixels| pixels.checked_mul(sample_bytes))
+        .ok_or_else(|| bad_argument("this overview is too large to read in one piece"))?;
+    let mut bytes = vec![0u8; len];
     let class = unsafe {
         gdal_sys::GDALRasterIO(
             overview,
@@ -2446,9 +2461,9 @@ macro_rules! sample_types {
             }
         }
 
-        /// A sample written from a number, in the band's own type. The cast is what
-        /// GDAL does with the same value: a float truncates towards zero, and an
-        /// integer wraps in two's complement.
+        /// A sample written from a number, in the band's own type: a float truncates
+        /// towards zero, and an out-of-range integer clamps to the type's bounds —
+        /// Rust's float-to-integer `as` saturates rather than wrapping.
         fn number_as_sample(value: f64, data_type: DataType) -> Result<Vec<u8>> {
             Ok(match data_type {
                 $(DataType::$variant => (value as $rust).to_ne_bytes().to_vec(),)*

@@ -109,6 +109,11 @@ impl JsGroup {
         Self { handle, dataset }
     }
 
+    /// The group's name, without taking the lock — for a caller that already holds it.
+    fn name_unlocked(&self) -> String {
+        c_string(unsafe { gdal_sys::GDALGroupGetName(self.handle) })
+    }
+
     /// Open one of the group's arrays by name, or answer `null`.
     fn array(&self, name: &str) -> Result<Option<JsMdArray>> {
         let name = c_name(name, "an array name")?;
@@ -146,14 +151,20 @@ impl JsGroup {
 impl JsGroup {
     /// The group's own name — the empty string for a root group.
     #[napi(catch_unwind, getter)]
-    pub fn name(&self) -> String {
-        c_string(unsafe { gdal_sys::GDALGroupGetName(self.handle) })
+    pub fn name(&self) -> Result<String> {
+        ensure_initialized();
+        let _guard = lock_gdal();
+        Ok(self.name_unlocked())
     }
 
     /// The name including its parents, e.g. `/group/sub`.
     #[napi(catch_unwind, getter)]
-    pub fn full_name(&self) -> String {
-        c_string(unsafe { gdal_sys::GDALGroupGetFullName(self.handle) })
+    pub fn full_name(&self) -> Result<String> {
+        ensure_initialized();
+        let _guard = lock_gdal();
+        Ok(c_string(unsafe {
+            gdal_sys::GDALGroupGetFullName(self.handle)
+        }))
     }
 
     /// The names of the arrays in this group.
@@ -250,7 +261,7 @@ impl JsGroup {
         Ok(self
             .dimension_list()
             .into_iter()
-            .find(|dimension| dimension.name() == name))
+            .find(|dimension| dimension.name_unlocked() == name))
     }
 
     /// GDAL's own metadata about the group — `IMAGE_STRUCTURE` and friends.
@@ -302,19 +313,29 @@ impl JsMdArray {
 #[napi]
 impl JsMdArray {
     #[napi(catch_unwind, getter)]
-    pub fn name(&self) -> String {
-        c_string(unsafe { gdal_sys::GDALMDArrayGetName(self.handle) })
+    pub fn name(&self) -> Result<String> {
+        ensure_initialized();
+        let _guard = lock_gdal();
+        Ok(c_string(unsafe {
+            gdal_sys::GDALMDArrayGetName(self.handle)
+        }))
     }
 
     #[napi(catch_unwind, getter)]
-    pub fn full_name(&self) -> String {
-        c_string(unsafe { gdal_sys::GDALMDArrayGetFullName(self.handle) })
+    pub fn full_name(&self) -> Result<String> {
+        ensure_initialized();
+        let _guard = lock_gdal();
+        Ok(c_string(unsafe {
+            gdal_sys::GDALMDArrayGetFullName(self.handle)
+        }))
     }
 
     /// How many dimensions the array has.
     #[napi(catch_unwind, getter)]
-    pub fn dimension_count(&self) -> u32 {
-        (unsafe { gdal_sys::GDALMDArrayGetDimensionCount(self.handle) }) as u32
+    pub fn dimension_count(&self) -> Result<u32> {
+        ensure_initialized();
+        let _guard = lock_gdal();
+        Ok((unsafe { gdal_sys::GDALMDArrayGetDimensionCount(self.handle) }) as u32)
     }
 
     /// The size along each dimension, in order.
@@ -325,7 +346,7 @@ impl JsMdArray {
         Ok(self
             .dimension_list()
             .into_iter()
-            .map(|dimension| dimension.size())
+            .map(|dimension| dimension.size_unlocked())
             .collect())
     }
 
@@ -480,7 +501,7 @@ impl JsMdArray {
             let shape: Vec<u64> = self
                 .dimension_list()
                 .into_iter()
-                .map(|dimension| dimension.size() as u64)
+                .map(|dimension| dimension.size_unlocked() as u64)
                 .collect();
             let options = options.unwrap_or_default();
             let start: Vec<u64> = match options.start {
@@ -582,9 +603,9 @@ impl JsMdArray {
             (Some(x), Some(y)) => (x as usize, y as usize),
             (None, None) => {
                 let index_of = |wanted: &str| {
-                    dimensions
-                        .iter()
-                        .position(|dimension| dimension.type_name().eq_ignore_ascii_case(wanted))
+                    dimensions.iter().position(|dimension| {
+                        dimension.type_name_unlocked().eq_ignore_ascii_case(wanted)
+                    })
                 };
                 match (index_of("HORIZONTAL_X"), index_of("HORIZONTAL_Y")) {
                     (Some(x), Some(y)) => (x, y),
@@ -793,42 +814,69 @@ impl JsDimension {
     pub(crate) fn new(handle: gdal_sys::GDALDimensionH, dataset: DatasetRef) -> Self {
         Self { handle, dataset }
     }
+
+    /// The dimension's name, without taking the lock — for a caller that holds it.
+    fn name_unlocked(&self) -> String {
+        c_string(unsafe { gdal_sys::GDALDimensionGetName(self.handle) })
+    }
+
+    /// The dimension's size, without taking the lock — for a caller that holds it.
+    fn size_unlocked(&self) -> u32 {
+        (unsafe { gdal_sys::GDALDimensionGetSize(self.handle) }) as u32
+    }
+
+    /// The dimension's axis type, without taking the lock — for a caller that holds it.
+    fn type_name_unlocked(&self) -> String {
+        c_string(unsafe { gdal_sys::GDALDimensionGetType(self.handle) })
+    }
 }
 
 #[napi]
 impl JsDimension {
     #[napi(catch_unwind, getter)]
-    pub fn name(&self) -> String {
-        c_string(unsafe { gdal_sys::GDALDimensionGetName(self.handle) })
+    pub fn name(&self) -> Result<String> {
+        ensure_initialized();
+        let _guard = lock_gdal();
+        Ok(self.name_unlocked())
     }
 
     #[napi(catch_unwind, getter)]
-    pub fn full_name(&self) -> String {
-        c_string(unsafe { gdal_sys::GDALDimensionGetFullName(self.handle) })
+    pub fn full_name(&self) -> Result<String> {
+        ensure_initialized();
+        let _guard = lock_gdal();
+        Ok(c_string(unsafe {
+            gdal_sys::GDALDimensionGetFullName(self.handle)
+        }))
     }
 
     /// How many elements the dimension has.
     #[napi(catch_unwind, getter)]
-    pub fn size(&self) -> u32 {
-        (unsafe { gdal_sys::GDALDimensionGetSize(self.handle) }) as u32
+    pub fn size(&self) -> Result<u32> {
+        ensure_initialized();
+        let _guard = lock_gdal();
+        Ok(self.size_unlocked())
     }
 
     /// The axis type: `HORIZONTAL_X` / `HORIZONTAL_Y` / `VERTICAL` / `TEMPORAL` /
     /// `PARAMETRIC`, or the empty string when GDAL does not say.
     #[napi(catch_unwind, getter)]
-    pub fn type_name(&self) -> String {
-        c_string(unsafe { gdal_sys::GDALDimensionGetType(self.handle) })
+    pub fn type_name(&self) -> Result<String> {
+        ensure_initialized();
+        let _guard = lock_gdal();
+        Ok(self.type_name_unlocked())
     }
 
     /// The direction the values run in — `EAST`, `NORTH`, `UP`, … — or `null`.
     #[napi(catch_unwind, getter)]
-    pub fn direction(&self) -> Option<String> {
+    pub fn direction(&self) -> Result<Option<String>> {
+        ensure_initialized();
+        let _guard = lock_gdal();
         let direction = c_string(unsafe { gdal_sys::GDALDimensionGetDirection(self.handle) });
-        if direction.is_empty() {
+        Ok(if direction.is_empty() {
             None
         } else {
             Some(direction)
-        }
+        })
     }
 
     /// The coordinate variable this dimension indexes by, if it has one.

@@ -483,8 +483,9 @@ band.readChunksSync({ rows: 64 }, onChunk)
 `rows` defaults to the band's block height, which is the strip GDAL reads anyway, and
 every strip arrives whole. `readChunks` runs the walk on the thread pool, so a raster
 larger than memory does not have to hold the event loop; the callback still runs on the
-JS thread, and the worker holds the GDAL lock while it waits for the answer — so, like
-`onProgress`, the callback must not call back into this library. `readChunksSync` reads
+JS thread, and the GDAL lock is released between strips while the worker waits for the
+answer — so, unlike `onProgress`, the callback may call back into this library.
+`readChunksSync` reads
 between callbacks on the calling thread, which is the right shape when the caller is
 already a worker. Both take the same answer as backpressure. (A band is not
 async-*iterable* — napi cannot put `Symbol.asyncIterator` on a generated class — which

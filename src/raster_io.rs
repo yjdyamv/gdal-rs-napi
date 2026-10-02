@@ -290,6 +290,12 @@ pub fn write_window(
             window.width, window.height
         )));
     }
+    // The window takes the first `expected` samples. A longer buffer is allowed — the
+    // documented contract is "at least" — and truncating here is what keeps
+    // `GdalBuffer::new`, which asserts its shape matches its data, from panicking on
+    // the extra samples.
+    let needed = expected * data_type.size();
+    let bytes = &bytes[..needed];
 
     let source = (window.x as isize, window.y as isize);
     let source_size = (window.width, window.height);
