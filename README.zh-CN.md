@@ -1487,26 +1487,28 @@ npm install https://github.com/yjdyamv/gdal-rs-napi/releases/download/v0.1.0/gda
 | `aarch64-unknown-linux-musl` | `ubuntu-24.04-arm` | `linux-arm64-musl` |
 
 glibc/Windows/macOS 各条腿都跑在**对应架构的原生运行器**上（交叉编译静态 GDAL 不值得）。
-两个 musl 目标标记为 `experimental`（`continue-on-error`）：它们在 **musl 原生的 Alpine
-容器**（`docker/musl.Dockerfile`）里构建，而容器跑在与目标同架构的 runner 上，所以容器
-自带的工具链本来就是 cargo 要的那个 musl 三元组 —— 没有交叉工具链、没有 sysroot、没有
-模拟执行。它仍是矩阵里最不确定的一环，原因是全驱动集会拉进 HDF5、netCDF、curl、libpq
-这些自带 C 库以及它们的 CMake/configure；这一步失败只会被报告，不会让整轮变红。测试也在
-同一个镜像里跑，那里 musl 就是原生 libc。
 
-那两条 musl 腿的测试跑在同一个容器里，而不是 runner 上：napi 会把 musl
-**动态**链接（加 `-C target-feature=-crt-static`），runner 上的 glibc Node 根本无法加载
-这样的 addon（一个进程里两个 libc）。容器也是更诚实的验证场所 —— 那里生成的 loader 会
-解析到 musl，跑的就是真产物，而不是披着 musl 标签的宿主构建。
+矩阵里每条腿跑的都是同一套步骤：一条腿只是 `target` + `runs-on`，musl 两条不再在 workflow
+里特殊分支。凡是必须在另一个 libc 里执行的命令（musl 的构建与测试就是），都交给
+`scripts/ci-run.mjs` 去容器里重入执行，其它腿照原样跑 —— 容器只在那一个脚本里出现。
 
-**这就是 musl 的定案，不是留着没答的问题。** 两条腿**有意**保持 `experimental`：它们构建的
-源码与 glibc 各条腿完全相同，只是 libc 不同，而脆弱的地方是那几个自带的 C 库、不是本 crate
-—— 所以 musl 腿绿了算加分，红了也不拦发布。真需要 musl 就用 `docker/` 里的容器自己构建。
+两条 musl 腿在 **musl 原生的 Alpine 容器**（`docker/musl.Dockerfile`）里构建和测试，容器跑在
+与目标同架构的 runner 上，所以容器自带的工具链本来就是 cargo 要的那个 musl 三元组 —— 没有
+交叉工具链、没有 sysroot、没有模拟执行。测试也在同一个镜像里跑：napi 会把 musl **动态**链接
+（加 `-C target-feature=-crt-static`），runner 上的 glibc Node 根本无法加载这样的 addon（一个
+进程里两个 libc），容器里跑的才是真产物。
 
-每条腿都跑 Node 测试套件和打包 tarball 的冒烟测试；`linux-x64-gnu` 那条还多带三样东西，因为
-为它们单开一条腿等于再花一整次 GDAL 构建去说同样的话。这三样是风格门禁（`cargo fmt
---check` 与带 `-D warnings` 的 clippy）、Rust 单测，以及那把锁的基准 —— 门槛是什么、为什么
-它可以失败，见《异步语义》；它的数字会归档到该次运行的 summary 和 artifact 里。
+**它们现在是普通腿，不再是 `experimental`。** 源码与 glibc 各条腿完全相同、只是 libc 不同，
+musl 腿红了就和其它腿一样让整轮失败 —— 那说明自带的 C 库（`all_drivers` 会拉进 HDF5、netCDF、
+curl、libpq）真出了问题，是要修的，不是可以忽略的噪声。真需要 musl 就用 `docker/` 里的容器
+自己构建。
+
+每条腿都跑 Node 测试套件和打包 tarball 的冒烟测试。另外有一个 `checks` job 承担两样不需要 GDAL
+的门禁 —— `cargo fmt --check` 和 `compat/index.d.ts` 的 TypeScript 类型检查 —— 这样风格或类型
+出错大约一分钟就失败，而不是等源码构建跑完。其余几样落在工具链已经热的 `linux-x64-gnu` 腿上：
+带 `-D warnings` 的 clippy、Rust 单测、跨目标的 StatBuf 类型检查、兼容层覆盖率下限，以及那把锁
+的基准 —— 门槛是什么、为什么它可以失败，见《异步语义》；它的数字会归档到该次运行的 summary 和
+artifact 里。
 
 Intel macOS 未构建。需要的话加一条 `macos-13` 腿即可，构建本身不用改。
 

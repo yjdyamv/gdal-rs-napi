@@ -27,28 +27,54 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   # A CI runner never commits, so the husky `prepare` hook has nothing to guard.
-  # Without this it still runs, and in the musl container — where `/work` is a
+  # Without this it still runs, and inside the musl container — where `/work` is a
   # bind mount with no `.git` — it prints
   #
   #     fatal: not in a git directory
   #
-  # into the middle of an otherwise clean build log, where it reads like the
-  # build failed.
+  # into the middle of an otherwise clean build log, where it reads like the build
+  # failed. `scripts/ci-run.mjs` forwards this variable into the container by name.
   HUSKY: "0"
 
 jobs:
+  # The gates that need no GDAL: formatting and the TypeScript declarations. They
+  # run on their own so a style or type slip fails in about a minute, instead of at
+  # the end of a matrix leg's 40-minute source build.
+  checks:
+    name: format & types
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Check formatting
+        run: cargo fmt --all --check
+
+      # `compat/index.d.ts` is a contract, and the TypeScript suite compiles against
+      # it: a wrong declaration fails here rather than in a consumer's build.
+      - name: Type-check the TypeScript suite
+        run: npm run typecheck
+
   build:
     name: ${{ matrix.target }}
     runs-on: ${{ matrix.runs-on }}
     # A cold run compiles PROJ and GDAL from source. On a 4-core runner that is
     # far slower than on a 16-core workstation, hence the generous ceiling.
     timeout-minutes: 180
-    # The two musl legs build inside a musl-native Alpine container (see
-    # docker/musl.Dockerfile) on a runner of their own architecture, so the
-    # container's toolchain already targets the musl triple cargo is asked for and
-    # the whole build is native. They remain the least settled part of the matrix
-    # and are allowed to fail without turning the whole run red.
-    continue-on-error: ${{ matrix.experimental || false }}
+    # Every leg runs the same steps. The two musl legs are not a special case: they
+    # differ only in their target, and `scripts/ci-run.mjs` re-enters a musl-native
+    # Alpine container (docker/musl.Dockerfile) for the commands that touch the
+    # addon, because a glibc Node cannot load a musl build. See that script.
     strategy:
       fail-fast: false
       matrix:
@@ -63,21 +89,20 @@ jobs:
             runs-on: ubuntu-24.04-arm
           - target: x86_64-unknown-linux-musl
             runs-on: ubuntu-latest
-            musl_container: true
-            experimental: true
           - target: aarch64-unknown-linux-musl
             runs-on: ubuntu-24.04-arm
-            musl_container: true
-            experimental: true
+    env:
+      # What `ci-run.mjs` reads to decide whether a command belongs in the container.
+      CI_TARGET: ${{ matrix.target }}
     steps:
       - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
-          # rustfmt and clippy run inside the linux-x64-gnu job so that the style
-          # gate does not need a second full PROJ/GDAL build of its own.
-          components: ${{ matrix.target == 'x86_64-unknown-linux-gnu' && 'rustfmt,clippy' || '' }}
+          # clippy runs inside the linux-x64-gnu job so the lint gate does not need a
+          # second full PROJ/GDAL build of its own; rustfmt lives in `checks`.
+          components: ${{ matrix.target == 'x86_64-unknown-linux-gnu' && 'clippy' || '' }}
 
       - uses: actions/setup-node@v4
         with:
@@ -125,61 +150,34 @@ jobs:
           cache-on-failure: true
 
       - name: Install npm dependencies
-        run: npm ci
+        run: node scripts/ci-run.mjs npm ci
 
-      - name: Check formatting
-        if: matrix.target == 'x86_64-unknown-linux-gnu'
-        run: cargo fmt --all --check
-
-      - name: Clippy
-        if: matrix.target == 'x86_64-unknown-linux-gnu'
-        run: cargo clippy --release --target ${{ matrix.target }} --all-targets -- -D warnings
-
+      # The three Rust checks that compile the crate but need no linked GDAL: clippy,
+      # the cross-target StatBuf type arms, and the pure-function unit tests (option
+      # handling, sample-type dispatch, the geometry/field-type name maps). One step,
+      # on the one leg that already pays for the PROJ/GDAL compile.
+      #
       # The StatBuf mapping changes three times (Windows/Linux/macOS), and bugs in it
-      # do not type-check on the one platform you develop on. `cargo check` for each
-      # target compiles the type arms without linking or a system GDAL, which is a
-      # cheap way to catch a wrong mapping before a 40-minute source build runs.
-      - name: Type-check StatBuf arms across targets
+      # do not type-check on the platform you develop on; `cargo check` for each target
+      # compiles the type arms without linking or a system GDAL.
+      - name: Rust checks
         if: matrix.target == 'x86_64-unknown-linux-gnu'
         run: |
+          cargo clippy --release --target ${{ matrix.target }} --all-targets -- -D warnings
           rustup target add aarch64-apple-darwin x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu
           cargo check --target aarch64-apple-darwin --lib 2>&1 | tail -1
           cargo check --target x86_64-unknown-linux-gnu --lib 2>&1 | tail -1
           cargo check --target aarch64-unknown-linux-gnu --lib 2>&1 | tail -1
-
-      # Pure-function unit tests (option handling, sample-type dispatch, the
-      # geometry/field-type name maps). They need no GDAL runtime and are cheap;
-      # one platform is enough to cover them.
-      - name: Rust unit tests
-        if: matrix.target == 'x86_64-unknown-linux-gnu'
-        run: cargo test --release --target ${{ matrix.target }} --lib
-
-      # `compat/index.d.ts` is a contract, and the TypeScript suite compiles against
-      # it: a wrong declaration fails here rather than in a consumer's build. Types
-      # only, so it needs no `.node` and runs before the long source build.
-      - name: Type-check the TypeScript suite
-        if: matrix.target == 'x86_64-unknown-linux-gnu'
-        run: npm run typecheck
+          cargo test --release --target ${{ matrix.target }} --lib
 
       # `npm run build` is scripts/build.mjs: it drops MSYS2/Cygwin prefixes from
       # PATH, verifies sqlite3 is reachable, then drives `napi build` and stages
-      # the PROJ/GDAL data files into assets/.
+      # the PROJ/GDAL data files into assets/. On a musl leg it runs inside the
+      # container, where the toolchain is musl-native — no cross toolchain, no
+      # sysroot, and no `--use-cross` for napi to hand a wrong host triple to — and
+      # where the dependency tree was installed to match.
       - name: Build
-        if: ${{ !matrix.musl_container }}
-        run: npm run build -- --target ${{ matrix.target }}
-
-      # The musl container is musl-native, so inside it this is an ordinary native
-      # build: no cross toolchain, no sysroot, and no `--use-cross`/`--cross-compile`
-      # for napi to hand a wrong host triple to. `npm ci` runs in there as well, so
-      # the dependency tree matches the container's libc and architecture rather
-      # than the runner's.
-      - name: Build the musl container
-        if: matrix.musl_container
-        run: docker build -f docker/musl.Dockerfile -t gdal-rs-napi-musl .
-
-      - name: Build (musl container)
-        if: matrix.musl_container
-        run: docker run --rm -v "$PWD:/work" -w /work gdal-rs-napi-musl sh -c "npm ci && npm run build -- --target ${{ matrix.target }}"
+        run: node scripts/ci-run.mjs npm run build -- --target ${{ matrix.target }}
 
       # `pack-platform.mjs` takes the platform label from the built `.node`
       # filename, so a leg that quietly builds for its host instead of its target
@@ -200,11 +198,10 @@ jobs:
 
       # The runner's Node is a glibc binary and napi links musl dynamically (it
       # appends `-C target-feature=-crt-static` for any musl target), so a musl
-      # addon cannot be dlopen'd here — one process, two libcs. That is a property
-      # of the artifact, not a reason to skip it.
+      # addon cannot be dlopen'd here — one process, two libcs. `ci-run.mjs` is what
+      # puts this inside the container rather than skipping it.
       - name: Test
-        if: ${{ !matrix.musl_container }}
-        run: npm test
+        run: node scripts/ci-run.mjs npm test
 
       # The coverage floor is what keeps a new member of the compatibility layer
       # from landing untested. It re-runs that suite alone (a couple of seconds) on
@@ -212,14 +209,7 @@ jobs:
       # expensive part of the run.
       - name: Compatibility coverage
         if: matrix.target == 'x86_64-unknown-linux-gnu'
-        run: npm run test:coverage
-
-      # So a musl leg tests inside its own container, where musl is the native libc
-      # and the generated loader resolves to what was just built rather than to a
-      # host build wearing a musl label.
-      - name: Test (musl)
-        if: matrix.musl_container
-        run: docker run --rm -v "$PWD:/work" -w /work gdal-rs-napi-musl npm test
+        run: node scripts/ci-run.mjs npm run test:coverage
 
       # The one benchmark that is also a check, on the one leg that is already through
       # its toolchain. `--min-speedup` gates the *ratio* between four dataset-free
@@ -261,26 +251,22 @@ jobs:
           path: dist/bench.log
           if-no-files-found: error
 
-      # One installable tarball per platform: root package files + assets/ + the
-      # binary, with os/cpu/libc set so npm refuses a mismatched machine. Run
-      # through npm so the script can find the npm CLI without a shell.
+      # One installable tarball per platform (root package files + assets/ + the
+      # binary, with os/cpu/libc set so npm refuses a mismatched machine), and the
+      # npm-format packages: the root package plus one `gdal-rs-napi-<platform>` per
+      # binary. Nothing is published to npm yet (the package is still `private`), but
+      # the packing runs on every build so the layout cannot rot before it is; the
+      # npm-format packages are not uploaded.
       - name: Pack
-        run: npm run pack
-
-      # The npm-format artifacts — the root package plus one
-      # `gdal-rs-napi-<platform>` per binary. Nothing is published to npm yet
-      # (the package is still `private`), but the packing runs on every build so
-      # the layout cannot rot between now and the day it is published. They are
-      # not uploaded: the self-contained tarball below is the release artifact.
-      - name: Pack the npm-format packages
-        run: npm run pack:npm
+        run: |
+          node scripts/ci-run.mjs npm run pack
+          node scripts/ci-run.mjs npm run pack:npm
 
       # The claim this package makes is "nothing on the host", so prove it: install
       # the artifact into an empty directory and use it. A CI runner is a clean
       # machine, which is exactly the machine the claim is about.
       #
-      # The musl leg has to do this inside the container, like `Build` and `Test`
-      # above. Running it on the host instead fails the install outright:
+      # Running this on the host for a musl leg fails the install outright:
       #
       #     npm error code EBADPLATFORM
       #     npm error notsup Unsupported platform for gdal-rs-napi@0.1.0:
@@ -288,16 +274,10 @@ jobs:
       #     (current: {"os":"linux","cpu":"x64","libc":"glibc"})
       #
       # because a musl build cannot be installed on a glibc host, whatever its
-      # contents. That is npm refusing the combination, not a defect in the
-      # tarball — which is exactly why this step has to run where the libc is the
-      # one the tarball was built for.
+      # contents — that is npm refusing the combination, not a defect in the tarball.
+      # `ci-run.mjs` puts it where the libc is the one the tarball was built for.
       - name: Smoke-test the packed tarball
-        if: ${{ !matrix.musl_container }}
-        run: npm run smoke
-
-      - name: Smoke-test the packed tarball (musl)
-        if: matrix.musl_container
-        run: docker run --rm -v "$PWD:/work" -w /work gdal-rs-napi-musl npm run smoke
+        run: node scripts/ci-run.mjs npm run smoke
 
       # GEOS is LGPL-2.1 and is linked statically into the `.node`, so LGPL-2.1 §6
       # asks this release for the means to relink it against a modified GEOS:
@@ -306,7 +286,7 @@ jobs:
       # platform in its name, so the release job below picks it up unchanged —
       # see THIRD-PARTY.md.
       - name: LGPL materials
-        run: npm run lgpl
+        run: node scripts/ci-run.mjs npm run lgpl
 
       - uses: actions/upload-artifact@v5
         with:
@@ -319,7 +299,7 @@ jobs:
   release:
     name: release
     if: startsWith(github.ref, 'refs/tags/v')
-    needs: build
+    needs: [build, checks]
     runs-on: ubuntu-latest
     permissions:
       contents: write

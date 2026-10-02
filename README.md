@@ -1783,28 +1783,33 @@ machine.
 
 Two things worth knowing about that matrix:
 
+- **Every leg runs the same steps.** A leg is just a `target` and a `runs-on`; the
+  musl ones are not special-cased in the workflow. Where a command has to run in a
+  different libc — a musl build, and its tests — `scripts/ci-run.mjs` re-enters the
+  container, and every other leg runs the command as it stands. That script is the
+  only place the container is mentioned.
 - **Every glibc/Windows/macOS leg is built on a native runner of the matching
   architecture.** Cross-compiling a statically linked GDAL is not worth the
   trouble, so the arm64 Linux leg uses GitHub's arm64 runner rather than a cross
   toolchain.
-- **The musl legs are marked `experimental`** (`continue-on-error`). They build
-  inside a musl-native Alpine container (`docker/musl.Dockerfile`) on a runner of
-  their own architecture, so the container's own toolchain already targets the musl
-  triple cargo is asked for and the whole build is native — no cross toolchain, no
-  sysroot, no emulation. What makes them the least settled part of the matrix is
-  the vendored C libraries `all_drivers` pulls in (HDF5, netCDF, curl, libpq) and
-  their CMake and configure steps, so a failure there is reported but does not fail
-  the run. The suite runs in the same image, where musl is the native libc.
-- **That is the decision on musl, not a question left open.** The legs stay
-  `experimental` on purpose: they build the same source as the glibc ones against a
-  different libc, and the fragile part is the vendored C libraries rather than this
-  crate — so a green musl leg is a bonus and a red one does not hold a release. If
-  you need musl for certain, build it yourself with the container in `docker/`.
+- **The musl legs build and test inside a musl-native Alpine container**
+  (`docker/musl.Dockerfile`) on a runner of their own architecture, so the
+  container's own toolchain already targets the musl triple cargo is asked for and
+  the whole build is native — no cross toolchain, no sysroot, no emulation. The
+  suite runs in the same image, where musl is the native libc: napi links musl
+  dynamically, so the runner's glibc Node could not load the addon at all.
+- **They are ordinary legs, not `experimental` ones.** They build the same source as
+  the glibc legs against a different libc, and a red musl leg fails the run like any
+  other. If a vendored C library (`all_drivers` pulls in HDF5, netCDF, curl and
+  libpq) breaks there, that is a real failure to fix rather than noise to ignore. If
+  you need musl outside CI, build it with the container in `docker/`.
 
-Every leg runs the Node suite and the packed-tarball smoke test; the
-`linux-x64-gnu` one carries the extras, because a leg of its own would cost a second
-full GDAL build to say the same things. Those extras are the style gate
-(`cargo fmt --check` and clippy with `-D warnings`), the Rust unit tests, and the lock
+Every leg runs the Node suite and the packed-tarball smoke test. A separate `checks`
+job carries the two gates that need no GDAL — `cargo fmt --check` and the TypeScript
+type-check of `compat/index.d.ts` — so a style or type slip fails in about a minute
+rather than at the end of the source build. The `linux-x64-gnu` leg, whose toolchain
+is already warm, carries the rest: clippy with `-D warnings`, the Rust unit tests, the
+cross-target StatBuf type arms, the compatibility coverage floor, and the lock
 benchmark — see *Async semantics* for what that gate is and why it can fail — whose
 numbers are archived in the run summary and as an artifact.
 

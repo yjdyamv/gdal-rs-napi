@@ -1,0 +1,13 @@
+# The musl image only installs a toolchain — `docker/musl.Dockerfile` copies nothing
+# from the context. The repository is still tarred and sent to the daemon before the
+# build starts, though, and `target/` is a full PROJ/GDAL/MSVC-scale build tree, so
+# leaving it out is the difference between a second and a minute of upload.
+.dockerignore
+target
+node_modules
+dist
+coverage
+assets
+.git
+*.node
+*.tgz
