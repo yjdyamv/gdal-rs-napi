@@ -21,7 +21,7 @@ use serde_json::Value;
 use crate::error::{IntoGdalResult, Result, bad_argument, driver_failure};
 use crate::runtime::{ensure_initialized, lock_gdal_shared};
 use crate::spatial_ref::JsSpatialRef;
-use crate::vector::{from_geojson, geometry_type_name, to_geojson};
+use crate::vector::{from_geojson, geometry_type_name, ogr_result, to_geojson};
 
 /// An axis-aligned bounding box, as `Geometry.envelope` reports it.
 #[napi(object)]
@@ -88,6 +88,7 @@ impl JsGeometry {
             | OGRwkbGeometryType::wkbMultiPolygon
             | OGRwkbGeometryType::wkbMultiCurve
             | OGRwkbGeometryType::wkbMultiSurface
+            | OGRwkbGeometryType::wkbCompoundCurve
             | OGRwkbGeometryType::wkbGeometryCollection => GeometryKind::Collection,
             _ => GeometryKind::Other,
         }
@@ -264,6 +265,20 @@ impl JsGeometry {
         ensure_initialized();
         let _guard = lock_gdal_shared();
         Ok(Self::wrap(from_geojson(&geometry)?))
+    }
+
+    /// An empty geometry of a named type — `create('LinearRing')`,
+    /// `create('CompoundCurve')`, `create('MultiPolygon')`. This is the door WKT
+    /// cannot open: there is no `LINEARRING` literal, so a ring has to be *made* as
+    /// one rather than parsed, and `Polygon.rings.add` needs a real `wkbLinearRing`.
+    #[napi(catch_unwind, factory)]
+    pub fn create(type_name: String) -> Result<Self> {
+        ensure_initialized();
+        let _guard = lock_gdal_shared();
+        let geometry_type = crate::vector::geometry_type_from_name(&type_name)?;
+        Ok(Self::wrap(
+            Geometry::empty(geometry_type).gdal_context("create")?,
+        ))
     }
 
     /// The canonical type name — `Point`, `LineString`, `Polygon`,
@@ -584,6 +599,133 @@ impl JsGeometry {
         Ok(Self::wrap(
             self.inner.transform(&transform).gdal_context("transform")?,
         ))
+    }
+}
+
+/// The **mutable builder** — the write side of a geometry, which everything above
+/// deliberately does not have (each of those returns a new object). These change the
+/// geometry in place, because that is the shape the reference's `points.add` /
+/// `rings.add` / `curves.add` collections are built on. They are additive: the value
+/// operations and their semantics are untouched.
+#[napi]
+impl JsGeometry {
+    /// Append a point to a `LineString` / `LinearRing` / `CircularString`. `z` is
+    /// optional — omit it for a 2D point.
+    #[napi(catch_unwind, js_name = "addPoint")]
+    pub fn add_point(&mut self, x: f64, y: f64, z: Option<f64>) -> Result<()> {
+        ensure_initialized();
+        let _guard = lock_gdal_shared();
+        match z {
+            Some(z) => self.inner.add_point((x, y, z)),
+            None => self.inner.add_point_2d((x, y)),
+        }
+        Ok(())
+    }
+
+    /// Replace the point at `index`, which has to exist.
+    #[napi(catch_unwind, js_name = "setPoint")]
+    pub fn set_point(&mut self, index: u32, x: f64, y: f64, z: Option<f64>) -> Result<()> {
+        ensure_initialized();
+        let _guard = lock_gdal_shared();
+        let index = index as usize;
+        if index >= self.inner.point_count() {
+            return Err(bad_argument(format!("point {index} does not exist")));
+        }
+        match z {
+            Some(z) => self.inner.set_point(index, (x, y, z)),
+            None => self.inner.set_point_2d(index, (x, y)),
+        }
+        Ok(())
+    }
+
+    /// Set a line's point count — GDAL's `OGR_G_SetPointCount`: growing pads with
+    /// zero points, shrinking drops the tail. This is the reference's `resize`.
+    #[napi(catch_unwind, js_name = "resizePoints")]
+    pub fn resize_points(&self, count: u32) -> Result<()> {
+        ensure_initialized();
+        let _guard = lock_gdal_shared();
+        unsafe { gdal_sys::OGR_G_SetPointCount(self.handle(), count as std::ffi::c_int) };
+        Ok(())
+    }
+
+    /// Append a child geometry — a polygon's ring, a compound curve's curve, a
+    /// collection's child. GDAL **clones** it, so `other` stays usable, and it
+    /// enforces what each parent accepts (a polygon's rings being `LinearRing`s, a
+    /// compound curve's curves being contiguous).
+    #[napi(catch_unwind, js_name = "addGeometry")]
+    pub fn add_geometry(&self, other: &JsGeometry) -> Result<()> {
+        ensure_initialized();
+        let _guard = lock_gdal_shared();
+        unsafe { gdal_sys::CPLErrorReset() };
+        let status = unsafe { gdal_sys::OGR_G_AddGeometry(self.handle(), other.handle()) };
+        ogr_result(status, "add the geometry")
+    }
+
+    /// Drop the child at `index` (`OGR_G_RemoveGeometry`). It has to exist.
+    #[napi(catch_unwind, js_name = "removeGeometry")]
+    pub fn remove_geometry(&self, index: u32) -> Result<()> {
+        ensure_initialized();
+        let _guard = lock_gdal_shared();
+        let index = index as std::ffi::c_int;
+        if index < 0 || index as usize >= self.inner.geometry_count() {
+            return Err(bad_argument(format!("child {index} does not exist")));
+        }
+        unsafe { gdal_sys::OGR_G_RemoveGeometry(self.handle(), index, 1) };
+        Ok(())
+    }
+
+    /// Close every ring of the geometry (`OGR_G_CloseRings`) — appends the first
+    /// point to the end of each ring that is not already closed.
+    #[napi(catch_unwind, js_name = "closeRings")]
+    pub fn close_rings(&self) -> Result<()> {
+        ensure_initialized();
+        let _guard = lock_gdal_shared();
+        unsafe { gdal_sys::OGR_G_CloseRings(self.handle()) };
+        Ok(())
+    }
+
+    /// Empty the geometry, keeping its type. `OGR_G_empty` is not bound by
+    /// `gdal_sys`, so the value is replaced with a fresh empty geometry of the same
+    /// type — which is exactly what `OGR_G_empty` does.
+    #[napi(catch_unwind)]
+    pub fn empty(&mut self) -> Result<()> {
+        ensure_initialized();
+        let _guard = lock_gdal_shared();
+        let geometry_type = self.inner.geometry_type();
+        self.inner = Geometry::empty(geometry_type).gdal_context("empty")?;
+        Ok(())
+    }
+
+    /// Append the points of `other`, a line, from `start` to `end` inclusive —
+    /// `OGR_G_AddSubLineString`, which `gdal_sys` does not bind. The indexes count
+    /// points and have to be in range.
+    #[napi(catch_unwind, js_name = "addSubLineString")]
+    pub fn add_sub_line_string(
+        &self,
+        other: &JsGeometry,
+        start: Option<u32>,
+        end: Option<u32>,
+    ) -> Result<()> {
+        ensure_initialized();
+        let _guard = lock_gdal_shared();
+        let count = other.inner.point_count() as u32;
+        let start = start.unwrap_or(0);
+        let end = end.unwrap_or_else(|| count.saturating_sub(1));
+        if count == 0 || start > end || end >= count {
+            return Err(bad_argument(format!(
+                "cannot take points {start}..{end} from a line of {count}"
+            )));
+        }
+        let has_z = other.has_z();
+        for index in start..=end {
+            let (x, y, z) = other.inner.get_point(index as i32);
+            if has_z {
+                unsafe { gdal_sys::OGR_G_AddPoint(self.handle(), x, y, z) };
+            } else {
+                unsafe { gdal_sys::OGR_G_AddPoint_2D(self.handle(), x, y) };
+            }
+        }
+        Ok(())
     }
 }
 

@@ -365,8 +365,10 @@ test('the numeric vocabularies come from the headers this build links', () => {
 
 test('the re-exports answer what the main entry point answers', () => {
   // Same objects where the main entry point already has one, so there is nothing to
-  // keep in step.
-  assert.equal(gdal.fs, native.fs)
+  // keep in step. `fs` is the exception: it is a wrapper, because the reference has
+  // `statAsync` / `readDirAsync` and this namespace is the one that cannot re-export.
+  assert.equal(gdal.fs.readFile, native.fs.readFile)
+  assert.equal(gdal.fs.stat, native.fs.stat)
   assert.equal(gdal.config, native.config)
   assert.equal(gdal.bundled, native.bundled)
   assert.equal(gdal.RasterMuxStream, native.RasterMuxStream)

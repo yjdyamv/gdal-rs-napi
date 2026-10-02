@@ -288,18 +288,94 @@ class Geometry {
 // underneath the adapter's.
 Object.setPrototypeOf(Geometry.prototype, native.Geometry.prototype)
 
-class SimpleCurve extends Geometry {}
-class Point extends Geometry {}
-class LineString extends SimpleCurve {}
-class LinearRing extends LineString {}
-class CircularString extends SimpleCurve {}
-class Polygon extends Geometry {}
-class MultiPoint extends Geometry {}
-class MultiLineString extends Geometry {}
-class MultiPolygon extends Geometry {}
-class GeometryCollection extends Geometry {}
-class CompoundCurve extends Geometry {}
-class MultiCurve extends GeometryCollection {}
+/** An empty native geometry of one type name, tagged as the given class. */
+function emptyGeometry(typeName, klass) {
+  const geometry = wrapGeometry(native.Geometry.create(typeName))
+  if (klass) Object.setPrototypeOf(geometry, klass.prototype)
+  return geometry
+}
+
+// The reference's classes are constructible — `new gdal.LineString()`,
+// `new gdal.Point(1, 2)`, `new gdal.CircularString()` — and then built up through
+// the `points` / `rings` / `curves` collections below. napi cannot express
+// inheritance and the native factories return `Geometry`, so a constructor here
+// builds the native empty (or single-point) geometry and hands back a re-tagged
+// object: the derived-class `return` overrides `this`, which is how a plain JS
+// class still answers with a native-backed object.
+class SimpleCurve extends Geometry {
+  constructor() {
+    super()
+    return emptyGeometry('LineString')
+  }
+}
+class Point extends Geometry {
+  constructor(x = 0, y = 0, z) {
+    super()
+    return wrapGeometry(
+      native.Geometry.fromWkt(z === undefined ? `POINT (${x} ${y})` : `POINT Z (${x} ${y} ${z})`),
+    )
+  }
+}
+class LineString extends SimpleCurve {
+  constructor() {
+    super()
+    return emptyGeometry('LineString')
+  }
+}
+class LinearRing extends LineString {
+  constructor() {
+    super()
+    return emptyGeometry('LinearRing', LinearRing)
+  }
+}
+class CircularString extends SimpleCurve {
+  constructor() {
+    super()
+    return emptyGeometry('CircularString')
+  }
+}
+class Polygon extends Geometry {
+  constructor() {
+    super()
+    return emptyGeometry('Polygon')
+  }
+}
+class MultiPoint extends Geometry {
+  constructor() {
+    super()
+    return emptyGeometry('MultiPoint')
+  }
+}
+class MultiLineString extends Geometry {
+  constructor() {
+    super()
+    return emptyGeometry('MultiLineString')
+  }
+}
+class MultiPolygon extends Geometry {
+  constructor() {
+    super()
+    return emptyGeometry('MultiPolygon')
+  }
+}
+class GeometryCollection extends Geometry {
+  constructor() {
+    super()
+    return emptyGeometry('GeometryCollection')
+  }
+}
+class CompoundCurve extends Geometry {
+  constructor() {
+    super()
+    return emptyGeometry('CompoundCurve')
+  }
+}
+class MultiCurve extends GeometryCollection {
+  constructor() {
+    super()
+    return emptyGeometry('MultiCurve')
+  }
+}
 
 // gdal-async reports a `LinearRing` through `Polygon.rings`, not as a type of its
 // own, so `LineString` is what a ring looks like from the outside. The curve types are
@@ -1947,6 +2023,11 @@ Object.assign(SpatialReference, {
   fromMICoordSys(definition) {
     return new SpatialReference(native.SpatialRef.fromDefinition(definition))
   },
+
+  /** A CRS in XML — the GML-style form `toXML()` produces. */
+  fromXML(xml) {
+    return new SpatialReference(native.SpatialRef.fromXml(xml))
+  },
 })
 
 Object.assign(SpatialReference.prototype, {
@@ -2242,6 +2323,28 @@ Object.assign(Feature.prototype, {
   setGeometry(geometry) {
     this.geometry = geometry
   },
+
+  /**
+   * The feature's OGR style string. The reference's `Feature` holds the OGR feature
+   * itself, so a style it is given stays readable; this object reads through the
+   * layer instead, and few drivers have anywhere to *keep* a style — so the value is
+   * mirrored on the layer as well, and a style set here reads back here. What a
+   * reopened file reports is still the driver's answer.
+   */
+  getStyleString() {
+    const styles = this._layer._styleStrings
+    if (styles && styles.has(this._fid)) return styles.get(this._fid)
+    const feature = this._layer._native.getFeature(this._fid)
+    return feature ? feature.getStyleString() : null
+  },
+
+  /** Replace the style string; `null` clears it. Written back through the layer too. */
+  setStyleString(style) {
+    this._layer._styleStrings ??= new Map()
+    this._layer._styleStrings.set(this._fid, style)
+    const feature = this._layer._native.getFeature(this._fid)
+    if (feature) feature.setStyleString(style)
+  },
 })
 
 // The reference's `feature.defn` — the schema this feature belongs to.
@@ -2265,7 +2368,6 @@ for (const name of [
   'boundary',
   'buffer',
   'centroid',
-  'children',
   'clone',
   'concaveHull',
   'convexHull',
@@ -2314,7 +2416,231 @@ Object.defineProperty(Geometry.prototype, 'transform', {
   },
 })
 
+// ---------------------------------------------------------------------------
+// The reference's mutable geometry collections
+//
+// `points`, `rings`, `children` and `curves` are **collections** in the reference —
+// objects with `add` / `get` / `count` / `forEach` and an iterator. This binding
+// spells `points()` / `rings()` / `children()` as calls that return arrays. Both
+// fit in one thing: each collection here is a *callable* — calling it answers the
+// array, and the collection surface hangs off the same object, the trick
+// `dataset.bands` already uses. So `line.points()` still works and
+// `line.points.add(1, 2)` does too.
+//
+// The native builder methods (`addPoint`, `setPoint`, `addGeometry`, `removeGeometry`,
+// `closeRings`, `empty`) mutate in place, so these are live over the geometry rather
+// than over a snapshot: `polygon.rings.add(ring)` shows up in `polygon.toWkt()`.
+
+const COLLECTION_BRAND = Symbol('gdal.geometry.collection')
+
+/** Tag a callable as one collection kind, so `instanceof` can check it by name. */
+function brandedCollection(kind, fn) {
+  fn[COLLECTION_BRAND] = kind
+  return fn
+}
+
+// The reference's collection classes. `instanceof` is answered by the brand rather
+// than a real prototype, so the collection can stay callable — which is what keeps
+// the native `points()` spelling working beside the reference's `points.add`.
+class LineStringPoints {
+  static [Symbol.hasInstance](value) {
+    return typeof value === 'function' && value[COLLECTION_BRAND] === 'points'
+  }
+}
+class PolygonRings {
+  static [Symbol.hasInstance](value) {
+    return typeof value === 'function' && value[COLLECTION_BRAND] === 'rings'
+  }
+}
+class GeometryCollectionChildren {
+  static [Symbol.hasInstance](value) {
+    return typeof value === 'function' && value[COLLECTION_BRAND] === 'children'
+  }
+}
+class CompoundCurveCurves {
+  static [Symbol.hasInstance](value) {
+    return typeof value === 'function' && value[COLLECTION_BRAND] === 'curves'
+  }
+}
+
+/** A point-like value as `[x, y, z?]`. */
+function pointCoords(value) {
+  if (Array.isArray(value)) return [value[0], value[1], value[2]]
+  if (value && typeof value.x === 'number' && typeof value.y === 'number') {
+    return [value.x, value.y, value.z == null ? undefined : value.z]
+  }
+  throw new TypeError('a point must be a gdal.Point, an { x, y } object or an [x, y] array')
+}
+
+/**
+ * The points one `add` / `set` call names: `(x, y[, z])`, a single point-like, or
+ * an array of point-likes (which may itself be one `[x, y, z]` coordinate).
+ */
+function pointArguments(args) {
+  if (args.length >= 2 && typeof args[0] === 'number') return [[args[0], args[1], args[2]]]
+  if (args.length !== 1) {
+    throw new TypeError('points.add takes (x, y[, z]), one point, or an array of points')
+  }
+  const value = args[0]
+  if (Array.isArray(value)) {
+    // `[x, y]` is one coordinate; anything else is a list of point-likes.
+    if (value.length > 0 && value.every((entry) => typeof entry === 'number')) return [value]
+    return value.map(pointCoords)
+  }
+  return [pointCoords(value)]
+}
+
+/** A `Point` geometry for one coordinate. */
+function pointGeometry(coords) {
+  return new Point(coords[0], coords[1], coords[2])
+}
+
+/** A `LinearRing` geometry for one ring of coordinates — a real `wkbLinearRing`. */
+function ringGeometry(coords) {
+  const ring = new LinearRing()
+  for (const point of coords) ring.addPoint(point[0], point[1], point[2])
+  return ring
+}
+
+/** `points` — the reference's editable point list, over native `addPoint` / `setPoint`. */
+function pointsCollection(geometry) {
+  const read = () => nativeGeometry.points.call(geometry)
+  const fn = brandedCollection('points', function points() {
+    return read()
+  })
+  fn.count = () => (read() ?? []).length
+  fn.get = (index) => {
+    const coords = read()
+    if (!coords || coords[index] === undefined) throw new Error(`point ${index} does not exist`)
+    return pointGeometry(coords[index])
+  }
+  fn.add = (...args) => {
+    for (const coords of pointArguments(args)) geometry.addPoint(coords[0], coords[1], coords[2])
+  }
+  fn.set = (index, ...args) => {
+    const [coords] = pointArguments(args)
+    geometry.setPoint(index, coords[0], coords[1], coords[2])
+  }
+  fn.resize = (count) => geometry.resizePoints(count)
+  fn.reverse = () => {
+    const reversed = (read() ?? []).slice().reverse()
+    reversed.forEach((coords, index) => geometry.setPoint(index, coords[0], coords[1], coords[2]))
+  }
+  fn.forEach = (callback) => {
+    const coords = read() ?? []
+    for (let index = 0; index < coords.length; index++) {
+      if (callback(pointGeometry(coords[index]), index) === false) break
+    }
+  }
+  fn.map = (callback) => (read() ?? []).map((coords, index) => callback(pointGeometry(coords), index))
+  fn.toArray = () => (read() ?? []).map(pointGeometry)
+  fn[Symbol.iterator] = () => fn.toArray()[Symbol.iterator]()
+  return fn
+}
+
+/** `rings` — a polygon's rings, over native `addGeometry`. */
+function ringsCollection(geometry) {
+  const read = () => nativeGeometry.rings.call(geometry)
+  const fn = brandedCollection('rings', function rings() {
+    return read()
+  })
+  fn.count = () => (read() ?? []).length
+  fn.get = (index) => {
+    const rings = read()
+    if (!rings || rings[index] === undefined) throw new Error(`ring ${index} does not exist`)
+    return ringGeometry(rings[index])
+  }
+  fn.add = (value) => {
+    for (const ring of Array.isArray(value) ? value : [value]) {
+      if (!(ring instanceof LinearRing)) throw new TypeError('a ring must be a LinearRing')
+      geometry.addGeometry(ring)
+    }
+  }
+  fn.toArray = () => (read() ?? []).map(ringGeometry)
+  fn.forEach = (callback) => fn.toArray().forEach(callback)
+  fn.map = (callback) => fn.toArray().map(callback)
+  fn[Symbol.iterator] = () => fn.toArray()[Symbol.iterator]()
+  return fn
+}
+
+/** `children` / `curves` — a collection's parts, over native `addGeometry` / `removeGeometry`. */
+function childrenCollection(geometry, kind) {
+  const read = () => nativeGeometry.children.call(geometry)?.map(wrapGeometry) ?? null
+  const fn = brandedCollection(kind, function children() {
+    return read()
+  })
+  fn.count = () => (read() ?? []).length
+  fn.get = (index) => {
+    const children = read()
+    if (!children || children[index] === undefined) throw new Error(`child ${index} does not exist`)
+    return children[index]
+  }
+  fn.add = (value) => {
+    if (value === undefined) throw new TypeError('add must be given a geometry or an array of them')
+    for (const child of Array.isArray(value) ? value : [value]) {
+      if (!(child instanceof Geometry)) throw new TypeError('child must be a geometry')
+      geometry.addGeometry(child)
+    }
+  }
+  fn.remove = (index) => geometry.removeGeometry(index)
+  fn.toArray = () => read() ?? []
+  fn.forEach = (callback) => fn.toArray().forEach(callback)
+  fn.map = (callback) => fn.toArray().map(callback)
+  fn[Symbol.iterator] = () => fn.toArray()[Symbol.iterator]()
+  return fn
+}
+
+// One getter per collection, shape-specific like every other accessor: the call
+// answers `null` for a geometry the shape does not apply to, so `line.rings()` is
+// still `null` while `line.rings.get(0)` throws.
+for (const [name, build] of [
+  ['points', pointsCollection],
+  ['rings', ringsCollection],
+  ['children', (geometry) => childrenCollection(geometry, 'children')],
+  ['curves', (geometry) => childrenCollection(geometry, 'curves')],
+]) {
+  Object.defineProperty(Geometry.prototype, name, {
+    configurable: true,
+    get() {
+      return build(this)
+    },
+  })
+}
+
 let driversCollection = null
+
+// `fs` is the one namespace that has to be wrapped rather than re-exported: the
+// reference gives it `statAsync` / `readDirAsync`, and this binding's own convention
+// (the async form is the plain call) has no place for them — the native `fs` keeps
+// its synchronous surface, and the two promises live here.
+const fs = {
+  ...native.fs,
+
+  /** `statAsync(path)` — the same read as `stat`, as a promise that rejects if absent. */
+  statAsync(path, follow, callback) {
+    const cb = typeof follow === 'function' ? follow : callback
+    const result = native.fs.stat(path)
+    return withCallback(
+      result === null
+        ? Promise.reject(new Error(`${path} does not exist`))
+        : Promise.resolve(result),
+      cb,
+    )
+  },
+
+  /** `readDirAsync(path, recursive?)` — the same read as `readDir`, rejecting if absent. */
+  readDirAsync(path, recursive, callback) {
+    const cb = typeof recursive === 'function' ? recursive : callback
+    const options = typeof recursive === 'function' ? undefined : recursive
+    return withCallback(
+      Promise.resolve().then(() => {
+        if (!native.fs.exists(path)) throw new Error(`${path} does not exist`)
+        return native.fs.readDir(path, options)
+      }),
+      cb,
+    )
+  },
+}
 
 const Gdal = {
   ...geometryFactories,
@@ -2423,12 +2749,17 @@ const Gdal = {
   CoordinateTransformation,
   // The multidim collection aliases the reference's tests name.
   Dimensions: GroupDimensions,
-  GeometryCollectionChildren: Collection,
+  // The geometry collections, whose `instanceof` is answered by a brand so the
+  // collection can also stay callable.
+  LineStringPoints,
+  PolygonRings,
+  GeometryCollectionChildren,
+  CompoundCurveCurves,
 
   // Re-exports: the main entry point already answers these, under its own name or the
   // same one. Nothing is reimplemented here.
   config: native.config,
-  fs: native.fs,
+  fs,
   vsimem,
   /**
    * The reference's `info(dataset, args)` is `gdalinfo`'s report for a dataset.
@@ -2874,7 +3205,7 @@ function addStaticAsyncTwins(klass, names) {
 addStaticAsyncTwins(Geometry, ['fromWKT', 'fromWKB', 'fromGeoJson', 'fromGeoJsonBuffer'])
 addStaticAsyncTwins(SpatialReference, [
   'fromEPSG', 'fromWKT', 'fromProj4', 'fromESRI', 'fromEPSGA', 'fromURN',
-  'fromURL', 'fromCRSURL', 'fromUserInput', 'fromWMSAUTO', 'fromMICoordSys',
+  'fromURL', 'fromCRSURL', 'fromUserInput', 'fromWMSAUTO', 'fromMICoordSys', 'fromXML',
 ])
 
 // `dataset.srsAsync` / `layer.srsAsync` — the reference's promise-shaped CRS read. A

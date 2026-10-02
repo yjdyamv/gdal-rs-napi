@@ -229,9 +229,25 @@ declare namespace gdal {
     envelope(): { minX: number; minY: number; maxX: number; maxY: number } | null
     area(): number
     length(): number
-    points(): number[][] | null
-    rings(): number[][][] | null
-    children(): Geometry[] | null
+    /** The reference's editable point list, callable for the native `points()` array. */
+    readonly points: LineStringPoints
+    /** A polygon's rings, callable for the native `rings()` array. */
+    readonly rings: PolygonRings
+    /** A collection's parts, callable for the native `children()` array. */
+    readonly children: GeometryCollectionChildren
+    /** A compound curve's curves, callable for the native `children()` array. */
+    readonly curves: CompoundCurveCurves
+
+    // The mutable builder, inherited from the native class.
+    addPoint(x: number, y: number, z?: number): void
+    setPoint(index: number, x: number, y: number, z?: number): void
+    resizePoints(count: number): void
+    addGeometry(geometry: Geometry): void
+    removeGeometry(index: number): void
+    closeRings(): void
+    addSubLineString(line: LineString, start?: number, end?: number): void
+    empty(): void
+
     clone(): Geometry
     flattenTo2D(): Geometry
     segmentize(maxLength: number): Geometry
@@ -302,39 +318,51 @@ declare namespace gdal {
 
   /** The base of the line-like shapes, in the reference's hierarchy. */
   class SimpleCurve extends Geometry {
+    constructor()
     static wkbType: number
   }
   class Point extends Geometry {
+    constructor(x?: number, y?: number, z?: number)
     static wkbType: number
   }
   class LineString extends SimpleCurve {
+    constructor()
     static wkbType: number
   }
   class LinearRing extends LineString {
+    constructor()
     static wkbType: number
   }
   class CircularString extends SimpleCurve {
+    constructor()
     static wkbType: number
   }
   class Polygon extends Geometry {
+    constructor()
     static wkbType: number
   }
   class MultiPoint extends Geometry {
+    constructor()
     static wkbType: number
   }
   class MultiLineString extends Geometry {
+    constructor()
     static wkbType: number
   }
   class MultiPolygon extends Geometry {
+    constructor()
     static wkbType: number
   }
   class GeometryCollection extends Geometry {
+    constructor()
     static wkbType: number
   }
   class CompoundCurve extends Geometry {
+    constructor()
     static wkbType: number
   }
   class MultiCurve extends GeometryCollection {
+    constructor()
     static wkbType: number
   }
 
@@ -402,6 +430,8 @@ declare namespace gdal {
     static fromUserInput(definition: string): SpatialReference
     static fromWMSAUTO(definition: string): SpatialReference
     static fromMICoordSys(definition: string): SpatialReference
+    /** A CRS in XML — the form `toXML()` produces. */
+    static fromXML(xml: string): SpatialReference
     static fromEPSGAsync(code: number): Promise<SpatialReference>
     static fromWKTAsync(wkt: string): Promise<SpatialReference>
     static fromProj4Async(proj4: string): Promise<SpatialReference>
@@ -413,6 +443,7 @@ declare namespace gdal {
     static fromUserInputAsync(definition: string): Promise<SpatialReference>
     static fromWMSAUTOAsync(definition: string): Promise<SpatialReference>
     static fromMICoordSysAsync(definition: string): Promise<SpatialReference>
+    static fromXMLAsync(xml: string): Promise<SpatialReference>
 
     readonly wkt: string
     readonly prettyWkt: string
@@ -600,6 +631,9 @@ declare namespace gdal {
     geometry: Geometry | null
     getGeometry(): Geometry | null
     setGeometry(geometry: Geometry | null): void
+    /** OGR's style string, or `null` — which drivers keep one is the driver's answer. */
+    getStyleString(): string | null
+    setStyleString(style: string | null): void
   }
 
   class FeatureDefn {
@@ -817,10 +851,72 @@ declare namespace gdal {
   class Dimensions extends GroupDimensions {}
   /** The reference's name for a `FeatureDefn`'s field collection. */
   class FeatureDefnFields extends FieldCollection {}
-  /** The reference's name for a `GeometryCollection`'s parts. */
-  class GeometryCollectionChildren extends Collection<Geometry> {
-    get(index: number): Geometry | null
+  /**
+   * The reference's point list. Callable for the native `points()` array (this
+   * binding's spelling), with `add` / `set` / `get` and the rest over native
+   * `addPoint` / `setPoint`.
+   */
+  interface LineStringPoints {
+    (): number[][] | null
+    count(): number
+    get(index: number): Point
+    add(x: number, y: number, z?: number): void
+    add(
+      point:
+        | Point
+        | { x: number; y: number; z?: number }
+        | Array<Point | { x: number; y: number; z?: number } | number[]>,
+    ): void
+    set(index: number, x: number, y: number, z?: number): void
+    set(index: number, point: Point | { x: number; y: number; z?: number }): void
+    resize(count: number): void
+    reverse(): void
+    forEach(callback: (point: Point, index: number) => unknown): void
+    map<T>(callback: (point: Point, index: number) => T): T[]
+    toArray(): Point[]
+    [Symbol.iterator](): Iterator<Point>
   }
+  class LineStringPoints {}
+
+  /** The reference's ring list. Callable for the native `rings()` array. */
+  interface PolygonRings {
+    (): number[][][] | null
+    count(): number
+    get(index: number): LinearRing
+    add(ring: LinearRing | LinearRing[]): void
+    forEach(callback: (ring: LinearRing, index: number) => unknown): void
+    map<T>(callback: (ring: LinearRing, index: number) => T): T[]
+    toArray(): LinearRing[]
+    [Symbol.iterator](): Iterator<LinearRing>
+  }
+  class PolygonRings {}
+
+  /** The reference's child list. Callable for the native `children()` array. */
+  interface GeometryCollectionChildren {
+    (): Geometry[] | null
+    count(): number
+    get(index: number): Geometry
+    add(child: Geometry | Geometry[]): void
+    remove(index: number): void
+    forEach(callback: (child: Geometry, index: number) => unknown): void
+    map<T>(callback: (child: Geometry, index: number) => T): T[]
+    toArray(): Geometry[]
+    [Symbol.iterator](): Iterator<Geometry>
+  }
+  class GeometryCollectionChildren {}
+
+  /** A compound curve's curves. Callable for the native `children()` array. */
+  interface CompoundCurveCurves {
+    (): Geometry[] | null
+    count(): number
+    get(index: number): SimpleCurve
+    add(curve: SimpleCurve | SimpleCurve[]): void
+    forEach(callback: (curve: SimpleCurve, index: number) => unknown): void
+    map<T>(callback: (curve: SimpleCurve, index: number) => T): T[]
+    toArray(): SimpleCurve[]
+    [Symbol.iterator](): Iterator<SimpleCurve>
+  }
+  class CompoundCurveCurves {}
 
   // ---- streams and pixel-wise calc -----------------------------------------
 
@@ -866,6 +962,12 @@ declare namespace gdal {
     diskFreeSpace(path: string): number
     isLocal(path: string): boolean
     clearCurlCache(): void
+    /** The reference's async pair — a promise, rejecting when the path is absent. */
+    statAsync(
+      path: string,
+      follow?: boolean,
+    ): Promise<{ size: number; isFile: boolean; isDirectory: boolean; modifiedMs: number }>
+    readDirAsync(path: string, recursive?: boolean): Promise<string[]>
   }
   const vsimem: {
     set(data: Buffer | Uint8Array, filename?: string): string

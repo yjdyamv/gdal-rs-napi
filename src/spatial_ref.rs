@@ -6,6 +6,8 @@
 //! context from `OSRGetProjTLSContext()`, so two threads transform through separate
 //! contexts, and the error slot they read is thread-local. See `runtime`.
 
+use std::ffi::{CString, c_char};
+
 use gdal::spatial_ref::{
     AxisMappingStrategy, CoordTransform, CoordTransformOptions as GdalTransformOptions, SpatialRef,
 };
@@ -14,7 +16,8 @@ use napi_derive::napi;
 use serde_json::Value;
 
 use crate::error::{
-    GdalErrorCode, IntoGdalResult, Result, bad_argument, cpl_failure, into_status_error, split,
+    GdalErrorCode, IntoGdalResult, Result, bad_argument, cpl_failure, driver_failure,
+    into_status_error, split,
 };
 use crate::geometry::JsGeometry;
 use crate::runtime::{ensure_initialized, lock_gdal_shared};
@@ -147,6 +150,43 @@ impl JsSpatialRef {
         ensure_initialized();
         let _guard = lock_gdal_shared();
         Self::build_from_definition(&definition)
+    }
+
+    /// From a CRS in XML — the GML-style description `SpatialRef.toXML` produces.
+    /// `fromDefinition` cannot read one: `OSRSetFromUserInput` takes WKT, PROJ, EPSG
+    /// and URN, but XML goes through `OSRImportFromXML`, which `gdal` does not wrap,
+    /// so this creates a raw handle, imports, and re-parses the WKT it exports.
+    #[napi(catch_unwind, factory, js_name = "fromXml")]
+    pub fn from_xml(xml: String) -> Result<Self> {
+        ensure_initialized();
+        let _guard = lock_gdal_shared();
+        let xml =
+            CString::new(xml).map_err(|_| bad_argument("the CRS XML cannot contain a NUL byte"))?;
+        unsafe {
+            let handle = gdal_sys::OSRNewSpatialReference(std::ptr::null());
+            if handle.is_null() {
+                return Err(driver_failure(
+                    "GDAL could not allocate a spatial reference",
+                ));
+            }
+            if gdal_sys::OSRImportFromXML(handle, xml.as_ptr()) != 0 {
+                gdal_sys::OSRDestroySpatialReference(handle);
+                return Err(bad_argument("GDAL could not read that CRS XML"));
+            }
+            let mut wkt: *mut c_char = std::ptr::null_mut();
+            let status = gdal_sys::OSRExportToWkt(handle, &mut wkt);
+            gdal_sys::OSRDestroySpatialReference(handle);
+            if status != 0 || wkt.is_null() {
+                return Err(driver_failure(
+                    "GDAL could not serialize the CRS it just read",
+                ));
+            }
+            let text = crate::runtime::c_string(wkt);
+            gdal_sys::VSIFree(wkt.cast());
+            Ok(Self::wrap(
+                SpatialRef::from_wkt(&text).gdal_context("from_xml")?,
+            ))
+        }
     }
 
     #[napi(catch_unwind, getter)]

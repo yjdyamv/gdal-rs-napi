@@ -477,7 +477,7 @@ pub(crate) fn add_field_to_layer(
 /// The read-then-reset is the same discipline [`crate::raster_tools::cpl_result`]
 /// follows: a failure that became an exception is gone from `lastError()`, which is
 /// left for the errors that never did.
-fn ogr_result(status: gdal_sys::OGRErr::Type, what: &str) -> Result<()> {
+pub(crate) fn ogr_result(status: gdal_sys::OGRErr::Type, what: &str) -> Result<()> {
     if status == 0 {
         return Ok(());
     }
@@ -577,6 +577,10 @@ pub(crate) fn geometry_type_from_name(name: &str) -> Result<OGRwkbGeometryType::
         "multilinestring" => OGRwkbGeometryType::wkbMultiLineString,
         "multipolygon" => OGRwkbGeometryType::wkbMultiPolygon,
         "geometrycollection" => OGRwkbGeometryType::wkbGeometryCollection,
+        // A ring is not a name WKT carries (`geometry_type_name` flattens it to
+        // `LineString`), so this is the one arm that has no inverse — it is here for
+        // `Geometry.create('LinearRing')`, which is how a ring is *made*.
+        "linearring" => OGRwkbGeometryType::wkbLinearRing,
         "circularstring" => OGRwkbGeometryType::wkbCircularString,
         "compoundcurve" => OGRwkbGeometryType::wkbCompoundCurve,
         "curvepolygon" => OGRwkbGeometryType::wkbCurvePolygon,
@@ -2055,6 +2059,57 @@ impl JsFeature {
     #[napi(catch_unwind)]
     pub fn to_object(&self) -> Result<FeatureRecord> {
         self.record()
+    }
+
+    /// The feature's style string — OGR's `PEN(...)` / `BRUSH(...)` / `SYMBOL(...)`
+    /// form — or `null` when it has none. Which drivers keep one is the driver's
+    /// answer; a format with nowhere to put it reports `null` however it was set.
+    #[napi(catch_unwind, js_name = "getStyleString")]
+    pub fn get_style_string(&self) -> Result<Option<String>> {
+        ensure_initialized();
+        self.dataset.with_exclusive(|dataset| {
+            let layer = dataset.layer(self.index).gdal_context("get_style_string")?;
+            let feature = layer.feature(self.fid as u64).ok_or_else(|| {
+                bad_argument(format!("no feature with fid {} in this layer", self.fid))
+            })?;
+            let style = unsafe { gdal_sys::OGR_F_GetStyleString(feature.c_feature()) };
+            Ok(if style.is_null() {
+                None
+            } else {
+                Some(crate::runtime::c_string(style))
+            })
+        })
+    }
+
+    /// Replace the feature's style string, written back through the layer like every
+    /// other write this object makes. `null` clears it.
+    #[napi(catch_unwind, js_name = "setStyleString")]
+    pub fn set_style_string(&self, style: Option<String>) -> Result<()> {
+        ensure_initialized();
+        let style = style
+            .map(|text| {
+                CString::new(text)
+                    .map_err(|_| bad_argument("a style string cannot contain a NUL byte"))
+            })
+            .transpose()?;
+        self.dataset.with_mut(|dataset| {
+            let layer = dataset.layer(self.index).gdal_context("set_style_string")?;
+            let feature = layer.feature(self.fid as u64).ok_or_else(|| {
+                bad_argument(format!("no feature with fid {} in this layer", self.fid))
+            })?;
+            unsafe {
+                gdal_sys::OGR_F_SetStyleString(
+                    feature.c_feature(),
+                    style
+                        .as_ref()
+                        .map_or(std::ptr::null(), |text| text.as_ptr()),
+                );
+                ogr_result(
+                    gdal_sys::OGR_L_SetFeature(layer.c_layer(), feature.c_feature()),
+                    "set the feature style",
+                )
+            }
+        })
     }
 }
 

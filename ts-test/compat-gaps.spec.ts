@@ -260,3 +260,179 @@ describe('the async twins', () => {
     dataset.close()
   })
 })
+
+describe('the mutable geometry builder', () => {
+  it('builds a LineString through points', () => {
+    const line = new gdal.LineString()
+    expect(line).toBeInstanceOf(gdal.LineString)
+    expect(line).toBeInstanceOf(gdal.SimpleCurve)
+    line.points.add(0, 0, 0)
+    line.points.add(10, 10, 0)
+    line.points.add(10, 20, 0)
+    expect(line.points.count()).toBe(3)
+    expect(line.getLength()).toBeCloseTo(Math.sqrt(200) + 10, 6)
+
+    expect(line.points.get(0)).toBeInstanceOf(gdal.Point)
+    expect(line.points.get(0).x).toBe(0)
+    expect(line.points.toArray()).toHaveLength(3)
+    expect(line.points.map((point) => point.x)).toEqual([0, 10, 10])
+
+    const seen: number[] = []
+    line.points.forEach((point, index) => {
+      expect(typeof index).toBe('number')
+      seen.push(point.x!)
+      if (index === 0) return false
+    })
+    expect(seen).toEqual([0])
+
+    // The point-like forms `add` accepts: a Point, `{ x, y }`, an `[x, y]` array, and
+    // an array of any of those.
+    const other = new gdal.LineString()
+    other.points.add(new gdal.Point(2, 3))
+    other.points.add([
+      { x: 4, y: 5 },
+      [6, 7],
+    ])
+    expect(other.points.get(0).y).toBe(3)
+    expect(other.points.get(2).x).toBe(6)
+
+    // set / reverse / resize, all live on `line`.
+    line.points.set(0, { x: 1, y: 2 })
+    expect(line.points.get(0).x).toBe(1)
+    line.points.reverse()
+    expect(line.points.get(0).x).toBe(10)
+    expect(line.points.get(2).x).toBe(1)
+    line.points.resize(2)
+    expect(line.points.count()).toBe(2)
+    expect([...line.points]).toHaveLength(2)
+  })
+
+  it('builds a Polygon through rings, as real LinearRings', () => {
+    const ring = new gdal.LinearRing()
+    ring.points.add(0, 0, 0)
+    ring.points.add(10, 0, 0)
+    ring.points.add(10, 10, 0)
+    ring.points.add(0, 10, 0)
+    ring.points.add(0, 0, 0)
+    expect(ring.getArea()).toBeCloseTo(100, 3)
+
+    const polygon = new gdal.Polygon()
+    polygon.rings.add(ring)
+    expect(polygon.rings.count()).toBe(1)
+    expect(polygon.rings.get(0)).toBeInstanceOf(gdal.LinearRing)
+    expect(polygon.rings.get(0).points.get(2).y).toBe(10)
+    expect(polygon.getArea()).toBeCloseTo(100, 3)
+
+    const second = new gdal.LinearRing()
+    second.points.add(1, 1, 0)
+    second.points.add(2, 1, 0)
+    second.points.add(2, 2, 0)
+    second.points.add(1, 1, 0)
+    polygon.rings.add([second])
+    expect(polygon.rings.count()).toBe(2)
+    expect(polygon.rings.map((r) => r.points.count())).toEqual([5, 4])
+
+    expect(() => polygon.rings.add(new gdal.LineString())).toThrow(/must be a LinearRing/)
+  })
+
+  it('builds collections through children and curves', () => {
+    const multi = new gdal.MultiPolygon()
+    expect(multi.children).toBeInstanceOf(gdal.GeometryCollectionChildren)
+    multi.children.add(new gdal.Polygon())
+    multi.children.add([new gdal.Polygon()])
+    expect(multi.children.count()).toBe(2)
+    expect(multi.children.get(0)).toBeInstanceOf(gdal.Polygon)
+    multi.children.remove(0)
+    expect(multi.children.count()).toBe(1)
+    expect(() => (multi.children.add as (value?: unknown) => void)()).toThrow(/geometry/)
+
+    const arc = new gdal.CircularString()
+    arc.points.add(-5, 0)
+    arc.points.add(0, 2.5)
+    arc.points.add(5, 0)
+    expect(arc.getLength()).toBeCloseTo(11.5911, 3)
+
+    const compound = new gdal.CompoundCurve()
+    expect(compound.curves).toBeInstanceOf(gdal.CompoundCurveCurves)
+    compound.curves.add(arc)
+    expect(compound.curves.count()).toBe(1)
+    expect(compound.curves.get(0)).toBeInstanceOf(gdal.CircularString)
+
+    // GDAL refuses a curve that does not start where the last one ended.
+    const broken = new gdal.CompoundCurve()
+    broken.curves.add(arc)
+    const stray = new gdal.LineString()
+    stray.points.add(99, 99)
+    stray.points.add(100, 100)
+    expect(() => broken.curves.add(stray)).toThrow(/contiguous/)
+  })
+
+  it('closes rings, appends sub-line strings and empties', () => {
+    const chain = gdal.fromWKT('LINESTRING (0 0, 0 1, 0 2)')
+    const more = gdal.fromWKT('LINESTRING (0 2, 1 2, 2 2)') as gdal.LineString
+    chain.addSubLineString(more)
+    expect(chain.toWKT()).toBe('LINESTRING (0 0,0 1,0 2,0 2,1 2,2 2)')
+
+    const trimmed = gdal.fromWKT('LINESTRING (0 0, 0 1, 0 2)')
+    trimmed.addSubLineString(more, 1, 1)
+    expect(trimmed.toWKT()).toBe('LINESTRING (0 0,0 1,0 2,1 2)')
+    expect(() => trimmed.addSubLineString(more, 0, 9)).toThrow()
+
+    const open = new gdal.LinearRing()
+    open.points.add(0, 0)
+    open.points.add(1, 0)
+    open.points.add(1, 1)
+    open.closeRings()
+    expect(open.points.count()).toBe(4)
+
+    const point = gdal.fromWKT('POINT (1 2)')
+    point.empty()
+    expect(point.isEmpty).toBe(true)
+  })
+})
+
+describe('the last small gaps', () => {
+  it('round-trips a CRS through XML', async () => {
+    const wgs84 = gdal.SpatialReference.fromEPSG(4326)
+    const back = gdal.SpatialReference.fromXML(wgs84.toXML())
+    expect(back).toBeInstanceOf(gdal.SpatialReference)
+    expect(back.authCode).toBe(4326)
+    expect((await gdal.SpatialReference.fromXMLAsync(wgs84.toXML())).authCode).toBe(4326)
+    expect(() => gdal.SpatialReference.fromXML('<not-a-crs/>')).toThrow()
+  })
+
+  it('answers the async fs pair', async () => {
+    const path = sampleRaster('ts-gap-fs.tif', 2, 2)
+    const stat = await gdal.fs.statAsync(path)
+    expect(stat.size).toBeGreaterThan(0)
+    await expect(gdal.fs.statAsync(`${path}.missing`)).rejects.toThrow()
+
+    gdal.fs.mkdirRecursive('/vsimem/ts-gap-fs/a')
+    gdal.fs.writeFile('/vsimem/ts-gap-fs/a/x.bin', Buffer.from([1]))
+    const list = await gdal.fs.readDirAsync('/vsimem/ts-gap-fs/a')
+    expect(list).toHaveLength(1)
+    await expect(gdal.fs.readDirAsync('/vsimem/ts-gap-fs/missing')).rejects.toThrow()
+
+    gdal.fs.unlink('/vsimem/ts-gap-fs/a/x.bin')
+    gdal.fs.rmdir('/vsimem/ts-gap-fs/a')
+    gdal.fs.rmdir('/vsimem/ts-gap-fs')
+  })
+
+  it('keeps a feature style readable, as the reference does', () => {
+    const path = tmp('ts-gap-style.gpkg')
+    const dataset = gdal.open(path, 'w', 'GPKG')
+    const layer = dataset.layers.create('things', null, 'Point')
+    layer.features.add(gdal.fromWKT('POINT (1 2)'), { name: 'a' })
+    const feature = layer.features.first()!
+    expect(feature.getStyleString()).toBeNull()
+
+    feature.setStyleString('PEN(c:#FF0000,w:5px)')
+    expect(feature.getStyleString()).toBe('PEN(c:#FF0000,w:5px)')
+    // A fresh Feature for the same row sees it too — the style lives on the layer.
+    expect(layer.features.get(feature.fid!)!.getStyleString()).toBe('PEN(c:#FF0000,w:5px)')
+
+    feature.setStyleString(null)
+    expect(feature.getStyleString()).toBeNull()
+    dataset.close()
+  })
+})

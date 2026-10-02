@@ -101,6 +101,9 @@ describe('the module surface', () => {
     'Dimension',
     'Dimensions',
     'GeometryCollectionChildren',
+    'LineStringPoints',
+    'PolygonRings',
+    'CompoundCurveCurves',
     'RasterMuxStream',
     'RasterTransform',
   ] as const

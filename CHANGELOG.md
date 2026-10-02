@@ -6,6 +6,42 @@ First working cut — everything here is new.
 
 ### Binding
 
+- **The geometry model is mutable now.** `Geometry` gains the write side it never
+  had — `addPoint(x, y, z?)`, `setPoint(index, x, y, z?)`, `resizePoints(count)`,
+  `addGeometry(other)`, `removeGeometry(index)`, `closeRings()`,
+  `addSubLineString(line, start?, end?)` and `empty()`, plus a typed factory
+  `Geometry.create(typeName)` for a shape WKT cannot spell (`create('LinearRing')` —
+  there is no `LINEARRING` literal, and `Polygon.rings.add` needs a real
+  `wkbLinearRing`). They change the geometry in place; the value operations and their
+  semantics are untouched. `addSubLineString` is built on `OGR_G_AddPoint` because
+  `gdal_sys` does not bind `OGR_G_AddSubLineString`, and `empty()` replaces the value
+  with a fresh empty geometry of the same type because `OGR_G_empty` is not bound.
+- **The reference's classes are constructible and its collections are editable.**
+  `new gdal.Point(1, 2)`, `new gdal.LineString()`, `new gdal.CircularString()`,
+  `new gdal.CompoundCurve()`, `new gdal.Polygon()`, `new gdal.MultiPolygon()` and the
+  rest build a native empty (or single-point) geometry and hand back a re-tagged
+  object. `points`, `rings`, `children` and `curves` are then the reference's
+  collections — `add` / `get` / `count` / `set` / `resize` / `reverse` / `remove` /
+  `forEach` / `map` / `toArray` and an iterator, live over the geometry. Each is a
+  **callable collection**, so `line.points()` (this binding's spelling) still answers
+  the array while `line.points.add(1, 2)` (the reference's) edits it;
+  `instanceof gdal.LineStringPoints` / `PolygonRings` /
+  `GeometryCollectionChildren` / `CompoundCurveCurves` is answered by a brand, so the
+  callable and the class both work. `CompoundCurve` joins the collection kind, so its
+  `curves` read its parts. GDAL still enforces what each parent accepts — a
+  non-contiguous curve is refused with its `contiguous` message.
+- Both remaining member-level names are in: `SpatialReference.fromXML` (over
+  `OSRImportFromXML`, which `gdal` does not wrap) and `fs.statAsync` /
+  `fs.readDirAsync` (the one namespace that has to be wrapped rather than
+  re-exported, since the reference's `async` pair has nowhere to live on this
+  binding's synchronous `fs`). `Feature.getStyleString` / `setStyleString` round out
+  the vector surface. `scripts/compat-coverage.mjs` now reports **194 members
+  answered, 6 missing**, and none of the 6 is a capability: `t00z`, `f000` and `WY`
+  are fixture strings the extractor reads as member accesses (`gfs.t00z.…`,
+  `US.WY.PARK`), `throw` is chai's `assert.throw`, `isVectical` is a typo in the
+  reference's own test for `isVertical`, and `gdal.algebra.mulAsync` is a
+  sub-namespace the extractor deliberately skips.
+
 - **`compat` answers every `gdal.*` name the reference's own tests use.** The
   measurement that drove the earlier rounds — `scripts/compat-coverage.mjs` reading
   `gdal-async`'s ~60 TypeScript test files — now reports **136 answered, 0 missing**

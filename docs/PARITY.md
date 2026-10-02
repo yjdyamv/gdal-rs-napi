@@ -227,7 +227,7 @@ every `gdal.<name>` they use, and reports which of those `compat` answers.
 ```sh
 node scripts/compat-coverage.mjs /path/to/node-gdal-async
 # [coverage] gdal.*: 136 answered, 0 missing
-# [coverage] members: 176 answered, 24 missing
+# [coverage] members: 194 answered, 6 missing
 ```
 
 The largest single item the first run found was not a name but a *usage*:
@@ -261,13 +261,24 @@ families the earlier measurement listed are closed:
   the native type names, since `Geometry.type` used to answer `Unknown` for a curve.
   `Geometry.getConstructor` and `wkbType` are in with them.
 
-The 24 member names still missing are **one family and some noise**. The family is the
-reference's **mutable geometry builder** — `closeRings` (32 uses), `curves` (15),
-`addSubLineString` (9) — which a value-type geometry does not have, and which `compat`
-therefore does not fake; building a geometry in place is the one place the two object
-models genuinely differ. The rest are either fixture names the extractor cannot tell
-from API (`t00z`, `f000`, `WY`), a test's own helper (`throw`, `isVectical`), or the
-last few `…Async` aliases and `getStyleString` / `setStyleString` / `getEnvelope3D`.
+The 6 member names still missing are **all extraction noise, not capabilities**.
+Three are fixture strings the reader mistakes for member accesses — `t00z` and
+`f000` inside `gfs.t00z.pgrb2b.4p.f000.grb2`, and `WY` inside the `US.WY.PARK`
+layer name. One is chai's `assert.throw`. One is `isVectical`, a typo in the
+reference's own test for the `isVertical` this binding has. The last is
+`gdal.algebra.mulAsync`, a sub-namespace the extractor deliberately skips at the
+module level and that this binding answers on the bands themselves (`band.mul`).
+
+**The mutable geometry builder is in.** The reference's `points`, `rings`, `children`
+and `curves` are editable collections, built on new native write methods
+(`addPoint` / `setPoint` / `resizePoints` / `addGeometry` / `removeGeometry` /
+`closeRings` / `addSubLineString` / `empty`) and a typed `Geometry.create(typeName)`
+factory for the one shape WKT cannot spell (`LinearRing`). The classes are
+constructible, and each collection is a **callable** — `line.points()` still answers
+the array, `line.points.add(1, 2)` edits it — with `instanceof` answered by a brand.
+`Feature.getStyleString` / `setStyleString` mirror the value on the layer, since the
+reference's `Feature` holds an in-memory feature and few drivers have anywhere to
+*keep* a style; what a reopened file reports is still the driver's answer.
 
 The adapter is covered by its own **typed TypeScript suite** (`ts-test/`, run with
 `npm test` under Vitest): every export and class member is exercised, the
@@ -299,16 +310,17 @@ the adapter.
 
 1. **Shipped:** Tier 1, Tier 2, and all of Tier 3 — the algebra, the streams, the
    multidimensional model, the pixel functions, `calcAsync`, the async getters and
-   `eventLoopWarning`. And the last `compat` gaps: every module-level `gdal.*` name the
-   reference's tests use, the constant families, the curve classes, `ColorTable`, the
-   named streams and the two algorithm wrappers.
-2. **Remaining:** two things, both recorded above rather than left as surprises. The
-   reference's **mutable geometry builder** (`points.add`, `curves.add`, `closeRings`,
-   `addSubLineString`) — this binding's geometry is a value, and building one in place
-   is a different object model, not a missing call. And one **type asymmetry**: a member
-   the generated declarations own keeps their return type, so `dataset.bands.get(1)` and
+   `eventLoopWarning`. And every `compat` gap: every module-level `gdal.*` name the
+   reference's tests use, the constant families, the curve classes and their
+   **mutable builder**, `ColorTable`, the named streams, the algorithm wrappers,
+   `fromXML`, the `fs` async pair and the feature style surface.
+2. **Remaining:** one **type asymmetry**, not a missing capability: a member the
+   generated declarations own keeps their return type, so `dataset.bands.get(1)` and
    a `Point`-typed return are shapes a TypeScript caller spells out (`instanceof`
-   narrows, so the cast is a check rather than a leap). `compat`, whose classes are its
-   own, carries both without that caveat.
+   narrows, so the cast is a check rather than a leap). `compat`, whose classes are
+   its own, carries both without that caveat. The only other difference is a
+   deliberate one: a **feature style** is mirrored on the layer here, because the
+   reference's `Feature` holds an in-memory feature and this object reads through the
+   layer — a format with nowhere to keep a style loses it on reopen, as it does there.
 3. **Publishing** stays *deliberately deferred* — see `ROADMAP.md` Phase 0 and
    `CHANGELOG.md`; nothing here changes that.

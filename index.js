@@ -1127,6 +1127,8 @@ Geometry.prototype = NativeGeometry.prototype
 Geometry.fromWkt = (wkt) => adopt(NativeGeometry.fromWkt(wkt))
 Geometry.fromWkb = (wkb) => adopt(NativeGeometry.fromWkb(wkb))
 Geometry.fromJson = (json) => adopt(NativeGeometry.fromJson(json))
+// The typed factory, for a shape WKT cannot spell — `Geometry.create('LinearRing')`.
+Geometry.create = (typeName) => adopt(NativeGeometry.create(typeName))
 
 Object.assign(binding, {
   Geometry,
