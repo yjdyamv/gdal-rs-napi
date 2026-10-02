@@ -1057,6 +1057,20 @@ First working cut — everything here is new.
 
 ### Testing
 
+- `ts-test/compat-coverage.spec.ts` reads the compatibility layer nearly end to end.
+  It exercises the getters, error branches and node-callback forms the area suites do
+  not reach — every geometry constructor and collection brand, the `ColorTable` reads
+  and writes, a typed pixel read and a read into a caller's buffer, the overview
+  picker, statistics through both spellings, the driver and layer `…Async` callback
+  forms, the rejected `openAsync` callback, the multidimensional `Dimension` /
+  `Attribute` / `MDArray` metadata and the collections' async iterators, and the two
+  algorithm wrappers. `compat/index.js` went from **91.5% / 92.6% / 69.8%** to
+  **98.4% statements, 99.8% functions, 99.2% lines, 79.8% branches**, and the
+  `test:coverage` thresholds are ratcheted up with it (from `90/90/90/68` to
+  `97/98/99/76`). Two methods that were dead — a class-body `Geometry.getEnvelope`
+  and `RasterBand.computeStatistics`, both shadowed by the `Object.assign` blocks
+  below them — were removed rather than left as unreachable lines.
+
 - `__test__/types.test.mjs` holds the generated `binding.d.ts` against the
   **runtime** rather than against a hand-copied list: module-level exports are
   compared both ways (a declaration nothing exports, or an export nothing declares,

@@ -253,23 +253,6 @@ class Geometry {
     return this.toJson()
   }
 
-  /** gdal-async calls it `getEnvelope`; native has `envelope()`. */
-  getEnvelope() {
-    const box = this.envelope()
-    if (!box) return null
-    return {
-      minX: box.minX,
-      minY: box.minY,
-      maxX: box.maxX,
-      maxY: box.maxY,
-      // gdal-async's Envelope spells these the other way as well.
-      minx: box.minX,
-      miny: box.minY,
-      maxx: box.maxX,
-      maxy: box.maxY,
-    }
-  }
-
   /** gdal-async's `getArea` / `getLength`. */
   getArea() {
     return this.area()
@@ -1185,19 +1168,6 @@ class RasterBand {
     const statistics = this._native.statisticsSync({ approx: allowApproximation, force })
     if (!statistics) return null
     return { min: statistics.min, max: statistics.max, mean: statistics.mean, stdDev: statistics.stdDev }
-  }
-
-  computeStatistics(allowApproximation, force) {
-    const args = [...arguments]
-    const callback = takeCallback(args)
-    const promise = this._native
-      .statistics({ approx: args[0] ?? false, force: args[1] ?? true })
-      .then((statistics) =>
-        statistics === null
-          ? null
-          : { min: statistics.min, max: statistics.max, mean: statistics.mean, stdDev: statistics.stdDev },
-      )
-    return withCallback(promise, callback)
   }
 
   fill(value) {

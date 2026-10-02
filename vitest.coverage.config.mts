@@ -6,9 +6,10 @@ import { defineConfig } from 'vitest/config'
 // compatibility layer rather than the binding.
 //
 // A ratchet, not a claim: raise it when the suite grows, never lower it to make a
-// run pass. The line/statement number is what 94% means; the branch number is lower
-// because the adapter is full of defensive `??` and `typeof x === 'function'`
-// branches a happy-path test cannot reach both sides of. See
+// run pass. The statement and line numbers describe `compat/index.js`, which is now
+// read nearly end to end (99.2% of lines, 99.8% of functions); the branch number is
+// lower because the adapter is full of defensive `??` and `typeof x === 'function'`
+// checks whose other side is a caller mistake the tests do not make. See
 // `ts-test/compat-surface.spec.ts` for the by-name coverage.
 export default defineConfig({
   test: {
@@ -19,10 +20,10 @@ export default defineConfig({
       include: ['compat/**/*.js'],
       reporter: ['text-summary', 'json-summary'],
       thresholds: {
-        statements: 90,
-        lines: 90,
-        functions: 90,
-        branches: 68,
+        statements: 97,
+        lines: 98,
+        functions: 99,
+        branches: 76,
       },
     },
   },
