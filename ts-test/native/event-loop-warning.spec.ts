@@ -9,12 +9,33 @@ import { test } from 'vitest'
 import { gdal, tmp } from '../helpers.js'
 
 /**
+ * Swallow whatever warnings are still queued before a window opens.
+ *
+ * `process.emitWarning` delivers on the next tick, so a warning emitted by the
+ * previous test's teardown — a slow `close()`, say — can still be pending when the
+ * next test attaches its listener, and would then be recorded as if the work under
+ * test had emitted it. Two turns with a discard listener guarantee the queue is
+ * empty before the real listener goes on.
+ */
+async function drainPendingWarnings() {
+  const discard = () => {}
+  process.on('warning', discard)
+  try {
+    await new Promise((resolve) => setImmediate(resolve))
+    await new Promise((resolve) => setImmediate(resolve))
+  } finally {
+    process.removeListener('warning', discard)
+  }
+}
+
+/**
  * The `GdalEventLoopWarning`s emitted while `run` does its thing.
  *
- * `process.emitWarning` delivers on the next tick, so the listener has to outlive the
- * work by a turn — otherwise the warning about the *last* call is missed.
+ * `process.emitWarning` delivers on the next tick, so the listener has to outlive
+ * the work by a turn — otherwise the warning about the *last* call is missed.
  */
 async function warningsDuring(run) {
+  await drainPendingWarnings()
   const seen = []
   const listener = (warning) => {
     if (warning.name === 'GdalEventLoopWarning') seen.push(warning.message)
@@ -41,6 +62,16 @@ function slow() {
   const band = dataset.band(0)
   band.fill(1)
   return { dataset, band }
+}
+
+/** Close with the warning off: a slow disk is not what either test is about. */
+function closeQuietly(dataset) {
+  try {
+    gdal.eventLoopWarning = false
+    dataset.close()
+  } finally {
+    gdal.eventLoopWarning = true
+  }
 }
 
 test('a blocking call that holds the event loop too long says so', async () => {
@@ -72,8 +103,8 @@ test('a blocking call that holds the event loop too long says so', async () => {
   })
   assert.ok(again.length >= 1)
 
-  gdal.eventLoopWarning = true
-  dataset.close()
+  closeQuietly(dataset)
+  assert.equal(gdal.eventLoopWarning, true)
 })
 
 test('a fast call says nothing, however low the threshold is', async () => {
@@ -85,6 +116,6 @@ test('a fast call says nothing, however low the threshold is', async () => {
   })
   assert.deepEqual(warned, [], 'a two-pixel read is not worth a warning')
 
-  gdal.eventLoopWarning = true
-  dataset.close()
+  closeQuietly(dataset)
+  assert.equal(gdal.eventLoopWarning, true)
 })
