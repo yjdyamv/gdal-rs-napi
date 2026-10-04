@@ -134,7 +134,7 @@ Phase 1 的主线（详见 `PHASE1.md`）：先做 **几何对象模型**（杠�
 - [ ] **API 冻结**：确定稳定面，写弃用策略与 `CHANGELOG` 规范（Keep a Changelog + semver）。
 - [ ] **可选平台**：Intel macOS（`macos-13` leg）、Windows arm64；明确 32 位不支持。
 - [x] **供应链清单**：`scripts/sbom.mjs` 生成 CycloneDX 清单、`scripts/check-licenses.mjs` 做许可证白名单门禁，均已进 CI；`provenance` 随 npm 发布，暂缓。
-- [x] **按需裁剪驱动集**：新增 `bundled-lean` feature（internal + sqlite/gpkg/vfk，去掉 HDF5/netCDF/curl/libpq），缓解 35MB `.node` 与 musl 构建脆弱性；方案与取舍见 `docs/MUSL-LEAN.md`。
+- [x] **按需裁剪驱动集**：新增 `bundled-lean` feature（internal + sqlite/gpkg/vfk，去掉 HDF5/netCDF/curl/libpq），并配套 `npm run lean`、`vitest.lean.config.mts`（门控式缩减套件）与手动 `lean.yml`（产实测体积/驱动数）；方案与取舍见 `docs/MUSL-LEAN.md`。
 
 ---
 

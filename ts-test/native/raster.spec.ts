@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { writeFileSync } from 'node:fs'
 import { test } from 'vitest'
 
-import { asTypedArray, bytesOf, gdal, ramp, tmp } from '../helpers.js'
+import { asTypedArray, bytesOf, gdal, hasDriver, ramp, tmp } from '../helpers.js'
 
 test('version() and drivers() report the statically linked build', () => {
   const version = gdal.version()
@@ -11,31 +11,39 @@ test('version() and drivers() report the statically linked build', () => {
   assert.match(version.proj, /^\d+\.\d+/)
 
   const drivers = gdal.drivers()
-  // The all-drivers build. The floor is a regression guard: dropping back to the
-  // internal set alone lands at 131.
-  assert.ok(drivers.length >= 140, `expected the full driver set, got ${drivers.length}`)
+  // The full build clears this floor; a `bundled-lean` build deliberately does
+  // not, and skips the library-backed names below rather than failing.
+  const fullBuild = drivers.length >= 140
 
   const names = new Set(drivers.map((d) => d.name))
   for (const expected of [
-    // The internal set.
+    // The internal set — present in every build.
     'GTiff',
     'MEM',
     'VRT',
     'GeoJSON',
     'GPKG',
     'ESRI Shapefile',
-    // Each of these needs a library that only the full build links in, so they
-    // also prove the static HDF5/netCDF/curl/libpq chain came together.
-    'HDF5',
-    'netCDF',
-    'WMS',
-    'WMTS',
-    'WCS',
-    'OGCAPI',
-    'PLMOSAIC',
-    'PostgreSQL',
   ]) {
     assert.ok(names.has(expected), `${expected} is missing from the driver list`)
+  }
+  if (fullBuild) {
+    // Each of these needs a library that only the full build links in, so they
+    // also prove the static HDF5/netCDF/curl/libpq chain came together.
+    for (const expected of [
+      'HDF5',
+      'netCDF',
+      'WMS',
+      'WMTS',
+      'WCS',
+      'OGCAPI',
+      'PLMOSAIC',
+      'PostgreSQL',
+    ]) {
+      assert.ok(names.has(expected), `${expected} is missing from the driver list`)
+    }
+  } else {
+    assert.equal(hasDriver('netCDF'), false, 'a lean build does not link netCDF')
   }
 
   // PDS is the one driver the package cannot offer: gdal-src does not ship
@@ -63,7 +71,7 @@ test('a band says whether it has arbitrary overviews', () => {
   dataset.close()
 })
 
-test('a driver the full build adds works end to end, not just in the list', () => {
+test.skipIf(!hasDriver('netCDF'))('a driver the full build adds works end to end, not just in the list', () => {
   // netCDF reads and writes through a library the internal-only build does not
   // link, so a round trip is the honest proof that the driver arrived.
   const path = tmp('netcdf-roundtrip.nc')

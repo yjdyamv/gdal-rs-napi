@@ -1,0 +1,69 @@
+name: lean variant
+
+# Builds the curated `bundled-lean` driver set on one leg and reports what it
+# contains, so the size/build-time trade-off in `docs/MUSL-LEAN.md` can be
+# measured rather than asserted.
+#
+# Manual only on purpose: a lean build recompiles GDAL with a different feature
+# set, which is a full source build and its own cache, so it is not something to
+# run against every push. The default build stays the one CI gates on.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  HUSKY: "0"
+
+jobs:
+  lean:
+    name: bundled-lean on linux-x64-gnu
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+
+      - name: Install prerequisites
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build sqlite3 g++
+
+      # A different feature set means a different GDAL build, so this cache is
+      # keyed apart from the default one and cannot be poisoned by it.
+      - uses: Swatinem/rust-cache@v2
+        with:
+          prefix-key: v0-rust-lean-${{ runner.arch }}
+          key: lean-${{ hashFiles('Cargo.toml', 'Cargo.lock') }}
+          cache-on-failure: true
+
+      - name: Install npm dependencies
+        run: npm ci
+
+      - name: Build bundled-lean
+        run: npm run build:lean
+
+      - name: Report size, drivers and native libraries
+        run: node scripts/lean-report.mjs | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Test the lean build
+        run: npm run test:lean
+
+      - name: SBOM
+        run: npm run sbom
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: bundled-lean-linux-x64-gnu
+          path: |
+            *.node
+            dist/sbom.cdx.json
+          if-no-files-found: error

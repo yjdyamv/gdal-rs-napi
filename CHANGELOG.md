@@ -1176,6 +1176,11 @@ First working cut — everything here is new.
   reads-and-resets GDAL's error state; `cpl_result`, `cpl_failure`, `null_pointer`,
   the OGR status path and `ExecuteSQL` all build their error from it instead of
   each reading `CPLGetLastError*` by hand.
+- **The `bundled-lean` variant is measurable.** `npm run lean` builds it, prints
+  the `.node` size and driver count (`scripts/lean-report.mjs`) and runs
+  `vitest.lean.config.mts`, a suite whose driver-dependent tests gate on
+  `hasDriver` and skip rather than fail. `.github/workflows/lean.yml` is a manual
+  job that does the same in CI; it is not a push gate.
 
 ### Known gaps
 

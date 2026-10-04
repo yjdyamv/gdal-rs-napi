@@ -76,8 +76,30 @@ The rest of `all_drivers` is unchanged; only these are left out.
 - **A separate lean package on npm** — no. The variant is a build knob; two
   packages would double the release surface for a size optimisation.
 
+## Tooling
+
+The variant is runnable and measurable:
+
+- `npm run build:lean` builds it (`--no-default-features --features bundled-lean`).
+- `npm run lean` builds, prints `scripts/lean-report.mjs` — `.node` size, driver
+  count, and which of the dropped library-backed drivers are actually absent —
+  and runs the reduced suite.
+- `vitest.lean.config.mts` is that suite. The driver-agnostic tests gate
+  themselves on `hasDriver` (see `ts-test/helpers.ts`), so a test that needs
+  netCDF or HDF5 skips on a build that never had it; the three multidimensional
+  files are netCDF through and through, so they are excluded rather than made
+  conditional. On a full build the same config runs 46 files / 422 tests, which
+  is how it was checked before there was a lean build to run it against.
+- `.github/workflows/lean.yml` is a **manual** job (`workflow_dispatch`) that
+  builds the variant, writes the report into the run summary, runs the lean
+  suite and uploads the `.node` + SBOM. It is not a push gate: a lean build
+  recompiles GDAL with a different feature set, and the default build remains
+  the one CI checks on every push.
+
 ## Status
 
-The feature is defined and documented; it is **not** wired into CI and its size
-saving is **not** measured. Turning it into a shipped musl variant is a follow-up
-that needs a lean test selection and a measured size/build-time comparison.
+The feature, the reduced suite, the report and the manual workflow are in place.
+What is still **not** done is the comparison those exist for: the real size and
+build-time numbers for a lean build versus the default, which the manual
+workflow produces on demand. `bundled-lean` is not a shipped variant and no
+release builds it — the default `bundled` set stays what is released.
