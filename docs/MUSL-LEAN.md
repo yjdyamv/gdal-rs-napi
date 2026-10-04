@@ -3,7 +3,7 @@
 The default `bundled` build names `gdal-src/all_drivers`, so it links HDF5,
 netCDF, the whole curl-backed network family and PostgreSQL/PostGIS. Those are
 the fragile part of the build on musl (they vendor C libraries with their own
-configure steps) and a large part of the ~35 MB `.node`. This document records
+configure steps) and a large part of the ~40 MB `.node`. This document records
 the evaluation and the opt-in feature that trims them.
 
 ## Decision

@@ -1933,9 +1933,8 @@ What is deliberately *not* there:
   configure step. That is why `all_drivers` leaves it out.
 
 All of it is statically linked, so an installed package still needs nothing on the
-host. The price is size — the `.node` is about 35 MB (a 131-driver build was 28 MB)
-and a tarball about 15 MB compressed (12.7 MB), plus a few minutes of extra build
-time. To trim it, swap `gdal-src/all_drivers` for the individual
+host. The price is size — the `.node` is about 40 MB (a 131-driver build was 28 MB)
+and a tarball about 17 MB compressed, plus a few minutes of extra build time. To trim it, swap `gdal-src/all_drivers` for the individual
 `gdal-src/driver_*` features you actually want — or build the curated
 `bundled-lean` set (`--no-default-features --features bundled-lean`), which drops
 the vendored HDF5/netCDF/curl/PostgreSQL drivers and keeps the internal formats

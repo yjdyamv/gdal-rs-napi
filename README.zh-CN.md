@@ -1616,9 +1616,9 @@ MapInfo、DXF、DGN、CAD、S57、VDV、VFK、CSV、GTFS、Selafin、KMLSUPEROVE
   `frmts/pds/data`，打开它会让 GDAL 的 configure 直接失败。`all_drivers` 把它排除掉正是这个原因。
 
 以上全部静态链接，所以装好的包依然**不需要宿主机有任何 GDAL**。代价是体积：
-`.node` 约 35 MB（131 驱动时是 28 MB），tarball 压缩后约 15 MB（12.7 MB），
+`.node` 约 40 MB（131 驱动时是 28 MB），tarball 压缩后约 17 MB，
 加上几分钟额外的构建时间。想瘦身，就把 `bundled` 里的 `gdal-src/all_drivers` 换成你真正需要的
-那些 `gdal-src/driver_*`。
+那些 `gdal-src/driver_*`，或改用精简的 `bundled-lean`（见 `docs/MUSL-LEAN.md`）。
 
 `openThreadSafe()` 需要 GDAL ≥ 3.10，bundled 构建满足。链接 3.10 以前的系统 GDAL
 （`--no-default-features`）**仍然能编译**，只是没有这个方法：`build.rs` 读取 `gdal-sys`
@@ -1716,3 +1716,9 @@ MIT。GDAL 与 PROJ 均为 MIT/X11；详见 [LICENSE](./LICENSE)，以及 [THIRD
 链接作品的发布者提供「把它与修改过的 GEOS 重新链接」的手段，因此每次发布都会在平台 tarball
 旁附上 `…-lgpl-geos.tar.gz` —— 构建所用的 GEOS 源码、静态库，以及一份重新链接说明
 （`npm run lgpl` 生成）。这约束的是**发布物**，不是本仓库代码的许可证 —— 见 `docs/GEOS.md`。
+
+## 贡献与安全
+
+欢迎贡献 —— 构建、测试与 API 约定见 [`CONTRIBUTING.md`](./CONTRIBUTING.md)；可运行教程见
+[`docs/TUTORIALS.md`](./docs/TUTORIALS.md)。安全问题请走 [`SECURITY.md`](./SECURITY.md)
+与 GitHub 的私有 advisory，不要开公开 issue。

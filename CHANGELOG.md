@@ -1023,10 +1023,10 @@ First working cut — everything here is new.
   Carto, Elasticsearch, NGW, AmigoCloud), PostgreSQL/PostGIS and GRIB are in.
   Their libraries — HDF5, netCDF, curl, libpq — are compiled in statically, so an
   installed package still needs nothing on the host.
-- What that costs: the `.node` grew from 28 MB to 35 MB and a tarball from 12.7 MB
-  to 15.2 MB compressed, with a few minutes more build time and the C surface of
-  four more libraries. Trim it by swapping `all_drivers` for individual
-  `gdal-src/driver_*` features.
+- What that costs: the `.node` grew from 28 MB to about 40 MB and a tarball from
+  12.7 MB to about 17 MB compressed, with a few minutes more build time and the C
+  surface of four more libraries. Trim it by swapping `all_drivers` for individual
+  `gdal-src/driver_*` features, or build the curated `bundled-lean` set.
 - GEOS is fetched, compiled and statically linked (`geos-src`), like GDAL and PROJ, so
   the OGR geometry predicates it implements (`ST_Intersects`, `ST_Buffer`, `-simplify`)
   are available out of the box — it is LGPL-2.1, and the release carries the §6 relink
