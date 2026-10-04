@@ -43,21 +43,31 @@ function sanitizedPath() {
 // only one on a Windows box, has to be the one we just filtered out above.
 // Check for it up front rather than letting CMake fail minutes into the build.
 const buildPath = sanitizedPath()
-const sqlite = spawnSync(process.platform === 'win32' ? 'sqlite3.exe' : 'sqlite3', ['--version'], {
-  env: { ...process.env, PATH: buildPath },
-  encoding: 'utf8',
-})
-if (sqlite.status !== 0) {
-  console.error(
-    '[build] `sqlite3` was not found on PATH, but PROJ needs it to generate proj.db.\n' +
-      '[build] Install it somewhere other than an MSYS2/Cygwin tree, e.g.\n' +
-      '[build]   Windows:  winget install SQLite.SQLite     (or: choco install sqlite)\n' +
-      '[build]   macOS:    brew install sqlite\n' +
-      '[build]   Debian:   sudo apt-get install sqlite3\n' +
-      '[build] (MSYS2 ships one, but that whole prefix has to stay off PATH: see the\n' +
-      '[build]  comment at the top of this file.)',
-  )
-  process.exit(1)
+
+// `--no-default-features` links the host's GDAL/PROJ instead of compiling them, so
+// the two things a bundled build needs first — the `sqlite3` CLI PROJ shells out to,
+// and the asset staging — are skipped. The host already has its own data files, and
+// `index.js` leaves an explicitly set `GDAL_DATA` / `PROJ_DATA` alone. See
+// `docs/DRIVERS.md`.
+const systemGdal = process.argv.includes('--no-default-features')
+
+if (!systemGdal) {
+  const sqlite = spawnSync(process.platform === 'win32' ? 'sqlite3.exe' : 'sqlite3', ['--version'], {
+    env: { ...process.env, PATH: buildPath },
+    encoding: 'utf8',
+  })
+  if (sqlite.status !== 0) {
+    console.error(
+      '[build] `sqlite3` was not found on PATH, but PROJ needs it to generate proj.db.\n' +
+        '[build] Install it somewhere other than an MSYS2/Cygwin tree, e.g.\n' +
+        '[build]   Windows:  winget install SQLite.SQLite     (or: choco install sqlite)\n' +
+        '[build]   macOS:    brew install sqlite\n' +
+        '[build]   Debian:   sudo apt-get install sqlite3\n' +
+        '[build] (MSYS2 ships one, but that whole prefix has to stay off PATH: see the\n' +
+        '[build]  comment at the top of this file.)',
+    )
+    process.exit(1)
+  }
 }
 
 const cli = join(repoRoot, 'node_modules', '@napi-rs', 'cli', 'dist', 'cli.js')
@@ -87,6 +97,15 @@ if (result.status !== 0) process.exit(result.status ?? 1)
 // whose runners are not their target, that produced a tarball labelled
 // linux-x64-gnu and quietly ate a release asset. One command, so the arguments
 // arrive where they are meant to.
+if (systemGdal) {
+  console.log(
+    '[build] linked the system GDAL/PROJ; nothing to stage. Run with GDAL_DATA / ' +
+      'PROJ_DATA pointing at that install, and see `docs/DRIVERS.md` for what the ' +
+      'host build decides you get.',
+  )
+  process.exit(0)
+}
+
 const stage = spawnSync(process.execPath, [join(repoRoot, 'scripts', 'stage-assets.mjs')], {
   stdio: 'inherit',
   cwd: repoRoot,

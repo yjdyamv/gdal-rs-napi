@@ -1941,6 +1941,13 @@ What is deliberately *not* there:
   published crate does not ship `frmts/pds/data`, so switching it on fails GDAL's
   configure step. That is why `all_drivers` leaves it out.
 
+Those are off because `gdal-src` compiles GDAL with `GDAL_USE_EXTERNAL_LIBS=OFF`: a
+driver behind OpenJPEG, libwebp, libxml2 or a vendor SDK has nothing to link. A **host**
+GDAL was built with them, so `npm run build:system` links that instead and offers
+whatever it has — [`docs/DRIVERS.md`](./docs/DRIVERS.md) explains why, the trade-offs,
+the upstream route that would keep the bundle self-contained, and why FileGDB
+*reading* works either way (`OpenFileGDB` is in the bundled set).
+
 All of it is statically linked, so an installed package still needs nothing on the
 host. The price is size — the `.node` is about 40 MB (a 131-driver build was 28 MB)
 and a tarball about 17 MB compressed, plus a few minutes of extra build time. To trim it, swap `gdal-src/all_drivers` for the individual

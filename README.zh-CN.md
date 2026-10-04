@@ -1620,6 +1620,12 @@ MapInfo、DXF、DGN、CAD、S57、VDV、VFK、CSV、GTFS、Selafin、KMLSUPEROVE
 - **`PDS`**，这是本包唯一完全无法提供的驱动：`gdal-src` 发布的 crate 里没有
   `frmts/pds/data`，打开它会让 GDAL 的 configure 直接失败。`all_drivers` 把它排除掉正是这个原因。
 
+这些之所以缺，是因为 `gdal-src` 编译 GDAL 时设了 `GDAL_USE_EXTERNAL_LIBS=OFF`：驱动背后的
+OpenJPEG、libwebp、libxml2 或厂商 SDK 没有东西可链。**宿主 GDAL** 是带着它们编的，所以
+`npm run build:system` 改为链宿主那份，宿主有什么就给什么 —— 原因、代价、以及"既能保住自包含
+又能拿到这些驱动"的上游路线，见 [`docs/DRIVERS.md`](./docs/DRIVERS.md)；FileGDB 的**读**两种
+构建都能用（`OpenFileGDB` 本来就在自带集合里）。
+
 以上全部静态链接，所以装好的包依然**不需要宿主机有任何 GDAL**。代价是体积：
 `.node` 约 40 MB（131 驱动时是 28 MB），tarball 压缩后约 17 MB，
 加上几分钟额外的构建时间。想瘦身，就把 `bundled` 里的 `gdal-src/all_drivers` 换成你真正需要的
