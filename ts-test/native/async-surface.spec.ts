@@ -6,7 +6,7 @@
 // async-iterable, so a paged layer can be read with `for await`.
 //
 // The declaration-side check — that every async member is exactly one the shell
-// wraps, per class — lives in `types.test.mjs`, where it is held against the
+// wraps, per class — lives in `types.spec.ts`, where it is held against the
 // runtime rather than against a hand-copied list.
 
 import assert from 'node:assert/strict'

@@ -87,6 +87,11 @@ const staleClaims = [
     pattern: /`node --test`\s*103/,
     why: 'the suite is vitest (49 files / 436 tests), not node --test with 103',
   },
+  {
+    files: ['CHANGELOG.md'],
+    pattern: /__test__\/|\.test\.mjs\b/,
+    why: 'the suite moved from `__test__/*.test.mjs` to `ts-test/**/*.spec.ts` (vitest)',
+  },
 ]
 for (const claim of staleClaims) {
   for (const rel of claim.files) {
@@ -116,12 +121,18 @@ if (!staticOnly) {
       }
     }
 
-    // `gdal.drivers().length // N`
-    const driverClaim = readme.match(/gdal\.drivers\(\)\.length\s*\/\/\s*(\d+)/)
-    if (driverClaim) {
-      const actual = gdal.drivers().length
-      if (Number(driverClaim[1]) !== actual) {
-        fail(`README says drivers().length is ${driverClaim[1]} but the build registers ${actual}`)
+    // The driver count, in both READMEs, in either spelling the docs use.
+    const actualDrivers = gdal.drivers().length
+    for (const rel of ['README.md', 'README.zh-CN.md']) {
+      const text = read(rel)
+      for (const pattern of [
+        /gdal\.drivers\(\)\.length\s*\/\/\s*(\d+)/,
+        /driverCount:\s*(\d+)/,
+      ]) {
+        const claim = text.match(pattern)
+        if (claim && Number(claim[1]) !== actualDrivers) {
+          fail(`${rel} says the driver count is ${claim[1]} but the build registers ${actualDrivers}`)
+        }
       }
     }
 

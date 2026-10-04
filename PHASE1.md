@@ -357,7 +357,7 @@ for await (const band of dataset.bands) …    // 异步迭代
 8. **特性探测**：加 `gdal.apiVersion`（自有 API 版本，区别于 `version()` 的 GDAL 版本）
    与 `gdal.features()`（`{ geos: true, mdArray: false, streams: true, compat: true }`）。
 9. **类型契约**：`binding.d.ts` 顶部加"generated, but the shape is the contract"说明；
-   `types.test.mjs` 扩展为"声明与运行时一致"检查。
+   `ts-test/native/types.spec.ts` 扩展为"声明与运行时一致"检查。
 
 ### B3. 兼容层：`gdal-rs-napi/compat`（推荐）
 
@@ -534,7 +534,7 @@ WS-6 缺口函数 ──（可全程并行，按需插入）
 | M2 | `Geometry` 类族可构造、可往返、`layer.features` 返回 `Geometry`；非 GEOS 方法齐 |
 | M3 | `Driver`/`Dataset`/`Feature`/`FieldDefn` 对象模型齐；集合支持 `for…of` 与 `for await…of` |
 | M4 | `require('gdal-rs-napi/compat')` 能跑通 `gdal-async` README 与 examples 里的例子 |
-| M5 | `docs/API-STABILITY.md` 成文；`apiVersion` 与弃用流程可用；`types.test.mjs` 覆盖声明一致性 |
+| M5 | `docs/API-STABILITY.md` 成文；`apiVersion` 与弃用流程可用；`ts-test/native/types.spec.ts` 覆盖声明一致性 |
 
 ---
 

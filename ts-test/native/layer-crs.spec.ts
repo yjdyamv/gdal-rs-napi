@@ -49,6 +49,7 @@ test('a layer that cannot says which driver would not', () => {
   for (const [driver, extension] of [
     ['GeoJSON', 'geojson'],
     ['FlatGeobuf', 'fgb'],
+    ['SQLite', 'sqlite'],
   ]) {
     const { dataset, layer } = created('layer-crs-refused', driver, extension)
     assert.throws(

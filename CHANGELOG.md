@@ -505,7 +505,7 @@ First working cut — everything here is new.
   it is `nearest` and `rms` / `average_magphase` / `none` exist. `none` is not a
   kernel — it is how a pyramid is deleted. A constant table needs nothing from
   GDAL, so it lives in `index.js` rather than crossing the FFI boundary, and
-  `__test__/const.test.mjs` checks each value against the runtime so the two
+  `ts-test/native/const.spec.ts` checks each value against the runtime so the two
   cannot drift.
 - A failed `open` / `openSync` now carries GDAL's own explanation — "No such file
   or directory", "not recognized as being in a supported file format" — instead
@@ -1115,14 +1115,15 @@ First working cut — everything here is new.
   shadowed by the `Object.assign` blocks below them — were removed rather than left as
   unreachable lines.
 
-- `__test__/types.test.mjs` holds the generated `binding.d.ts` against the
+- `ts-test/native/types.spec.ts` holds the generated `binding.d.ts` against the
   **runtime** rather than against a hand-copied list: module-level exports are
   compared both ways (a declaration nothing exports, or an export nothing declares,
   fails), every class member — instance and static — is checked to exist on both
   sides, each namespace's functions likewise, and the async members are compared per
   class against `async-methods.js`, so a promise method filed under the wrong class
-  is caught where a flattened list would have missed it. `async-surface.test.mjs`
-  keeps the runtime half (the `err.code` lift and the cursor's `for await`).
+  is caught where a flattened list would have missed it.
+  `ts-test/native/async-surface.spec.ts` keeps the runtime half (the `err.code` lift
+  and the cursor's `for await`).
 - `scripts/bench-parallel.mjs` measures the thread-safe path against the serialised
   one: the same concurrent workload, on real data, with the numbers and their
   spread printed. It measures a batch of reads with the read-only accessors asked
@@ -1184,6 +1185,17 @@ First working cut — everything here is new.
 - **Tutorials.** `docs/TUTORIALS.md` indexes four runnable flows, and
   `examples/parallel-tiles.mjs` is the new one: it builds its own tiled fixture
   and measures serial vs `openThreadSafe` parallel reads.
+- **Known-gaps audit.** Every Known gap and the `docs/PARITY.md` boundary were
+  checked against the code — `transformGeometry` (synchronous) against
+  `transformPoints` / `transformPointsSync` (threaded), statistics and histogram
+  write-back, `readChunks` / `readChunksSync`, `buildOverviews({ bands })` and the
+  GTiff subset refusal, the four-driver layer-CRS behaviour (SQLite is now pinned
+  by a test too), the list-field behaviour on four drivers, and the "no Intel macOS /
+  32-bit build" claim. Drift fixed: the old `__test__`-style test paths in
+  `CHANGELOG.md`, `ROADMAP.md` and `PHASE1.md` now name the vitest specs, and
+  `COMPARISON.md`'s stale "64 of 136" coverage figure is corrected to 136 of 136.
+  `scripts/check-docs.mjs` now guards the runner name and the driver count in both
+  READMEs.
 
 ### Known gaps
 

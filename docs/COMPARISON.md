@@ -113,12 +113,11 @@ per-dataset queue leaves implicit.
   `require` change, or a slow one-file-at-a-time rewrite, and both land on the same
   native implementation. How much of the reference the adapter answers is **counted**
   rather than claimed: `scripts/compat-coverage.mjs` reads gdal-async's own ~60 test
-  files and reports every `gdal.<name>` they use — 64 of 136 as of the last run, with the
-  remainder grouped into four families in [`PARITY.md`](./PARITY.md). Reading their suite
+  files and reports every `gdal.<name>` they use — **136 of 136** module-level names as
+  of the last run, plus 194 of 200 member names, the six misses being extraction noise
+  rather than capabilities ([`PARITY.md`](./PARITY.md) lists them). Reading their suite
   is also what turned up the biggest single usage pattern, `assert.instanceOf(dataset,
   gdal.Dataset)` (262 times), which is the kind of thing documentation does not tell you.
-  The module-level programs and the vector write surface have since been forwarded, so
-  the adapter now carries more than that run measured.
 
 ## 5. Weaknesses, honestly
 

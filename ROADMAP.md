@@ -26,7 +26,7 @@
 ### 需要正视的问题
 
 1. **分发方式不是主流。** 用户必须 `npm install <github release url>`，无法 `npm install gdal-rs-napi`，也没有版本范围/镜像/审计链。
-2. **文档与代码漂移。** 持续校准：`types.test.mjs` 用 `binding.d.ts` 与运行时互校，本轮又修掉 README/CHANGELOG/compat 注释中 GEOS、musl、兼容层覆盖面的陈旧描述（见 CHANGELOG 的 Testing 一节）。
+2. **文档与代码漂移。** 持续校准：`ts-test/native/types.spec.ts` 用 `binding.d.ts` 与运行时互校，本轮又修掉 README/CHANGELOG/compat 注释中 GEOS、musl、兼容层覆盖面的陈旧描述（见 CHANGELOG 的 Testing 一节）。
 3. ~~**`open` 失败信息丢失。**~~ 已修：加 `GDAL_OF_VERBOSE_ERROR` 后，失败会带上 GDAL 的原始原因（见 Phase 0）。
 4. **代码集中。** `dataset.rs` 2108 行、`band.rs` 1573、`vector.rs` 1382，审阅与扩展成本在上升。
 5. **musl 两个 leg 已是普通 leg（红即失败）**，脆弱点仍是 `all_drivers` vendored 的 HDF5/netCDF/curl/libpq。
@@ -61,7 +61,7 @@
 - [ ] **上 npm** —— **刻意推迟**：接口尚未打磨完，包保持 `private`。布局与打包已经就位（`scripts/pack-packages.mjs` 产出 napi 标准形状的根包 + `gdal-rs-napi-<platform>` 平台包；`binding.js` 本来就是按 `optionalDependencies` 那套生成的），`npm publish` 那一步不做——也还没有做。届时需要：`private: false`、在根包写出六个 `optionalDependencies`、加一个 tag 触发的发布 job（平台包先、根包后，`--provenance`）。
 - [ ] **发布流水线**：tag → 构建 6 平台 → GH Release 附自包含 tarball + LGPL 材料（**已在跑**）；npm 发布那半段同上，未做。
 - [x] **安装冒烟测试**：`npm run smoke` —— 在一个空目录里 `npm install <tarball>`，再跑一个消费者程序（`diagnostics()`、`drivers().length`、GEOS 谓词、栅格往返）。CI 每个平台都跑，而 CI runner 正是"干净机器"本身。
-- [ ] **审计 Known gaps**：逐条对代码核验，修掉文档漂移（`transformGeometry`、统计写回、批量读等）。
+- [x] **审计 Known gaps**：逐条对代码核验（`transformGeometry` 同步、`transformPoints*` 异步、统计/直方图写回、`readChunks` 批量读、`buildOverviews({bands})` 透传与 GTiff 拒绝子集、图层 CRS 的四驱动差异、列表字段四行为、Intel macOS/32 位不构建），并把 `__test__/*.test.mjs` 陈旧路径与 `COMPARISON.md` 的旧覆盖率数字改正。
 - [x] **修 `open` 错误消息**：已修 —— 失败原因是漏了 `GDAL_OF_VERBOSE_ERROR`：不设这个标志时 GDAL 静默返回空句柄，last-error 里什么都没有。加上标志即可，消息走原有错误路径。
 - [x] **CI 策略定案**：两条 musl 腿是**普通 leg** —— 在 musl-native Alpine 容器（`docker/musl.Dockerfile`）里构建与测试，红即失败；README 的 Prebuilt binaries 矩阵与 Targets 一节、以及 `docker/` 指引与此一致。脆弱点在 vendored 的 HDF5/netCDF/curl/libpq，而不是这个 crate。
 - [x] 补 `SECURITY.md` / issue 模板 / PR 模板 / 贡献指南。
@@ -131,7 +131,7 @@ Phase 1 的主线（详见 `PHASE1.md`）：先做 **几何对象模型**（杠�
 - [ ] **文档站**：typedoc 生成 API reference；README 拆分（快速开始 / 迁移 / FAQ）。
 - [x] 教程（3/4）：COG 生成流水线（`examples/to-cog.mjs`）、并行瓦片读取（`examples/parallel-tiles.mjs`）、坐标系踩坑（README），索引见 `docs/TUTORIALS.md`。
 - [ ] 教程：Serverless 冷启动实测。
-- [x] **类型保障**：`binding.d.ts` 与运行时一致性测试 —— `types.test.mjs` 已重写为**双向对照运行时**：模块级导出双向集合相等、每个类的方法与静态成员逐一核对、namespace 函数核对、异步成员按类与 `async-methods.js` 对齐（不再 flatten，错挂类也能抓）、并覆盖手写外壳（`gdal.const`、`FeatureCursor[Symbol.asyncIterator]`）。
+- [x] **类型保障**：`binding.d.ts` 与运行时一致性测试 —— `ts-test/native/types.spec.ts` 已重写为**双向对照运行时**：模块级导出双向集合相等、每个类的方法与静态成员逐一核对、namespace 函数核对、异步成员按类与 `async-methods.js` 对齐（不再 flatten，错挂类也能抓）、并覆盖手写外壳（`gdal.const`、`FeatureCursor[Symbol.asyncIterator]`）。
 - [ ] **API 冻结**：确定稳定面，写弃用策略与 `CHANGELOG` 规范（Keep a Changelog + semver）。
 - [ ] **可选平台**：Intel macOS（`macos-13` leg）、Windows arm64；明确 32 位不支持。
 - [x] **供应链清单**：`scripts/sbom.mjs` 生成 CycloneDX 清单、`scripts/check-licenses.mjs` 做许可证白名单门禁，均已进 CI；`provenance` 随 npm 发布，暂缓。
