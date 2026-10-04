@@ -1457,13 +1457,16 @@ try {
 
 ## 示例
 
-`examples/` 下有三个可直接运行的脚本（在仓库根目录运行，通过 `..` 加载包）：
+`examples/` 下有四个可直接运行的脚本（在仓库根目录运行，通过 `..` 加载包）：
 
 ```sh
 node examples/gdalinfo.mjs path/to/anything.tif   # 迷你 gdalinfo，栅格/矢量都能看
 node examples/to-cog.mjs in.tif out.tif COMPRESS=ZSTD
 node examples/convert-vector.mjs roads.geojson roads.gpkg roads
+node examples/parallel-tiles.mjs                  # 串行 vs openThreadSafe 并发读
 ```
+
+四个流程的逐步说明见 [`docs/TUTORIALS.md`](./docs/TUTORIALS.md)。
 
 ## 预编译产物
 

@@ -1739,17 +1739,18 @@ keeps working.
 
 ## Examples
 
-`examples/` holds three runnable scripts. Run them from the repository root (they
+`examples/` holds four runnable scripts. Run them from the repository root (they
 load the package through `..`, so nothing needs publishing first).
 
 ```sh
 node examples/gdalinfo.mjs path/to/anything.tif
 node examples/to-cog.mjs in.tif out.tif COMPRESS=ZSTD
 node examples/convert-vector.mjs roads.geojson roads.gpkg roads
+node examples/parallel-tiles.mjs
 ```
 
-They are also wired up as `npm run gdalinfo -- <file>`, `npm run to-cog -- …` and
-`npm run to-vector -- …`.
+They are also wired up as `npm run gdalinfo -- <file>`, `npm run to-cog -- …`,
+`npm run to-vector -- …` and `npm run tutorial:parallel`.
 
 - **`gdalinfo.mjs`** — a miniature `gdalinfo` that handles rasters *and* vectors,
   so it exercises the whole read path.
@@ -1757,6 +1758,11 @@ They are also wired up as `npm run gdalinfo -- <file>`, `npm run to-cog -- …` 
   `createCopy`, then reopen it and show the `IMAGE_STRUCTURE` that proves it.
 - **`convert-vector.mjs`** — copy every feature of one vector file into another,
   letting `createFeature` build the schema from the properties it sees.
+- **`parallel-tiles.mjs`** — build a tiled raster and read it both ways, serial
+  and `openThreadSafe` parallel, to show the thread-safe read path and its
+  speedup.
+
+[`docs/TUTORIALS.md`](./docs/TUTORIALS.md) walks through all four.
 
 ## Prebuilt binaries
 
