@@ -1181,6 +1181,9 @@ First working cut — everything here is new.
   `vitest.lean.config.mts`, a suite whose driver-dependent tests gate on
   `hasDriver` and skip rather than fail. `.github/workflows/lean.yml` is a manual
   job that does the same in CI; it is not a push gate.
+- **Tutorials.** `docs/TUTORIALS.md` indexes four runnable flows, and
+  `examples/parallel-tiles.mjs` is the new one: it builds its own tiled fixture
+  and measures serial vs `openThreadSafe` parallel reads.
 
 ### Known gaps
 

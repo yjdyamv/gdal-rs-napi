@@ -64,6 +64,7 @@
     "gdalinfo": "node examples/gdalinfo.mjs",
     "to-cog": "node examples/to-cog.mjs",
     "to-vector": "node examples/convert-vector.mjs",
+    "tutorial:parallel": "node examples/parallel-tiles.mjs",
     "prepare": "husky"
   },
   "devDependencies": {

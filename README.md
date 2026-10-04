@@ -2045,6 +2045,7 @@ what a release *publishes*, not a change to the licence of this code — see
 ## Contributing and security
 
 Contributions are welcome — [`CONTRIBUTING.md`](./CONTRIBUTING.md) covers the
-build, test and API conventions. Security problems go through
+build, test and API conventions. Runnable tutorials are in
+[`docs/TUTORIALS.md`](./docs/TUTORIALS.md). Security problems go through
 [`SECURITY.md`](./SECURITY.md) and GitHub's private advisories, not the public
 issue tracker.

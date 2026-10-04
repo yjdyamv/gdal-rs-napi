@@ -129,7 +129,8 @@ Phase 1 的主线（详见 `PHASE1.md`）：先做 **几何对象模型**（杠�
 
 - [x] **能力边界与路线图**：[`docs/PARITY.md`](./docs/PARITY.md) —— 对照 `gdal-async` 3.13 的分区矩阵（`parity` / `gap` / `non-goal`）、非目标及其理由、约定对照表，以及分级路线图（Tier 1 已落地：GCP、`getSpatialFilter`、`hasArbitraryOverviews`、几何 `makeValid`/`boundary`/`simplifyPreserveTopology`/`isRing`/`toGML`/`toKML`、`gdal.bundled`；Tier 2 见该文档）。
 - [ ] **文档站**：typedoc 生成 API reference；README 拆分（快速开始 / 迁移 / FAQ）。
-- [ ] **教程**：COG 生成流水线、Serverless 冷启动实测、并行瓦片读取、坐标系踩坑。
+- [x] 教程（3/4）：COG 生成流水线（`examples/to-cog.mjs`）、并行瓦片读取（`examples/parallel-tiles.mjs`）、坐标系踩坑（README），索引见 `docs/TUTORIALS.md`。
+- [ ] 教程：Serverless 冷启动实测。
 - [x] **类型保障**：`binding.d.ts` 与运行时一致性测试 —— `types.test.mjs` 已重写为**双向对照运行时**：模块级导出双向集合相等、每个类的方法与静态成员逐一核对、namespace 函数核对、异步成员按类与 `async-methods.js` 对齐（不再 flatten，错挂类也能抓）、并覆盖手写外壳（`gdal.const`、`FeatureCursor[Symbol.asyncIterator]`）。
 - [ ] **API 冻结**：确定稳定面，写弃用策略与 `CHANGELOG` 规范（Keep a Changelog + semver）。
 - [ ] **可选平台**：Intel macOS（`macos-13` leg）、Windows arm64；明确 32 位不支持。
