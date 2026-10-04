@@ -478,6 +478,96 @@ describe('the reachable defensive branches', () => {
   })
 })
 
+describe('the async program callback forms', () => {
+  /** Run an async wrapper that carries a trailing node callback the types do not declare. */
+  const called = (fn: (callback: (error: Error | null, value?: unknown) => void) => void) =>
+    new Promise<void>((resolve, reject) => {
+      fn((error) => (error ? reject(error) : resolve()))
+    })
+
+  it('accepts a callback on each async program', async () => {
+    const dataset = gdal.open(sampleRaster('ts-cov-progs.tif', 8, 6))
+    const band = dataset.bands.get(1)!
+
+    await called((cb) => loose(gdal.translateAsync)(tmp('ts-cov-progs-tr.tif'), dataset, ['-of', 'GTiff'], cb))
+    await called((cb) => loose(gdal.buildVRTAsync)(tmp('ts-cov-progs.vrt'), [dataset], cb))
+    await called((cb) =>
+      loose(gdal.warpAsync)(tmp('ts-cov-progs-warp.tif'), null, [dataset], ['-t_srs', 'EPSG:3857'], cb),
+    )
+    await called((cb) => loose(gdal.demAsync)(tmp('ts-cov-progs-dem.tif'), dataset, 'hillshade', [], undefined, cb))
+    await called((cb) => loose(gdal.checksumImageAsync)(band, 0, 0, 8, cb))
+    await called((cb) => loose(gdal.suggestedWarpOutputAsync)({ src: dataset }, cb))
+    // `s_srs` / `t_srs` are optional: with neither, the current grid is reported.
+    expect(gdal.suggestedWarpOutput({ src: dataset }).rasterSize).toEqual({ x: 8, y: 6 })
+
+    const vector = gdal.open(sampleVector('ts-cov-progs-vec.gpkg'))
+    await called((cb) =>
+      loose(gdal.vectorTranslateAsync)(tmp('ts-cov-progs-vtr.geojson'), vector, ['-f', 'GeoJSON'], cb),
+    )
+    vector.close()
+
+    const fill = gdal.open(tmp('ts-cov-progs-fill.tif'), 'w', 'GTiff', 8, 8, 1, 'Float32')
+    const fillBand = fill.bands.get(1)!
+    fillBand.fill(1)
+    fillBand.noDataValue = -9999
+    await called((cb) => loose(gdal.fillNodataAsync)({ src: fillBand, searchDist: 3 }, cb))
+    await called((cb) => loose(gdal.sieveFilterAsync)({ src: fillBand, threshold: 2 }, cb))
+    fill.close()
+
+    dataset.close()
+  })
+})
+
+describe('module odds and ends', () => {
+  it('runs infoAsync with args-as-callback and with a dataset', async () => {
+    const dataset = gdal.open(sampleRaster('ts-cov-info.tif', 4, 4))
+    const viaCallback = await new Promise<string>((resolve, reject) => {
+      loose(gdal.infoAsync)(dataset, (error: Error | null, text?: string) =>
+        error ? reject(error) : resolve(text!),
+      )
+    })
+    expect(viaCallback).toContain('Driver')
+    expect(typeof gdal.info().releaseName).toBe('string')
+    dataset.close()
+  })
+
+  it('refuses a warp with an existing destination dataset', () => {
+    const dataset = gdal.open(sampleRaster('ts-cov-warp-refuse.tif', 4, 4))
+    expect(() =>
+      gdal.warp(tmp('ts-cov-warp-out.tif'), dataset as unknown as null, [dataset], []),
+    ).toThrow(/existing destination/)
+    dataset.close()
+  })
+
+  it('answers instanceof false for a value of the wrong shape', () => {
+    expect(('x' as unknown as object) instanceof gdal.GeometryCollectionChildren).toBe(false)
+    expect(('x' as unknown as object) instanceof gdal.LineStringPoints).toBe(false)
+  })
+
+  it('falls back to String for an unknown field code, and passes a native band to calcAsync', async () => {
+    expect(new gdal.FieldDefn('x', 9999).type).toBe('String')
+
+    const output = gdal.open(tmp('ts-cov-calc-out.tif'), 'w', 'GTiff', 4, 1, 1, 'GDT_Float64')
+    const source = native.createSync(tmp('ts-cov-calc-in.tif'), {
+      driver: 'GTiff',
+      width: 4,
+      height: 1,
+      bandCount: 1,
+      dataType: 'Float64',
+    })
+    source.band(0).fill(2)
+    // A native band (no `_native`) goes straight through the adapter's unwrap.
+    await loose(gdal.calcAsync)(
+      { a: source.band(0) },
+      output.bands.get(1)!,
+      (value: number) => value + 1,
+    )
+    expect(output.bands.get(1)!.pixels.get(0, 0)).toBe(3)
+    source.close()
+    output.close()
+  })
+})
+
 describe('multidimensional getters', () => {
   let netcdf = ''
   beforeAll(async () => {
