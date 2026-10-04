@@ -302,8 +302,10 @@ pub fn polygonize_request(options: Option<PolygonizeOptions>) -> Result<Polygoni
 /// the type of field its values need.
 fn band_is_float(band: &RasterBand<'_>) -> bool {
     matches!(
-        crate::dtype::DataType::from_gdal(band.band_type()),
-        crate::dtype::DataType::Float32 | crate::dtype::DataType::Float64
+        crate::dtype::DataType::of_band(band),
+        crate::dtype::DataType::Float16
+            | crate::dtype::DataType::Float32
+            | crate::dtype::DataType::Float64
     )
 }
 

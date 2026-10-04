@@ -56,7 +56,7 @@ pub(crate) fn overview_level(
         // A level is built with its band's sample type — GDAL has no way to make one
         // with a different type — so the band's own is the level's, and it is already
         // the binding's `DataType` rather than a raw GDAL enum value.
-        data_type: DataType::from_gdal(band.band_type()),
+        data_type: DataType::of_band(band),
     })
 }
 

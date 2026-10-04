@@ -2121,8 +2121,10 @@ fn gdal_type_name(data_type: DataType) -> Result<&'static str> {
         DataType::Int32 => "Int32",
         DataType::Uint64 => "UInt64",
         DataType::Int64 => "Int64",
+        DataType::Float16 => "Float16",
         DataType::Float32 => "Float32",
         DataType::Float64 => "Float64",
+        DataType::CFloat16 => "CFloat16",
         DataType::Unknown => return Err(bad_argument("asType needs a sample type, not Unknown")),
     })
 }
@@ -2369,6 +2371,9 @@ macro_rules! sample_types {
                     Ok(sample as f64)
                 })*
                 DataType::Unknown => Err(bad_argument("an unknown sample type")),
+                DataType::Float16 | DataType::CFloat16 => Err(bad_argument(
+                    "a half-float sample is not read one at a time here; use readPixelsSync / readAsSync",
+                )),
             }
         }
 
@@ -2379,6 +2384,11 @@ macro_rules! sample_types {
             Ok(match data_type {
                 $(DataType::$variant => (value as $rust).to_ne_bytes().to_vec(),)*
                 DataType::Unknown => return Err(bad_argument("an unknown sample type")),
+                DataType::Float16 | DataType::CFloat16 => {
+                    return Err(bad_argument(
+                        "a half-float sample is not written one at a time here; use writePixelsSync",
+                    ));
+                }
             })
         }
     };

@@ -54,6 +54,13 @@ declare namespace gdal {
   const GDT_CFloat32: number
   const GDT_CFloat64: number
   const GDT_CFloat16: number
+  /** Node v24's `Float16Array`, exported when the runtime has it. */
+  const Float16Array:
+    | {
+        new (length: number): ArrayLike<number>
+        from(arrayLike: ArrayLike<number>): ArrayLike<number>
+      }
+    | undefined
 
   /** GDAL's field-type, colour, palette, resampling and geometry codes. */
   const OFTInteger: number
@@ -194,17 +201,20 @@ declare namespace gdal {
   const wkbGeometryCollection25D: number
   const wkbLinearRing25D: number
 
-  /** Byte-order markers: XDR is big-endian, NDR little-endian. */
-  const wkbXDR: number
-  const wkbNDR: number
+  /** Byte-order markers: the strings `MSB` (XDR) and `LSB` (NDR). */
+  const wkbXDR: string
+  const wkbNDR: string
+  /** WKB flavour strings. */
+  const wkbVariantIso: string
+  const wkbVariantOgc: string
+  const wkbVariantOldOgc: string
   /** Access modes (`GDALAccess`) and the raster-IO flag (`GDALRWFlag`). */
   const GA_Readonly: number
   const GA_Update: number
   const GF_Read: number
   const GF_Write: number
   /** Alternate spellings the reference uses. */
-  const CPLE_objectNull: number
-  const GRA_NearestNeighbor: number
+  const GRA_NearestNeighbor: string
   /** Driver metadata keys (`GDAL_DMD_*`). */
   const DMD_MIMETYPE: string
   const DMD_EXTENSION: string

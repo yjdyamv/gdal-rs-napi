@@ -86,6 +86,36 @@ test('a driver the full build adds works end to end, not just in the list', () =
   reopened.close()
 })
 
+test('a Float16 band is reported and sized, and read by conversion', () => {
+  // The `gdal` crate has no half-float sample type, so this binding cannot create
+  // one — but GDAL can (via `-ot Float16`), and a band opened from such a file must
+  // report its real type and size rather than `Unknown`.
+  const source = gdal.createSync(tmp('half-src.tif'), {
+    driver: 'GTiff',
+    width: 2,
+    height: 2,
+    bandCount: 1,
+    dataType: 'Float32',
+  })
+  source.band(0).writePixelsSync(bytesOf(Float32Array.from([1, 2, 3, 4])))
+  source.close()
+
+  const path = tmp('half.tif')
+  gdal.translateSync(path, tmp('half-src.tif'), ['-of', 'GTiff', '-ot', 'Float16'])
+
+  const dataset = gdal.openSync(path)
+  const band = dataset.band(0)
+  assert.equal(band.dataType, 'Float16')
+  assert.equal(gdal.bytesPerSample(band.dataType), 2)
+  // Reading in its own type is refused (no Rust half); asking for a wider one works.
+  assert.throws(() => band.readPixelsSync(), /not read in its own type/)
+  assert.deepEqual(
+    Array.from(asTypedArray(band.readAsSync('Float32'), Float32Array)),
+    [1, 2, 3, 4],
+  )
+  dataset.close()
+})
+
 test('diagnostics() finds the packaged CRS database', () => {
   const diagnostics = gdal.diagnostics()
   assert.equal(diagnostics.epsg4326Resolves, true, diagnostics.error ?? '')

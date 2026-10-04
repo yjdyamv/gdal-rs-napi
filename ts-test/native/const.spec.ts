@@ -40,8 +40,12 @@ test('a vocabulary whose names are already canonical reads key === value', () =>
 })
 
 test('every DataType is the one a band reports back', () => {
+  // `Unknown` is receivable, never requestable; the half-floats are reportable (a
+  // Float16 file's band says so, and `bytesPerSample` sizes them) but the `gdal`
+  // crate has no half-float sample type, so this binding cannot create one.
+  const uncreatable = new Set([k.DataType.Unknown, k.DataType.Float16, k.DataType.CFloat16])
   for (const name of values(k.DataType)) {
-    if (name === k.DataType.Unknown) continue // receivable, never requestable
+    if (uncreatable.has(name)) continue
     const dataset = gdal.createSync('', {
       driver: 'MEM',
       width: 2,

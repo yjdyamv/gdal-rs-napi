@@ -1186,6 +1186,17 @@ First working cut — everything here is new.
   `CPLE_objectNull`, `GRA_NearestNeighbor`, `wkbNDR` / `wkbXDR`). Diffing the
   reference's own `lib/index.d.ts` against the adapter is what found them; the residual
   is `Float16Array` and the three `wkbVariant*` spellings.
+- **Half-floats, and the reference's exact constant values.** `DataType` gains
+  `Float16` / `CFloat16`: a Float16 band's type is read from GDAL's raw ordinal (the
+  `gdal` crate's `GdalDataType` has no half-float variant), so `band.dataType`
+  reports `'Float16'` and sizes as 2 bytes; `const.DataType`, the stream typed-array
+  map and the compat `Float16Array` follow (the last where Node has one, v24+).
+  Creating or `RasterIO`-ing a half-float in its own type is refused with a message
+  naming the conversion (`readAs('Float32')`). The compat constants added in the
+  previous round were then pinned against `gdal-async`'s own `src/node_gdal.cpp`:
+  `wkbXDR` / `wkbNDR` are `'MSB'` / `'LSB'`, `GRA_NearestNeighbor` is
+  `'NearestNeighbor'`, `wkbVariant*` are `'ISO'` / `'OGC'`, and the meaningless
+  `CPLE_objectNull` alias is gone (their runtime exports `CPLE_ObjectNull`, as we did).
 - **Known-gaps audit.** Every Known gap and the `docs/PARITY.md` boundary were
   checked against the code — `transformGeometry` (synchronous) against
   `transformPoints` / `transformPointsSync` (threaded), statistics and histogram

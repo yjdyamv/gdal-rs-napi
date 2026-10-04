@@ -1197,11 +1197,10 @@ impl JsDataset {
                     "band index {index} is out of range: the dataset has {band_count} band(s)"
                 )));
             }
-            Ok(DataType::from_gdal(
-                dataset
+            Ok(DataType::of_band(
+                &dataset
                     .rasterband(index as usize + 1)
-                    .gdal_context("band")?
-                    .band_type(),
+                    .gdal_context("band")?,
             ))
         })?;
 

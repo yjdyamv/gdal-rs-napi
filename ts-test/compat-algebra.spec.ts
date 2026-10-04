@@ -57,6 +57,19 @@ test('gdal.algebra has the async twins', async () => {
   assert.deepEqual(samples(await compat.algebra.meanAsync(a, a)), [1, 2, 3, 4])
 })
 
+test('half-float is a known sample type', () => {
+  assert.equal(native.bytesPerSample('Float16'), 2)
+  assert.equal(native.bytesPerSample('CFloat16'), 4)
+  assert.equal(native.fromDataType(15), 'Float16')
+  assert.equal(native.fromDataType(16), 'CFloat16')
+  assert.equal(native.const.DataType.Float16, 'Float16')
+  assert.equal(native.const.DataType.CFloat16, 'CFloat16')
+  // The reference exports the constructor it reads Float16 with; Node has one from v24.
+  if (typeof globalThis.Float16Array === 'function') {
+    assert.equal(typeof compat.Float16Array, 'function')
+  }
+})
+
 test('the compat constants the reference spells now answer', () => {
   for (const name of [
     'DMD_MIMETYPE',
@@ -70,10 +83,12 @@ test('the compat constants the reference spells now answer', () => {
     'GF_Read',
     'GF_Write',
     'GDT_CFloat16',
-    'CPLE_objectNull',
     'GRA_NearestNeighbor',
     'wkbNDR',
     'wkbXDR',
+    'wkbVariantIso',
+    'wkbVariantOgc',
+    'wkbVariantOldOgc',
   ]) {
     assert.ok(name in compat, `${name} is missing from the compat layer`)
   }

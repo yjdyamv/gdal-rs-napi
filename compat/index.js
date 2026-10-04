@@ -81,6 +81,8 @@ const GDT = {
   GDT_UInt64: 12,
   GDT_Int64: 13,
   GDT_Int8: 14,
+  GDT_Float16: 15,
+  GDT_CFloat16: 16,
 }
 
 const NAME_BY_CODE = {
@@ -95,6 +97,8 @@ const NAME_BY_CODE = {
   12: 'Uint64',
   13: 'Int64',
   14: 'Int8',
+  15: 'Float16',
+  16: 'CFloat16',
 }
 
 const CODE_BY_NAME = Object.fromEntries(
@@ -121,8 +125,6 @@ const GDAL_CONSTANTS = {
   CPLE_NoWriteAccess: 8,
   CPLE_UserInterrupt: 9,
   CPLE_ObjectNull: 10,
-  // The reference spells it with a lower-case `o`; both are accepted.
-  CPLE_objectNull: 10,
   // Driver capabilities (`GDAL_DCAP_*`).
   DCAP_CREATE: 'DCAP_CREATE',
   DCAP_CREATECOPY: 'DCAP_CREATECOPY',
@@ -188,9 +190,14 @@ const GDAL_CONSTANTS = {
   wkb25DBit: -2147483648,
   wkbNone: 100,
   wkbLinearRing: 101,
-  // Byte-order markers (`ogr_core.h`): XDR is big-endian, NDR little-endian.
-  wkbXDR: 0,
-  wkbNDR: 1,
+  // Byte-order markers: the reference's values are the strings `ogr_core.h`'s
+  // `wkbXDR` / `wkbNDR` stand for.
+  wkbXDR: 'MSB',
+  wkbNDR: 'LSB',
+  // The WKB flavour strings the reference hands to `toWKB` / `fromWKB`.
+  wkbVariantIso: 'ISO',
+  wkbVariantOgc: 'OGC',
+  wkbVariantOldOgc: 'OGC',
   // Access modes (`GDALAccess`) and the raster-IO flag (`GDALRWFlag`).
   GA_Readonly: 0,
   GA_Update: 1,
@@ -205,8 +212,8 @@ const GDAL_CONSTANTS = {
   DMD_HELPTOPIC: 'DMD_HELPTOPIC',
   DMD_CREATIONOPTIONLIST: 'DMD_CREATIONOPTIONLIST',
   DMD_CREATIONDATATYPES: 'DMD_CREATIONDATATYPES',
-  // The reference's American spelling of the resampling code, beside the crate's.
-  GRA_NearestNeighbor: 0,
+  // The reference's American spelling of the resampling name.
+  GRA_NearestNeighbor: 'NearestNeighbor',
 }
 
 // The 2.5D forms, derived the way GDAL does it: `base | wkb25DBit`.
@@ -229,6 +236,10 @@ const TYPED_ARRAY_BY_CODE = {
   12: BigUint64Array,
   13: BigInt64Array,
   14: Int8Array,
+}
+// Node gained a `Float16Array` in v24; where it exists, a Float16 read/view is one.
+if (typeof globalThis.Float16Array === 'function') {
+  TYPED_ARRAY_BY_CODE[15] = globalThis.Float16Array
 }
 
 /**
@@ -3729,6 +3740,11 @@ Object.assign(Gdal, {
   polygonize,
   polygonizeAsync,
   algebra,
+  // The reference exports the constructor it reads Float16 with. Node has one
+  // from v24; on an older Node the export is absent rather than a broken stub.
+  ...(typeof globalThis.Float16Array === 'function'
+    ? { Float16Array: globalThis.Float16Array }
+    : {}),
 })
 
 // ---- async twins -----------------------------------------------------------

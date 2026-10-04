@@ -288,6 +288,15 @@ All but `Float16Array` — which needs a Float16 data type the binding does not 
 and the three `wkbVariant*` spellings are answered now. The declaration's 32 type-only
 names (`CalcOptions`, `VSIStat`, …) are types, not runtime exports.
 
+An **addendum on half-floats.** GDAL 3.11 added `Float16` / `CFloat16`, and the
+adapter's `GDT_Float16` / `GDT_CFloat16` and the main entry's `DataType.Float16` /
+`CFloat16` answer them. The main entry also *reports* a Float16 band's real type —
+read from GDAL's raw ordinal, because the `gdal` crate's `GdalDataType` has no
+half-float variant — and sizes it as 2 bytes. It cannot create one or `RasterIO` it
+in its own type; `readAs('Float32')` is the conversion, and an implicit read says so.
+`gdal.Float16Array`, the reference's export, is present where the Node runtime has
+one (v24+).
+
 **The mutable geometry builder is in.** The reference's `points`, `rings`, `children`
 and `curves` are editable collections, built on new native write methods
 (`addPoint` / `setPoint` / `resizePoints` / `addGeometry` / `removeGeometry` /

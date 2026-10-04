@@ -149,7 +149,7 @@ fn bytes_to_samples<T: Copy>(bytes: &[u8]) -> Vec<T> {
 /// The sample type a read produces: the band's own, unless the caller asked GDAL to
 /// convert.
 fn read_data_type(band: &RasterBand<'_>, target: Option<DataType>) -> Result<DataType> {
-    let data_type = target.unwrap_or_else(|| DataType::from_gdal(band.band_type()));
+    let data_type = target.unwrap_or_else(|| DataType::of_band(band));
     if data_type == DataType::Unknown {
         return Err(bad_argument("cannot read an Unknown sample type"));
     }
@@ -190,6 +190,11 @@ pub fn read_window(
         DataType::Int64 => read!(i64),
         DataType::Float32 => read!(f32),
         DataType::Float64 => read!(f64),
+        // Half-float reads need a target the Rust side can hold; `readAs('Float32')`
+        // is the way, and an implicit read says so rather than guessing.
+        DataType::Float16 | DataType::CFloat16 => Err(bad_argument(
+            "a Float16 band is not read in its own type here; read it as another type (readAs('Float32'))",
+        )),
         DataType::Unknown => unreachable!(),
     }
 }
@@ -318,6 +323,9 @@ pub fn write_window(
         DataType::Int64 => write!(i64),
         DataType::Float32 => write!(f32),
         DataType::Float64 => write!(f64),
+        DataType::Float16 | DataType::CFloat16 => Err(bad_argument(
+            "a Float16 band is not written in its own type here; convert in JavaScript first",
+        )),
         DataType::Unknown => unreachable!(),
     }
 }
@@ -374,6 +382,9 @@ pub fn create_dataset(
         DataType::Int64 => create!(i64),
         DataType::Float32 => create!(f32),
         DataType::Float64 => create!(f64),
+        DataType::Float16 | DataType::CFloat16 => Err(bad_argument(
+            "this binding cannot create a Float16 dataset: the gdal crate has no half-float sample type. Create it as Float32 and convert",
+        )),
         DataType::Unknown => unreachable!(),
     }
 }

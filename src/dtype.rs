@@ -19,8 +19,10 @@ pub enum DataType {
     Int32,
     Uint64,
     Int64,
+    Float16,
     Float32,
     Float64,
+    CFloat16,
 }
 
 impl DataType {
@@ -53,6 +55,9 @@ impl DataType {
             Self::Int64 => GdalDataType::Int64,
             Self::Float32 => GdalDataType::Float32,
             Self::Float64 => GdalDataType::Float64,
+            // The `gdal` crate's `GdalDataType` has no half-float variants, so
+            // these can be reported and sized but not requested through it.
+            Self::Float16 | Self::CFloat16 => return None,
             Self::Unknown => return None,
         })
     }
@@ -71,9 +76,18 @@ impl DataType {
             gdal_sys::GDALDataType::GDT_Int64 => Self::Int64,
             gdal_sys::GDALDataType::GDT_Float32 => Self::Float32,
             gdal_sys::GDALDataType::GDT_Float64 => Self::Float64,
-            // Complex and half-float samples have no counterpart here.
+            gdal_sys::GDALDataType::GDT_Float16 => Self::Float16,
+            gdal_sys::GDALDataType::GDT_CFloat16 => Self::CFloat16,
+            // Complex samples wider than a half have no counterpart here.
             _ => Self::Unknown,
         }
+    }
+
+    /// The binding's type for a band, read from GDAL's raw ordinal — the path that
+    /// sees `GDT_Float16` / `GDT_CFloat16`, which the crate's `GdalDataType` enum
+    /// cannot represent.
+    pub fn of_band(band: &gdal::raster::RasterBand<'_>) -> Self {
+        Self::from_code(unsafe { gdal_sys::GDALGetRasterDataType(band.c_rasterband()) })
     }
 
     /// The literal JS sees, as `band.dataType` spells it.
@@ -88,16 +102,18 @@ impl DataType {
             Self::Int32 => "Int32",
             Self::Uint64 => "Uint64",
             Self::Int64 => "Int64",
+            Self::Float16 => "Float16",
             Self::Float32 => "Float32",
             Self::Float64 => "Float64",
+            Self::CFloat16 => "CFloat16",
         }
     }
 
     pub const fn size(self) -> usize {
         match self {
             Self::Uint8 | Self::Int8 | Self::Unknown => 1,
-            Self::Uint16 | Self::Int16 => 2,
-            Self::Uint32 | Self::Int32 | Self::Float32 => 4,
+            Self::Uint16 | Self::Int16 | Self::Float16 => 2,
+            Self::Uint32 | Self::Int32 | Self::Float32 | Self::CFloat16 => 4,
             Self::Uint64 | Self::Int64 | Self::Float64 => 8,
         }
     }
@@ -166,14 +182,18 @@ mod tests {
             DataType::from_code(gdal_sys::GDALDataType::GDT_Float64),
             DataType::Float64
         );
-        // Complex and half-float samples have no counterpart here.
+        // Complex Int16 has no counterpart here; Float16 does, now.
         assert_eq!(
             DataType::from_code(gdal_sys::GDALDataType::GDT_CInt16),
             DataType::Unknown
         );
         assert_eq!(
             DataType::from_code(gdal_sys::GDALDataType::GDT_Float16),
-            DataType::Unknown
+            DataType::Float16
+        );
+        assert_eq!(
+            DataType::from_code(gdal_sys::GDALDataType::GDT_CFloat16),
+            DataType::CFloat16
         );
     }
 

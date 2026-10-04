@@ -44,8 +44,10 @@ binding.const = Object.freeze({
     Int32: 'Int32',
     Uint64: 'Uint64',
     Int64: 'Int64',
+    Float16: 'Float16',
     Float32: 'Float32',
     Float64: 'Float64',
+    CFloat16: 'CFloat16',
   }),
   FieldType: freeze({
     Integer: 'Integer',
@@ -232,6 +234,13 @@ const RASTER_TYPES = new Map([
   ['Float32', Float32Array],
   ['Float64', Float64Array],
 ])
+
+// GDAL 3.11 has a half-float sample type, and Node gained `Float16Array` in v24.
+// Where both are present a Float16 band streams; otherwise the type is still
+// reported and sized, and a stream over one says there is no typed array for it.
+if (typeof globalThis.Float16Array === 'function') {
+  RASTER_TYPES.set('Float16', globalThis.Float16Array)
+}
 
 const RASTER_TYPE_NAMES = new Map([...RASTER_TYPES].map(([name, ctor]) => [ctor, name]))
 
