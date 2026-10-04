@@ -73,8 +73,9 @@ one.
 
 ## Adding or changing an API
 
-1. Put the entry point in the right `src/*.rs` module. Keep `band.rs`,
-   `dataset.rs` and `vector.rs` as the napi surface; raw glue belongs in
+1. Put the entry point in the right module. Keep `band/`, `dataset/` and
+   `vector/` as the napi surface (`mod.rs` holds the types and the `#[napi]`
+   surface; the worker `Task`s live in `tasks.rs`); raw glue belongs in
    `raster_io.rs`, `raster_tools.rs`, `programs.rs` and friends.
 2. Write a doc comment that says **why** the call exists and what GDAL quirk it
    is accounting for. The doc comment is the documentation source.

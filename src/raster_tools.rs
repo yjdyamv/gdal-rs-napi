@@ -1,9 +1,9 @@
 //! Raster algorithms that are neither I/O nor a program: the ones GDAL exposes as
 //! plain `GDAL*` calls on a band.
 //!
-//! They live here for the same reason `raster_io` does — `band.rs` stays the napi
-//! surface, and the raw glue sits in one place. Nothing here takes the global GDAL
-//! lock; the callers do.
+//! They live here for the same reason `raster_io` does — the `band` module stays
+//! the napi surface, and the raw glue sits in one place. Nothing here takes the global
+//! GDAL lock; the callers do.
 
 use std::ffi::{CString, c_int};
 

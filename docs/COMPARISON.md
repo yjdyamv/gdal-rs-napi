@@ -64,7 +64,7 @@ GDAL runs at once**:
 - **This binding** had a process-wide `RwLock` in which dataset work took the write
   side — deliberate, conservative, and *serial*: ten async reads on ten datasets queued
   behind each other. That is now **one global lock whose write side is process-global
-  state only** (registration, `config`, `fs` writes, the programs, `create`), with
+  state only** (registration, `config`, the programs, module-level `create`), with
   dataset work on the read side and a **mutex per open handle** doing the exclusion.
   Same handle: serialised (GDAL's rule). Different handles: overlap.
   `openThreadSafe()` goes further and lets *one* handle be read by several threads

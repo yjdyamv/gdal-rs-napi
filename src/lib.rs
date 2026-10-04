@@ -388,7 +388,8 @@ fn set_debug_logging(value: &str) {
 /// corners that want GDAL's own code. A name GDAL does not know is refused rather than
 /// answered `Unknown`. `Uint8` — this binding's spelling of the one type GDAL calls
 /// `Byte` — is accepted too, so `toDataType(band.dataType)` always works; note that
-/// `fromDataType` answers GDAL's spelling, so that one round-trips as `Byte`.
+/// `fromDataType` answers *this* binding's spelling, so `fromDataType(1)` is `'Uint8'`
+/// and the two round-trip.
 #[napi(catch_unwind)]
 pub fn to_data_type(name: String) -> crate::error::Result<u32> {
     runtime::ensure_initialized();

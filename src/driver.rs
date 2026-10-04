@@ -50,8 +50,8 @@ impl JsDriver {
     /// Run `f` against GDAL's driver. Reading a driver is reading the registry,
     /// which `ensure_initialized` filled once and nothing mutates afterwards, so
     /// this takes the **shared** side of the lock and overlaps whatever else is
-    /// dataset-free. That is also why the methods that re-enter `dataset.rs` —
-    /// `open`, `create`, `createCopy` — do **not** come through here: they need a
+    /// dataset-free. That is also why the methods that re-enter the `dataset`
+    /// module — `open`, `create`, `createCopy` — do **not** come through here: they
     /// dataset, and the lock is not reentrant, so they take the exclusive side
     /// themselves.
     fn with_driver<T>(&self, f: impl FnOnce(&gdal::Driver) -> Result<T>) -> Result<T> {

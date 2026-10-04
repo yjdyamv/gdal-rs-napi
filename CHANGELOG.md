@@ -130,15 +130,17 @@ First working cut — everything here is new.
   were read off the reference's tests rather than assumed: `transformPoint` takes either
   an `{ x, y }` object or `x, y, z` arguments and answers `{ x, y, z }`, and
   `transformGeometry` answers a geometry object where the call it wraps answers GeoJSON.
-  Module-level coverage of that suite: **35 → 64 names**, with the remaining 72
-  categorized in `docs/PARITY.md` (numeric constant tables, `vsimem`, the programs as
-  module functions, and the classes this binding does not have — curves included).
+  Module-level coverage of that suite rose **35 → 64 names** in that round, with the
+  then-remaining 72 categorized in `docs/PARITY.md` (numeric constant tables, `vsimem`,
+  the programs as module functions, and the classes this binding does not have — curves
+  included); the entry at the top of this section reports the families closed.
 - **A dataset operation no longer holds up every other dataset.** The process-wide
   `RwLock` now takes its *write* side for **process-global state only** — driver
-  registration and `configureDataPaths`, `config`, writes through `gdal.fs`, the
-  programs (`translate` / `warp` / `ogr2ogr` / `gdaldem` / `buildVrt`), and
-  `create` / `createCopy` — while an open and every operation on an open dataset take
-  the *read* side. What keeps one dataset safe is then that **handle's own mutex**,
+  registration and `configureDataPaths`, `config`, the programs (`translate` / `warp` /
+  `ogr2ogr` / `gdaldem` / `buildVrt`), and the module-level `create` / `createVector` —
+  while an open and every operation on an open dataset take the *read* side (as do
+  `gdal.fs` writes; only `clearCurlCache` is exclusive). What keeps one dataset safe is
+  then that **handle's own mutex**,
   which is exactly the pair GDAL's contract names: the same handle reached from two
   threads serialises, two different handles do not wait for each other.
   `openThreadSafe()` goes one step further and skips the handle mutex as well, so one
@@ -1196,6 +1198,15 @@ First working cut — everything here is new.
   `COMPARISON.md`'s stale "64 of 136" coverage figure is corrected to 136 of 136.
   `scripts/check-docs.mjs` now guards the runner name and the driver count in both
   READMEs.
+- **README read end to end.** The concurrency section listed `gdal.fs` writes and a
+  dataset-level `createCopy` on the exclusive side; both take the shared side — only
+  `clearCurlCache` is an exclusive `fs` call. The same error is fixed in
+  `CHANGELOG.md`, `docs/COMPARISON.md` and `scripts/bench-parallel.mjs`. The pass also
+  corrected the `decToDMS` example (GDAL's string has a leading space), the
+  cancellation message (it names the program, e.g. `gdaldem was cancelled …`), the
+  stale `band.rs` / `dataset.rs` / `vector.rs` references (`CONTRIBUTING.md`,
+  `src/driver.rs`, `src/raster_tools.rs`, `ROADMAP.md`), and `lib.rs`'s `fromDataType`
+  doc, which contradicted the code about whose spelling it answers.
 
 ### Known gaps
 

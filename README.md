@@ -893,8 +893,9 @@ toMercator.transformBounds([13.0, 52.0, 13.8, 53.0])
 ```
 
 `gdal.decToDMS(angle, axis, precision?)` renders a decimal degree the way `gdalinfo`
-prints one — `decToDMS(45.5, 'Lat')` is `45d30' 0.00"N`; the axis label picks the
-hemisphere letter and `precision` is the decimal places on the seconds (default 2).
+prints one — `decToDMS(45.5, 'Lat')` is GDAL's own `" 45d30' 0.00"N"`, leading space and
+all; the axis label picks the hemisphere letter and `precision` is the decimal places
+on the seconds (default 2).
 
 **Coordinates are longitude,latitude here. Read this before passing any.**
 
@@ -1539,16 +1540,18 @@ the split possible at all.
 
 - **The exclusive (write) side** is process-global state, and only that: driver
   registration and `configureDataPaths()`, `config.set` — with `config.get`, which
-  reads a pointer into the same map — writes through `gdal.fs`, and the `programs`
-  (`translate`, `warp`, `ogr2ogr`, `gdaldem`, `buildVrt`) with the `create` / `createCopy`
-  paths beside them. They build datasets of their own and write files, so no dataset
-  operation may run while one is rewriting the file it is reading.
+  reads a pointer into the same map — the `programs` (`translate`, `warp`, `ogr2ogr`,
+  `gdaldem`, `buildVrt`) and the module-level `create` / `createVector`. They build
+  datasets of their own and write files, so no dataset operation may run while one is
+  rewriting the file it is reading. `gdal.fs` writes are **not** here, and neither is a
+  `createCopy` on an already-open dataset: both leave the process-global store alone and
+  take the shared side — only `clearCurlCache` is exclusive.
 - **The shared (read) side** is everything else, and it really does run in parallel: an
   open, every operation on an open dataset, the CRS and `CoordinateTransform` methods,
-  geometry/GEOS, `gdal.fs` reads, and the module-level introspection — `version()`,
-  `info()`, `diagnostics()`, `lastError()`, `epsgToWkt()`, the `geometry*` helpers, and
-  the registry reads `drivers()` / `driver(name)` (a method on the `Driver` they hand
-  back reads the registry too).
+  geometry/GEOS, `gdal.fs` (reads *and* writes), and the module-level introspection —
+  `version()`, `info()`, `diagnostics()`, `lastError()`, `epsgToWkt()`, the `geometry*`
+  helpers, and the registry reads `drivers()` / `driver(name)` (a method on the `Driver`
+  they hand back reads the registry too).
 
 What keeps a dataset safe is then **not** this lock but that handle's own mutex: the same
 dataset reached from two threads serialises, and two *different* datasets do not wait for
@@ -1726,7 +1729,7 @@ try {
   await gdal.demProcess(dest, source, 'hillshade', [], undefined, () => false)
 } catch (error) {
   error.code              // 'GDAL_CANCELLED'
-  error.message           // '[GDAL_CANCELLED] cancelled by the progress callback'
+  error.message           // '[GDAL_CANCELLED] gdaldem was cancelled by the progress callback'
 }
 ```
 

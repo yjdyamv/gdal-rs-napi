@@ -28,7 +28,7 @@
 1. **分发方式不是主流。** 用户必须 `npm install <github release url>`，无法 `npm install gdal-rs-napi`，也没有版本范围/镜像/审计链。
 2. **文档与代码漂移。** 持续校准：`ts-test/native/types.spec.ts` 用 `binding.d.ts` 与运行时互校，本轮又修掉 README/CHANGELOG/compat 注释中 GEOS、musl、兼容层覆盖面的陈旧描述（见 CHANGELOG 的 Testing 一节）。
 3. ~~**`open` 失败信息丢失。**~~ 已修：加 `GDAL_OF_VERBOSE_ERROR` 后，失败会带上 GDAL 的原始原因（见 Phase 0）。
-4. **代码集中。** `dataset.rs` 2108 行、`band.rs` 1573、`vector.rs` 1382，审阅与扩展成本在上升。
+4. ~~**代码集中。**~~ 已拆分：`dataset` / `band` / `vector` 成为目录模块（napi 面留在 `mod.rs`，worker/`Task` 移入 `tasks.rs`），见 §4。
 5. **musl 两个 leg 已是普通 leg（红即失败）**，脆弱点仍是 `all_drivers` vendored 的 HDF5/netCDF/curl/libpq。
 6. ~~**异步错误无 `err.code`**。~~ 已解决：外壳把消息前缀提回 `err.code`，与同步路径一致（令牌仍留在消息里，两种匹配方式都成立）。
 7. **GEOS 缺席是刻意的许可证决策** —— 已定案改为**自行构建 + 静态链接**（与 GDAL/PROJ 同一条路，默认就有），分发仍是单个自包含产物；见 [`docs/GEOS.md`](./docs/GEOS.md)。

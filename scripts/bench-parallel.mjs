@@ -6,10 +6,10 @@
 // thread-safe for. `openThreadSafe()` is the opt-in for GDAL's `GDAL_OF_THREAD_SAFE`,
 // which lifts even that and lets several threads read one handle at once. Two
 // *different* handles do not queue: they take the read side of the process-wide lock,
-// which is only taken in write mode for global state (registration, `config`, `fs`
-// writes, the programs).
+// which is only taken in write mode for global state (registration, `config`, the
+// programs). `fs` writes are on the read side too; only `clearCurlCache` is exclusive.
 //
-// Four workloads are measured, because more than pixels goes through that read side:
+// Five workloads are measured, because more than pixels goes through that read side:
 // whole-band reads, a batch of reads with the read-only accessors asked in the
 // middle of them, the same reads split across two handles, a workload with no dataset
 // in it at all, and the module-level surface — which is dataset-free in the same way,
