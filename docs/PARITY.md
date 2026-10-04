@@ -223,6 +223,13 @@ These are **decisions, not omissions**.
 - **An independent `Feature.clone()`** — a feature here is a live handle on a row, so
   `clone()` is a second handle, not a snapshot; `fields.toObject()` + `geometry` is
   how to make a detached copy, and `layer.features.add(record)` writes one.
+- **Full half-float support.** `Float16` / `CFloat16` are reported, sized and
+  convertible — a Float16 band's `dataType` says so and `readAs('Float32')` reads it —
+  but none is *created* or `RasterIO`-ed in its own type. The `gdal` crate has no
+  half-float sample type, and GDAL's half-float (3.11) is niche (ML/AI rasters,
+  storage-tight cases) that mainstream formats do not need; bypassing the crate with
+  raw `gdal_sys` for create and RasterIO was weighed and not taken. The partial support
+  exists so a Float16 input is not `Unknown`, not because half-float is a target.
 
 ---
 
