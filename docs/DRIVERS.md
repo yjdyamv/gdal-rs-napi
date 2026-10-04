@@ -12,11 +12,33 @@ one line in the dependency, not anything in this repository.
 .define("GDAL_USE_EXTERNAL_LIBS", "OFF")
 ```
 
-and then a fixed list of `handle_gdal_driver!` / `handle_ogr_driver!` calls. That is
-what keeps the package reproducible and host-free — and it is also what switches off
-every driver that needs a library GDAL does not carry inside its own tree. There is no
-`driver_jpeg2000` / `driver_webp` / `driver_kml` feature to turn back on, and no way to
-pass an arbitrary CMake define through `gdal-src`'s `build.rs`.
+and then a fixed list of `handle_gdal_driver!` / `handle_ogr_driver!` calls:
+
+```rust
+macro_rules! handle_gdal_driver {
+    ($config: ident, $driver: literal) => {
+        if cfg!(feature = $driver) {
+            $config.define(format!("GDAL_ENABLE_{}", $driver.to_ascii_uppercase()), "ON");
+        } else {
+            $config.define(format!("GDAL_ENABLE_{}", $driver.to_ascii_uppercase()), "OFF");
+        }
+    };
+}
+```
+
+A *library-backed* driver follows the same shape with one more step: the feature turns
+on a `-sys` crate, and `build.rs` reads that crate's `DEP_*` variables to define
+`GDAL_USE_<LIB>=ON` and the include/library paths. `libsqlite3-sys`, `hdf5-metno-sys`,
+`netcdf-sys`, `curl-sys`, `pq-src` and `geos-src` are the ones `gdal-src` carries.
+
+**That is the whole reason these drivers cannot be added from here.** `gdal-src` owns
+the `cmake::Config`, and a CMake define can only be written inside its `build.rs`,
+gated on *its own* Cargo features. A downstream crate can enable a feature a dependency
+already declares, but it cannot declare a new one for it; and the only environment
+`gdal-src` reads is `OUT_DIR` plus the `DEP_*` values of the `-sys` crates it already
+depends on. Pointing `CMAKE_PREFIX_PATH` at an OpenJPEG would not help either, because
+`GDAL_USE_EXTERNAL_LIBS=OFF` gates external libraries off regardless. "Do it the way
+`gdal-src` does" therefore means doing it **inside** `gdal-src` — or replacing it.
 
 `gdal-async` does not add drivers — it builds GDAL with those libraries available
 (system or bundled per its build machine), so its `GDALRegisterAll()` registers more.
@@ -102,10 +124,16 @@ so the policy line does not have to change for this to work.
 
 ## Route 3 — patch `gdal-src` locally
 
-A `[patch.crates-io]` entry pointing at a fork whose `build.rs` changes those lines
-gets the drivers today. It is a fork to maintain against every `gdal-src` release and
-every GDAL upgrade, so it is for a driver that is genuinely business-critical, not for
-convenience.
+A `[patch.crates-io]` entry pointing at a fork gets a driver today: add the `-sys`
+dependency and a `driver_*` feature, then a `cfg!(feature)` arm that defines
+`GDAL_USE_<LIB>=ON` and wires the include/library paths, exactly as the existing ones
+do. What you take on is not just those lines — the fork has to be carried through every
+`gdal-src` release (its GDAL version, its feature list, its vendored
+`sqlite`/`hdf5`/`netcdf`/`curl`/`pq`/`geos` wiring) — so it is for a driver that is
+genuinely business-critical, not for convenience. The alternative is to stop using
+`gdal-src` and write this crate's own GDAL build script, which is re-implementing the
+dependency: most of what `gdal-src` does is exactly the part that is tedious and
+error-prone, and it is the part we currently get for free.
 
 ## The default stays what it is
 
