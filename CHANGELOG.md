@@ -1179,6 +1179,13 @@ First working cut — everything here is new.
 - **Tutorials.** `docs/TUTORIALS.md` indexes four runnable flows, and
   `examples/parallel-tiles.mjs` is the new one: it builds its own tiled fixture
   and measures serial vs `openThreadSafe` parallel reads.
+- **`gdal.algebra` and the compat constant set.** The adapter answers the reference's
+  `gdal.algebra` namespace (`add` / `sub` / … / `min` / `max` / `mean` / `ifThenElse` /
+  `asType`, each with an `…Async` twin) over the same eager band arithmetic, and the
+  module-level constants the reference spells (`DMD_*`, `GA_*`, `GF_*`, `GDT_CFloat16`,
+  `CPLE_objectNull`, `GRA_NearestNeighbor`, `wkbNDR` / `wkbXDR`). Diffing the
+  reference's own `lib/index.d.ts` against the adapter is what found them; the residual
+  is `Float16Array` and the three `wkbVariant*` spellings.
 - **Known-gaps audit.** Every Known gap and the `docs/PARITY.md` boundary were
   checked against the code — `transformGeometry` (synchronous) against
   `transformPoints` / `transformPointsSync` (threaded), statistics and histogram

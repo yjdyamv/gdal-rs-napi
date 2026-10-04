@@ -1705,9 +1705,9 @@ root.arrays.get('temperature').read()      // 整个数组的类型化数组
 gdal.fromWKT('POINT (9 9)')` 直接替换。阻塞/异步成对为 `xxx()` / `xxxAsync()`，
 `xxxAsync` 也接受 node 风格回调。
 
-**不重塑**的部分（免得迁移时才发现）：掩膜波段（`band.mask` 在主入口上，适配器的
-`getMaskBand()` / `createMaskBand()` 转发到同一条原生波段），以及 `gdal.algebra` 命名空间
-—— 它的急切方法就在波段自己身上（`band.add`、`band.mul`……适配器同样带上）。其余原生 API
+**不重塑**的部分（免得迁移时才发现）：只剩掩膜波段（`band.mask` 在主入口上，适配器的
+`getMaskBand()` / `createMaskBand()` 转发到同一条原生波段）。`gdal.algebra` 这里也有 ——
+与 `band.add` / `band.mul` 相同的急切算法，写作 `gdal.algebra.add(a, b)`。其余原生 API
 能做的，适配器都能做：`calcAsync`、VRT 像素函数、命令行程序及其 `translate`/`warp` 家族、
 多维模型，以及 GEOS 谓词（它们就在同一个构建里）。栅格流两边都有 ——
 `band.pixels.createReadStream()` 与主入口的 `band.createReadStream()`。完整清单见 `PHASE1.md`（WS-7）。

@@ -275,8 +275,18 @@ Three are fixture strings the reader mistakes for member accesses — `t00z` and
 `f000` inside `gfs.t00z.pgrb2b.4p.f000.grb2`, and `WY` inside the `US.WY.PARK`
 layer name. One is chai's `assert.throw`. One is `isVectical`, a typo in the
 reference's own test for the `isVertical` this binding has. The last is
-`gdal.algebra.mulAsync`, a sub-namespace the extractor deliberately skips at the
-module level and that this binding answers on the bands themselves (`band.mul`).
+`gdal.algebra.mulAsync`, which the extractor used to skip as a sub-namespace and which
+the adapter now answers at the module level too — `gdal.algebra.mulAsync`, over the
+same eager arithmetic as `band.mul`.
+
+A **stricter check than the test suite.** `scripts/compat-coverage.mjs` reads the
+reference's *tests*, so a name its tests never use is invisible to it. Diffing the
+reference's own `lib/index.d.ts` against the adapter found 20 value names the tests
+never touched: `gdal.algebra` (a whole namespace) and the constants `DMD_*`, `GA_*`,
+`GF_*`, `GDT_CFloat16`, `CPLE_objectNull`, `GRA_NearestNeighbor`, `wkbNDR` / `wkbXDR`.
+All but `Float16Array` — which needs a Float16 data type the binding does not carry —
+and the three `wkbVariant*` spellings are answered now. The declaration's 32 type-only
+names (`CalcOptions`, `VSIStat`, …) are types, not runtime exports.
 
 **The mutable geometry builder is in.** The reference's `points`, `rings`, `children`
 and `curves` are editable collections, built on new native write methods

@@ -20,12 +20,13 @@
 //     = [...]`, `dataset.srs = srs`, where native spells them `setNoDataValue`,
 //     `setGeoTransform`, `setProjection`.
 //
-// Coverage is a subset, and honestly so. What is *not* reshaped: the mask band
+// Coverage is a subset, and honestly so. What is *not* reshaped: only the mask band
 // (`band.mask` is the main entry point's; `getMaskBand()` / `createMaskBand()`
-// forward to the same native band) and `gdal.algebra`, whose eager methods live on
-// the bands themselves (`band.add`, `band.mul`, … — which this adapter carries too).
-// Everything else, including the raster streams, `calcAsync`, the pixel functions
-// and the command-line programs, is forwarded. The typed suite in
+// forward to the same native band). `gdal.algebra` is a namespace here too — its
+// functions are the eager band arithmetic this adapter already carries, reached by
+// the reference's other door. Everything else, including the raster streams,
+// `calcAsync`, the pixel functions and the command-line programs, is forwarded.
+// The typed suite in
 // `ts-test/compat-*.spec.ts` (and `ts-test/native/compat*.spec.ts`) is what claims
 // what works; `ts-test/compat-reachability.spec.ts` is the per-class guard.
 
@@ -120,6 +121,8 @@ const GDAL_CONSTANTS = {
   CPLE_NoWriteAccess: 8,
   CPLE_UserInterrupt: 9,
   CPLE_ObjectNull: 10,
+  // The reference spells it with a lower-case `o`; both are accepted.
+  CPLE_objectNull: 10,
   // Driver capabilities (`GDAL_DCAP_*`).
   DCAP_CREATE: 'DCAP_CREATE',
   DCAP_CREATECOPY: 'DCAP_CREATECOPY',
@@ -185,6 +188,25 @@ const GDAL_CONSTANTS = {
   wkb25DBit: -2147483648,
   wkbNone: 100,
   wkbLinearRing: 101,
+  // Byte-order markers (`ogr_core.h`): XDR is big-endian, NDR little-endian.
+  wkbXDR: 0,
+  wkbNDR: 1,
+  // Access modes (`GDALAccess`) and the raster-IO flag (`GDALRWFlag`).
+  GA_Readonly: 0,
+  GA_Update: 1,
+  GF_Read: 0,
+  GF_Write: 1,
+  // A `GDALDataType` code this GDAL version has but the crate does not bind.
+  GDT_CFloat16: 16,
+  // Driver metadata keys (`GDAL_DMD_*`); GDAL spells the value as its own name.
+  DMD_MIMETYPE: 'DMD_MIMETYPE',
+  DMD_EXTENSION: 'DMD_EXTENSION',
+  DMD_LONGNAME: 'DMD_LONGNAME',
+  DMD_HELPTOPIC: 'DMD_HELPTOPIC',
+  DMD_CREATIONOPTIONLIST: 'DMD_CREATIONOPTIONLIST',
+  DMD_CREATIONDATATYPES: 'DMD_CREATIONDATATYPES',
+  // The reference's American spelling of the resampling code, beside the crate's.
+  GRA_NearestNeighbor: 0,
 }
 
 // The 2.5D forms, derived the way GDAL does it: `base | wkb25DBit`.
@@ -3626,6 +3648,57 @@ function polygonizeAsync(options, callback) {
   return withCallback(Promise.resolve().then(() => polygonize(opts)), cb)
 }
 
+// ---- gdal.algebra -----------------------------------------------------------
+//
+// The reference exposes the band algebra as a namespace as well as on the band:
+// `gdal.algebra.add(a, b)` and `a.add(b)` are the same computation. The operands
+// are compat bands (or a number) and the result is a compat band. No capability is
+// added — it is the eager arithmetic the bands already carry, reached by the
+// reference's other door.
+
+/** `number <op> band` for the operators that can be turned round. */
+const ALGEBRA_COMMUTATIVE = new Set(['add', 'mul', 'and', 'or', 'eq', 'notEq'])
+const ALGEBRA_SWAPPED = { lt: 'gt', lte: 'gte', gt: 'lt', gte: 'lte' }
+
+function algebraBinary(name, left, right) {
+  if (left instanceof RasterBand) return left[name](right)
+  if (!(right instanceof RasterBand)) {
+    throw new TypeError(`gdal.algebra.${name} needs at least one RasterBand`)
+  }
+  if (ALGEBRA_COMMUTATIVE.has(name)) return right[name](left)
+  if (ALGEBRA_SWAPPED[name]) return right[ALGEBRA_SWAPPED[name]](left)
+  // `number - band` is expressible eagerly; `number / band` and `number ** band`
+  // are not, and this binding has no lazy form to fall back to.
+  if (name === 'sub') return right.mul(-1).add(left)
+  throw new Error(`gdal.algebra.${name} has no eager form with the band second`)
+}
+
+const algebra = {}
+for (const name of ['abs', 'sqrt', 'log', 'log10', 'not']) {
+  algebra[name] = (arg) => arg[name]()
+}
+for (const name of [
+  'add', 'sub', 'mul', 'div', 'pow', 'lt', 'lte', 'gt', 'gte', 'eq', 'notEq', 'and', 'or',
+]) {
+  algebra[name] = (left, right) => algebraBinary(name, left, right)
+}
+algebra.ifThenElse = (condition, thenValue, elseValue) => condition.ifThenElse(thenValue, elseValue)
+algebra.asType = (arg, type) => arg.asType(type)
+algebra.min = (...bands) => bands.reduce((left, right) => left.lt(right).ifThenElse(left, right))
+algebra.max = (...bands) => bands.reduce((left, right) => left.gt(right).ifThenElse(left, right))
+algebra.mean = (...bands) => bands.reduce((left, right) => left.add(right)).div(bands.length)
+
+// The `…Async` twins, in the shape every other one here has: the promise is the
+// reference's, the work stays where it was.
+for (const [name, fn] of Object.entries(algebra)) {
+  Object.defineProperty(algebra, `${name}Async`, {
+    value(...args) {
+      const callback = typeof args[args.length - 1] === 'function' ? args.pop() : undefined
+      return withCallback(Promise.resolve().then(() => fn(...args)), callback)
+    },
+  })
+}
+
 Object.assign(Gdal, {
   FeatureDefn,
   FieldDefn,
@@ -3655,6 +3728,7 @@ Object.assign(Gdal, {
   contourGenerateAsync,
   polygonize,
   polygonizeAsync,
+  algebra,
 })
 
 // ---- async twins -----------------------------------------------------------

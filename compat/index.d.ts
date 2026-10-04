@@ -53,6 +53,7 @@ declare namespace gdal {
   const GDT_CInt32: number
   const GDT_CFloat32: number
   const GDT_CFloat64: number
+  const GDT_CFloat16: number
 
   /** GDAL's field-type, colour, palette, resampling and geometry codes. */
   const OFTInteger: number
@@ -192,6 +193,79 @@ declare namespace gdal {
   const wkbMultiPolygon25D: number
   const wkbGeometryCollection25D: number
   const wkbLinearRing25D: number
+
+  /** Byte-order markers: XDR is big-endian, NDR little-endian. */
+  const wkbXDR: number
+  const wkbNDR: number
+  /** Access modes (`GDALAccess`) and the raster-IO flag (`GDALRWFlag`). */
+  const GA_Readonly: number
+  const GA_Update: number
+  const GF_Read: number
+  const GF_Write: number
+  /** Alternate spellings the reference uses. */
+  const CPLE_objectNull: number
+  const GRA_NearestNeighbor: number
+  /** Driver metadata keys (`GDAL_DMD_*`). */
+  const DMD_MIMETYPE: string
+  const DMD_EXTENSION: string
+  const DMD_LONGNAME: string
+  const DMD_HELPTOPIC: string
+  const DMD_CREATIONOPTIONLIST: string
+  const DMD_CREATIONDATATYPES: string
+
+  /** The reference's `gdal.algebra`: the band algebra as namespace functions. */
+  const algebra: {
+    abs(arg: RasterBand): RasterBand
+    absAsync(arg: RasterBand): Promise<RasterBand>
+    sqrt(arg: RasterBand): RasterBand
+    sqrtAsync(arg: RasterBand): Promise<RasterBand>
+    log(arg: RasterBand): RasterBand
+    logAsync(arg: RasterBand): Promise<RasterBand>
+    log10(arg: RasterBand): RasterBand
+    log10Async(arg: RasterBand): Promise<RasterBand>
+    not(arg: RasterBand): RasterBand
+    notAsync(arg: RasterBand): Promise<RasterBand>
+    add(arg1: RasterBand | number, arg2: RasterBand | number): RasterBand
+    addAsync(arg1: RasterBand | number, arg2: RasterBand | number): Promise<RasterBand>
+    sub(arg1: RasterBand | number, arg2: RasterBand | number): RasterBand
+    subAsync(arg1: RasterBand | number, arg2: RasterBand | number): Promise<RasterBand>
+    mul(arg1: RasterBand | number, arg2: RasterBand | number): RasterBand
+    mulAsync(arg1: RasterBand | number, arg2: RasterBand | number): Promise<RasterBand>
+    div(arg1: RasterBand | number, arg2: RasterBand | number): RasterBand
+    divAsync(arg1: RasterBand | number, arg2: RasterBand | number): Promise<RasterBand>
+    pow(arg1: RasterBand | number, arg2: RasterBand | number): RasterBand
+    powAsync(arg1: RasterBand | number, arg2: RasterBand | number): Promise<RasterBand>
+    lt(arg1: RasterBand | number, arg2: RasterBand | number): RasterBand
+    ltAsync(arg1: RasterBand | number, arg2: RasterBand | number): Promise<RasterBand>
+    lte(arg1: RasterBand | number, arg2: RasterBand | number): RasterBand
+    lteAsync(arg1: RasterBand | number, arg2: RasterBand | number): Promise<RasterBand>
+    gt(arg1: RasterBand | number, arg2: RasterBand | number): RasterBand
+    gtAsync(arg1: RasterBand | number, arg2: RasterBand | number): Promise<RasterBand>
+    gte(arg1: RasterBand | number, arg2: RasterBand | number): RasterBand
+    gteAsync(arg1: RasterBand | number, arg2: RasterBand | number): Promise<RasterBand>
+    eq(arg1: RasterBand | number, arg2: RasterBand | number): RasterBand
+    eqAsync(arg1: RasterBand | number, arg2: RasterBand | number): Promise<RasterBand>
+    notEq(arg1: RasterBand | number, arg2: RasterBand | number): RasterBand
+    notEqAsync(arg1: RasterBand | number, arg2: RasterBand | number): Promise<RasterBand>
+    and(arg1: RasterBand | number, arg2: RasterBand | number): RasterBand
+    andAsync(arg1: RasterBand | number, arg2: RasterBand | number): Promise<RasterBand>
+    or(arg1: RasterBand | number, arg2: RasterBand | number): RasterBand
+    orAsync(arg1: RasterBand | number, arg2: RasterBand | number): Promise<RasterBand>
+    min(...args: RasterBand[]): RasterBand
+    minAsync(...args: RasterBand[]): Promise<RasterBand>
+    max(...args: RasterBand[]): RasterBand
+    maxAsync(...args: RasterBand[]): Promise<RasterBand>
+    mean(...args: RasterBand[]): RasterBand
+    meanAsync(...args: RasterBand[]): Promise<RasterBand>
+    ifThenElse(arg1: RasterBand, arg2: RasterBand | number, arg3: RasterBand | number): RasterBand
+    ifThenElseAsync(
+      arg1: RasterBand,
+      arg2: RasterBand | number,
+      arg3: RasterBand | number,
+    ): Promise<RasterBand>
+    asType(arg: RasterBand, type: string): RasterBand
+    asTypeAsync(arg: RasterBand, type: string): Promise<RasterBand>
+  }
 
   class Geometry {
     readonly type: string

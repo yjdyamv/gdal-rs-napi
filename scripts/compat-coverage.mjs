@@ -99,7 +99,6 @@ const NOT_API = new Set([
   'LayerAsync',
   'RasterBandAsync',
   // The suite's own helpers, fixtures and internals.
-  'algebra',
   'js',
   'org',
   'log',

@@ -2024,11 +2024,11 @@ root.arrays.get('temperature').read()      // a typed array of the whole array
 `feature.geometry = gdal.fromWKT('POINT (9 9)')` replaces it. The blocking/async
 pair is `xxx()` / `xxxAsync()`, and `xxxAsync` also takes a node-style callback.
 
-What it does **not** reshape, so a port does not find out the hard way: the mask band
-(`band.mask` is the main entry point's; the adapter's `getMaskBand()` /
-`createMaskBand()` forward to the same native band), and `gdal.algebra`, whose eager
-band methods live on the bands themselves (`band.add`, `band.mul`, … — the adapter
-carries those too). Everything else the native API can do, the adapter can:
+What it does **not** reshape, so a port does not find out the hard way: only the mask
+band (`band.mask` is the main entry point's; the adapter's `getMaskBand()` /
+`createMaskBand()` forward to the same native band). `gdal.algebra` is here too — the
+same eager arithmetic as `band.add` / `band.mul`, as `gdal.algebra.add(a, b)`.
+Everything else the native API can do, the adapter can:
 `calcAsync`, the VRT pixel functions, the command-line programs and their
 `translate`/`warp` family, the multidimensional model, and the GEOS predicates, since
 they are in the same build. Raster streams are on both — `band.pixels.createReadStream()`
