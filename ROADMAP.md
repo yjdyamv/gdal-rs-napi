@@ -20,7 +20,7 @@
 | 程序 | `translate` / `warp` / `vectorTranslate` / `demProcess`，带 `onProgress` 与取消 |
 | CRS | SpatialRef 全套读写、CoordinateTransform（点/数组/bounds/geometry）、identifyEpsg |
 | 并发 | 全局 `RwLock` 只护**进程级状态**（注册 / `config` / `fs` 写 / programs）；数据集走共享侧，同句柄由该句柄自己的互斥锁串行、不同句柄真并行；`openThreadSafe()` 让**同一个**句柄的读也并发 |
-| 测试 | `node --test` 103 项，2.9k 行；Rust 侧纯函数单测；CI 六平台 + fmt/clippy |
+| 测试 | vitest 49 个文件 / 436 项（native + compat 逐类可达性），Rust 侧纯函数单测；CI 六平台 + fmt/clippy/覆盖率/锁基准 |
 | 发布 | tag → GitHub Release 挂 6 个自包含 tarball（含 os/cpu/libc 约束） |
 
 ### 需要正视的问题
@@ -64,7 +64,7 @@
 - [ ] **审计 Known gaps**：逐条对代码核验，修掉文档漂移（`transformGeometry`、统计写回、批量读等）。
 - [x] **修 `open` 错误消息**：已修 —— 失败原因是漏了 `GDAL_OF_VERBOSE_ERROR`：不设这个标志时 GDAL 静默返回空句柄，last-error 里什么都没有。加上标志即可，消息走原有错误路径。
 - [x] **CI 策略定案**：两条 musl 腿是**普通 leg** —— 在 musl-native Alpine 容器（`docker/musl.Dockerfile`）里构建与测试，红即失败；README 的 Prebuilt binaries 矩阵与 Targets 一节、以及 `docker/` 指引与此一致。脆弱点在 vendored 的 HDF5/netCDF/curl/libpq，而不是这个 crate。
-- [ ] 补 `SECURITY.md` / issue 模板 / 贡献指南。
+- [x] 补 `SECURITY.md` / issue 模板 / PR 模板 / 贡献指南。
 
 **验收**：`npm view gdal-rs-napi version` 有值；全新机器 `npm i` 后第一次调用 `gdal.version()` 成功。
 
@@ -133,8 +133,8 @@ Phase 1 的主线（详见 `PHASE1.md`）：先做 **几何对象模型**（杠�
 - [x] **类型保障**：`binding.d.ts` 与运行时一致性测试 —— `types.test.mjs` 已重写为**双向对照运行时**：模块级导出双向集合相等、每个类的方法与静态成员逐一核对、namespace 函数核对、异步成员按类与 `async-methods.js` 对齐（不再 flatten，错挂类也能抓）、并覆盖手写外壳（`gdal.const`、`FeatureCursor[Symbol.asyncIterator]`）。
 - [ ] **API 冻结**：确定稳定面，写弃用策略与 `CHANGELOG` 规范（Keep a Changelog + semver）。
 - [ ] **可选平台**：Intel macOS（`macos-13` leg）、Windows arm64；明确 32 位不支持。
-- [ ] **许可与供应链**：`SBOM`（GDAL/PROJ/OpenSSL/HDF5/netCDF/libpq 清单）、license 白名单校验、provenance。
-- [ ] 评估"按需裁剪驱动集"的构建选项，缓解 35MB `.node` / 12.7MB 包体。
+- [x] **供应链清单**：`scripts/sbom.mjs` 生成 CycloneDX 清单、`scripts/check-licenses.mjs` 做许可证白名单门禁，均已进 CI；`provenance` 随 npm 发布，暂缓。
+- [x] **按需裁剪驱动集**：新增 `bundled-lean` feature（internal + sqlite/gpkg/vfk，去掉 HDF5/netCDF/curl/libpq），缓解 35MB `.node` 与 musl 构建脆弱性；方案与取舍见 `docs/MUSL-LEAN.md`。
 
 ---
 
@@ -142,10 +142,10 @@ Phase 1 的主线（详见 `PHASE1.md`）：先做 **几何对象模型**（杠�
 
 | 领域 | 动作 |
 |---|---|
-| 代码结构 | 拆分 `dataset.rs` / `band.rs` / `vector.rs` 为子模块；统一 `raster_tools.rs` 的错误路径 |
+| 代码结构 | 已拆分 `dataset` / `band` / `vector` 为目录模块：napi 面留在 `mod.rs`，`napi::Task` worker 移入 `tasks.rs`（字段/要素助手移入 `vector/fields.rs`），单测移入 `tests.rs`；`binding.d.ts` 逐字节不变。`raster_tools.rs` 错误路径统一待办 |
 | 测试 | 真实数据 fixtures 版本化；补失败路径与边界；目标覆盖率 > 80% |
 | CI | 冷构建 180min 上限是隐患 → **缓存已做**；fmt/clippy/单测固定在 linux-x64 一条腿上，**锁基准也挂在那里**（都是同一个理由：为它们单开一条腿等于再花一整次 GDAL 构建）；顶层权限收窄到 `contents: read`、同 ref 的旧运行自动取消 —— 三项均已落地 |
-| 文档 | 每个公开 API 的 doc comment 即文档源；Known gaps 与代码在 CI 里做一致性检查（可行的话） |
+| 文档 | 每个公开 API 的 doc comment 即文档源；`scripts/check-docs.mjs` 在 CI 里核对版本、包内文件与 README 的运行时声明 |
 | 构建 | 增量构建与 `assets` staging 的确定性；三平台工具链 pin |
 
 ---

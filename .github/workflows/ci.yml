@@ -37,8 +37,9 @@ env:
   HUSKY: "0"
 
 jobs:
-  # The gates that need no GDAL: formatting and the TypeScript declarations. They
-  # run on their own so a style or type slip fails in about a minute, instead of at
+  # The gates that need no GDAL: formatting, the TypeScript declarations, the
+  # licence allow-list and the static documentation claims. They run on their own
+  # so a style, type, licence or doc slip fails in about a minute, instead of at
   # the end of a matrix leg's 40-minute source build.
   checks:
     name: format & types
@@ -64,6 +65,16 @@ jobs:
       # it: a wrong declaration fails here rather than in a consumer's build.
       - name: Type-check the TypeScript suite
         run: npm run typecheck
+
+      # Version parity, package contents, CHANGELOG and the README claims that do
+      # not need a built addon.
+      - name: Check documentation
+        run: node scripts/check-docs.mjs --static
+
+      # The dependency graph's licences, read from `Cargo.lock`. A new crate on a
+      # licence that is not allow-listed fails here.
+      - name: Check licences
+        run: node scripts/check-licenses.mjs
 
   build:
     name: ${{ matrix.target }}
@@ -203,6 +214,19 @@ jobs:
       - name: Test
         run: node scripts/ci-run.mjs npm test
 
+      # Now that the addon is built, the README's runtime claims (the driver
+      # count, the GDAL release string, `apiVersion`, the `features()` keys) can be
+      # checked against the binary that will ship. On the one leg, as ever.
+      - name: Check documentation claims
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        run: node scripts/ci-run.mjs npm run check:docs
+
+      # A CycloneDX inventory of the shipped artifact: the pinned crates plus the
+      # native libraries linked into the `.node`. Attached to the release below.
+      - name: Generate SBOM
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        run: node scripts/ci-run.mjs npm run sbom
+
       # The coverage floor is what keeps a new member of the compatibility layer
       # from landing untested. It re-runs that suite alone (a couple of seconds) on
       # the one leg whose toolchain is already warm, so it does not multiply the
@@ -249,6 +273,13 @@ jobs:
         with:
           name: lock-benchmark
           path: dist/bench.log
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v5
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        with:
+          name: sbom
+          path: dist/sbom.cdx.json
           if-no-files-found: error
 
       # One installable tarball per platform (root package files + assets/ + the
@@ -343,3 +374,7 @@ jobs:
           fi
 
           find artifacts -name '*.tgz' -print -exec gh release upload "$tag" {} --clobber \;
+
+          # The SBOM travels with the release: the tarballs say what the code
+          # does, this says what is inside it.
+          find artifacts -name 'sbom.cdx.json' -print -exec gh release upload "$tag" {} --clobber \;

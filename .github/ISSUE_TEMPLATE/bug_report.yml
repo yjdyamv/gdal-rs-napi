@@ -1,0 +1,80 @@
+name: Bug report
+description: Something does not work the way the README or types say it should.
+title: "[bug] "
+labels: ["bug", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. For a **security** problem, do not use this form —
+        see [SECURITY.md](../SECURITY.md) and report privately.
+
+        A small, runnable reproduction is the single most useful thing you can
+        give here.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: The actual behaviour, and the error message or output you saw.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction
+      description: The smallest script that shows the problem, ideally with a sample file or one built in `/vsimem/`.
+      render: js
+    validations:
+      required: true
+  - type: input
+    id: api-version
+    attributes:
+      label: gdal.apiVersion
+      description: The binding version (`apiVersion`), not the GDAL version.
+      placeholder: "0.1.0"
+    validations:
+      required: true
+  - type: input
+    id: versions
+    attributes:
+      label: gdal.version()
+      description: Paste the JSON, e.g. `{"gdal":"GDAL 3.12.1 …","proj":"9.6.2"}`.
+      placeholder: '{"gdal":"GDAL 3.12.1 \"Chicoutimi\", released 2025/12/12","proj":"9.6.2"}'
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Platform / target
+      description: OS, CPU, and the Rust target when you know it.
+      placeholder: "linux-x64-gnu / Windows 11 x64 / darwin-arm64"
+    validations:
+      required: true
+  - type: input
+    id: node
+    attributes:
+      label: Node.js version
+      placeholder: "24.21.0"
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: gdal.diagnostics() and gdal.features()
+      description: Paste both objects — they say whether the CRS database, GEOS, streaming and thread-safe reads are available.
+      render: json
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues.
+          required: true
+        - label: This is not a security report (those go through SECURITY.md).
+          required: true

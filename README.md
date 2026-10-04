@@ -1805,13 +1805,15 @@ Two things worth knowing about that matrix:
   you need musl outside CI, build it with the container in `docker/`.
 
 Every leg runs the Node suite and the packed-tarball smoke test. A separate `checks`
-job carries the two gates that need no GDAL — `cargo fmt --check` and the TypeScript
-type-check of `compat/index.d.ts` — so a style or type slip fails in about a minute
-rather than at the end of the source build. The `linux-x64-gnu` leg, whose toolchain
-is already warm, carries the rest: clippy with `-D warnings`, the Rust unit tests, the
-cross-target StatBuf type arms, the compatibility coverage floor, and the lock
-benchmark — see *Async semantics* for what that gate is and why it can fail — whose
-numbers are archived in the run summary and as an artifact.
+job carries the gates that need no GDAL — `cargo fmt --check`, the TypeScript
+type-check of `compat/index.d.ts`, `scripts/check-docs.mjs --static` and
+`scripts/check-licenses.mjs` — so a style, type, doc or licence slip fails in about
+a minute rather than at the end of the source build. The `linux-x64-gnu` leg, whose
+toolchain is already warm, carries the rest: clippy with `-D warnings`, the Rust
+unit tests, the cross-target StatBuf type arms, the compatibility coverage floor,
+the documentation check against the built addon, the SBOM, and the lock benchmark
+— see *Async semantics* for what that gate is and why it can fail — whose numbers
+are archived in the run summary and as an artifact.
 
 Intel macOS is not built. If you need it, add a `macos-13` leg — the build itself
 needs no changes.
@@ -1934,7 +1936,10 @@ All of it is statically linked, so an installed package still needs nothing on t
 host. The price is size — the `.node` is about 35 MB (a 131-driver build was 28 MB)
 and a tarball about 15 MB compressed (12.7 MB), plus a few minutes of extra build
 time. To trim it, swap `gdal-src/all_drivers` for the individual
-`gdal-src/driver_*` features you actually want.
+`gdal-src/driver_*` features you actually want — or build the curated
+`bundled-lean` set (`--no-default-features --features bundled-lean`), which drops
+the vendored HDF5/netCDF/curl/PostgreSQL drivers and keeps the internal formats
+plus SQLite/GPKG and GEOS. See [`docs/MUSL-LEAN.md`](./docs/MUSL-LEAN.md).
 
 `openThreadSafe()` needs GDAL ≥ 3.10, which the bundled build satisfies. Linking a
 system GDAL older than that (`--no-default-features`) still compiles — the method
@@ -2036,3 +2041,10 @@ for the means to relink it against a modified GEOS, so each release carries
 the static archives, and a relink note (`npm run lgpl`). That is a condition on
 what a release *publishes*, not a change to the licence of this code — see
 `docs/GEOS.md`.
+
+## Contributing and security
+
+Contributions are welcome — [`CONTRIBUTING.md`](./CONTRIBUTING.md) covers the
+build, test and API conventions. Security problems go through
+[`SECURITY.md`](./SECURITY.md) and GitHub's private advisories, not the public
+issue tracker.

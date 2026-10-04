@@ -13,3 +13,4 @@ binding.d.ts
 .claude
 .agents
 skills-lock.json
+.archify

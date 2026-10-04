@@ -1150,6 +1150,29 @@ First working cut — everything here is new.
   and CI runs it on every platform — a runner being exactly the clean machine the
   claim is about.
 
+### Engineering
+
+- **The three largest Rust modules are directories now.** `dataset.rs`,
+  `band.rs` and `vector.rs` became `dataset/`, `band/` and `vector/` modules:
+  the napi surface stays in `mod.rs`, the `napi::Task` worker types moved to
+  `tasks.rs` (and the field/feature helpers to `vector/fields.rs`), and the unit
+  tests to `tests.rs`. The generated `binding.js` / `binding.d.ts` are
+  byte-for-byte unchanged, so the split is invisible to consumers.
+- **`SECURITY.md`, `CONTRIBUTING.md`, issue forms and a PR template** are in.
+  Security reports go through GitHub's private advisories.
+- **Supply chain**: `scripts/sbom.mjs` writes a CycloneDX inventory of the shipped
+  crates and native libraries; `scripts/check-licenses.mjs` fails on a licence
+  outside its allow-list. Both run in CI, and the SBOM is attached to a release.
+- **`scripts/check-docs.mjs`** checks version parity, package contents, the
+  CHANGELOG heading and the README's runtime claims (driver count, GDAL release,
+  `apiVersion`, `features()` keys) against the built addon.
+- **`bundled-lean`**: an opt-in Cargo feature that selects a curated driver set
+  (internal + SQLite/GPKG/VFK + GEOS) instead of `all_drivers`, to shrink the
+  `.node` and the musl build. See `docs/MUSL-LEAN.md`.
+- **`docs/CONCURRENCY.md`** collects the lock model and its guardrails in one
+  place; `ROADMAP.md`'s test description is corrected to the vitest suite that
+  actually runs.
+
 ### Known gaps
 
 - The capabilities deliberately left out are listed with their reasons in

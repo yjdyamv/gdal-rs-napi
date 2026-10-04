@@ -1,0 +1,49 @@
+name: Feature request
+description: Propose a capability or an API change.
+title: "[feature] "
+labels: ["enhancement", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Check [`docs/PARITY.md`](../docs/PARITY.md) first: the thing you want may
+        already be at parity, an already-recorded gap, or a deliberate
+        non-goal. [`ROADMAP.md`](../ROADMAP.md) says which phase it belongs to.
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What are you trying to do, and what gets in the way today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed API
+      description: The call or shape you have in mind, if you have one. Sketch the JS usage.
+      render: js
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Workarounds tried
+      description: How are you solving it now, and why is that not enough?
+  - type: dropdown
+    id: reference
+    attributes:
+      label: Does gdal-async have it?
+      options:
+        - "Yes — same or similar name"
+        - "Yes — different name or shape"
+        - "No"
+        - "Not sure"
+    validations:
+      required: true
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I checked docs/PARITY.md and docs/COMPARISON.md.
+          required: true
+        - label: I searched existing issues.
+          required: true
