@@ -6,6 +6,33 @@ First working cut — everything here is new.
 
 ### Binding
 
+- **The `compat` layer's per-class surface now matches what a port reaches for.**
+  The gaps the union-based coverage count could not see are closed, class by class:
+  `RasterBand` carries the band algebra (`add`…`ifThenElse`, `asType`) and the whole
+  set of `xxxAsync` getters, plus `ds` and `setStatistics`; `Dataset` gains `getGCPs` /
+  `setGCPs`, `rasterSizeAsync` and `geoTransformAsync`; `DatasetBands` gains
+  `create` / `createAsync` (the new native `Dataset.createBand`, GDAL's `GDALAddBand`),
+  `getEnvelope` and `ds`; every collection answers `countAsync` / `getAsync` and the
+  async iterator; the pixel view gains `band`, `getAsync`, `setAsync` and
+  `clampBlock` / `clampBlockAsync`; `Geometry` gains the async predicate twins
+  (`intersectsAsync` and the rest), `wkbSize`, `coordinateDimension`, `dimension`,
+  `fromGeoJson` / `fromGeoJsonBuffer` (+Async), the static `create` / `getName`, and
+  `transform(CoordinateTransformation)`; `Feature` gains `equals` / `clone` /
+  `destroy` / `setFrom`; `FeatureFields` gains `feature`, `indexOf`, `map`, `toJSON`
+  and `reset`; `LayerFeatures` gains `previous` / `last` / `firstAsync` / `nextAsync` /
+  `map`; `FieldCollection` gains the static `fromJSON` / `fromObject`; `FeatureDefn`
+  gains `clone` and the `featureDefn` back-link; `ColorTable` gains `forEach` / `map`
+  and `band`; `SpatialReference` gains the reference's capitalised
+  `EPSGTreatsAsLatLong` / `EPSGTreatsAsNorthingEasting`; and the module gains
+  `setPROJSearchPaths()`. `transformTo` refuses with an explanation rather than
+  guessing: a geometry here carries no source CRS.
+  `ts-test/compat-reachability.spec.ts` pins the whole list per class.
+- `Dataset.createBand(dataType, options?)` is the native `GDALAddBand`: add a band to
+  an existing dataset, returning the new `RasterBand`. It is what
+  `dataset.bands.create()` is made of.
+- `SpatialRef.epsgTreatsAsNorthingEasting` answers the authority's projected
+  north/east order — `OSREPSGTreatsAsNorthingEasting`, the counterpart of the
+  existing `epsgTreatsAsLatLong`.
 - **The geometry model is mutable now.** `Geometry` gains the write side it never
   had — `addPoint(x, y, z?)`, `setPoint(index, x, y, z?)`, `resizePoints(count)`,
   `addGeometry(other)`, `removeGeometry(index)`, `closeRings()`,
@@ -1000,9 +1027,10 @@ First working cut — everything here is new.
   to 15.2 MB compressed, with a few minutes more build time and the C surface of
   four more libraries. Trim it by swapping `all_drivers` for individual
   `gdal-src/driver_*` features.
-- GEOS stays out, so the OGR geometry predicates it implements (`ST_Intersects`,
-  `ST_Buffer`, `-simplify`) are still unavailable — a licence decision, not an
-  oversight. `PDS` is the one driver that cannot be built at all: gdal-src's
+- GEOS is fetched, compiled and statically linked (`geos-src`), like GDAL and PROJ, so
+  the OGR geometry predicates it implements (`ST_Intersects`, `ST_Buffer`, `-simplify`)
+  are available out of the box — it is LGPL-2.1, and the release carries the §6 relink
+  material. `PDS` is the one driver that cannot be built at all: gdal-src's
   published crate omits `frmts/pds/data`, so switching it on fails the configure
   step, which is why `all_drivers` leaves it out.
 - Requires Ninja (`CMAKE_GENERATOR`) and a `sqlite3` CLI from outside MSYS2. MSYS2
@@ -1016,16 +1044,15 @@ First working cut — everything here is new.
   on every build so the packaging cannot rot, but nothing uploads it: publishing
   is **deliberately deferred** until the surface is settled. `ROADMAP.md` Phase 0
   lists what publishing will take.
-- The two musl legs are marked experimental (`continue-on-error`). They build —
+- The two musl legs are ordinary legs, not experimental ones: a red one fails the run
+  like any other. They build —
   and test — inside a musl-native Alpine container (`docker/musl.Dockerfile`) on a
   runner of their own architecture, so the container's own toolchain already
   targets the musl triple cargo is asked for: an ordinary native build, with no
   cross toolchain, no sysroot and no emulation. The suite has to run in there
   because napi links musl dynamically, so the runner's glibc Node cannot load the
-  addon at all — one process, two libcs. **That stance is the decision, not a
-  question left open**: the two legs build the same source as the glibc ones against
-  a different libc, and what is fragile is the vendored C libraries rather than this
-  crate, so a green musl leg is a bonus and a red one does not hold a release. The
+  addon at all — one process, two libcs. What is fragile is the vendored C libraries
+  rather than this crate. The
   README says so where a consumer will read it, and points at `docker/` for anyone
   who needs musl for certain.
 - The workflow itself was tightened: `permissions: contents: read` at the top (only
@@ -1057,6 +1084,19 @@ First working cut — everything here is new.
 
 ### Testing
 
+- `ts-test/compat-reachability.spec.ts` is the **per-class** guard the union-based
+  coverage count could not give: it builds real `compat` objects and exercises every
+  documented member the review found missing — band algebra and async getters, the
+  GCP surface, collection async twins, `clampBlock`, `DatasetBands.create`, geometry
+  async twins, feature extras, the CRS aliases and `setPROJSearchPaths`. The coverage
+  run stands at **98.7% statements, 99.5% functions, 99.3% lines, 85.6% branches**
+  against the `98/98/99/84` floors.
+- `event-loop-warning.spec.ts` drains queued warnings before each listening window and
+  closes its datasets with the warning off. A `GdalEventLoopWarning` is delivered on
+  the next tick, so a slow `close()` from the previous test could be recorded as if the
+  next test's work had emitted it — which made the whole run red on a machine where
+  closing an 18 MB `Float64` GeoTIFF crosses the 50 ms threshold.
+
 - `ts-test/compat-coverage.spec.ts` reads the compatibility layer nearly end to end.
   It exercises the getters, error branches and node-callback forms the area suites do
   not reach — every geometry constructor and collection brand, the `ColorTable` reads
@@ -1068,9 +1108,9 @@ First working cut — everything here is new.
   `wkbType` fallback, the null-geometry and plain-object feature paths, the feature
   collection's `…Async` callback forms, `executeSQLAsync` with a dialect and through a
   callback, the 3D envelope rules, and the algorithm wrappers with no optional fields.
-  `compat/index.js` went from **91.5% / 92.6% / 69.8%** to **98.6% statements, 99.8%
-  functions, 99.2% lines, 83.6% branches**, and the `test:coverage` thresholds are
-  ratcheted up with it (from `90/90/90/68` to `98/98/99/80`). Two methods that were
+  `compat/index.js` went from **91.5% / 92.6% / 69.8%** to **98.7% statements, 99.5%
+  functions, 99.3% lines, 85.6% branches**, and the `test:coverage` thresholds are
+  ratcheted up with it (from `90/90/90/68` to `98/98/99/84`). Two methods that were
   dead — a class-body `Geometry.getEnvelope` and `RasterBand.computeStatistics`, both
   shadowed by the `Object.assign` blocks below them — were removed rather than left as
   unreachable lines.
@@ -1115,12 +1155,11 @@ First working cut — everything here is new.
 - The capabilities deliberately left out are listed with their reasons in
   [`docs/PARITY.md`](./docs/PARITY.md), the full boundary against `gdal-async`. That
   list is now short: the multidimensional model, the VRT pixel functions, the streams,
-  the async getters, the pixel-wise `calcAsync`, the native collection **typing**, and
-  the geometry subclass family are all *in*; what is not is the reference's **mutable
-  geometry builder** (`points.add`, `curves.add`, `closeRings`, `addSubLineString`,
-  `GeometryCollectionChildren`) — a geometry is a value here — and the one type
-  asymmetry, that a member the generated declarations own keeps their return type.
-  The additive gaps that remain are tiered there too.
+  the async getters, the pixel-wise `calcAsync`, the native collection **typing**, the
+  geometry subclass family and the **mutable geometry builder** (`points.add`,
+  `curves.add`, `closeRings`, `addSubLineString`, `GeometryCollectionChildren`) are all
+  *in*; what is not is the one type asymmetry, that a member the generated declarations
+  own keeps their return type. The additive gaps that remain are tiered there too.
 - Transformations are 2D, and a *geometry* transform is synchronous. A coordinate
   array has a threaded form (`transformPointsSync` / `transformPoints`), which is the
   bulk entry; `Geometry.transform` and `transformGeometry` stay synchronous because a

@@ -214,6 +214,14 @@ These are **decisions, not omissions**.
 - **`toDataType` / `fromDataType` (numeric codes)** — this surface's vocabulary is
   *strings* (`band.dataType === 'Float32'`), so a numeric-code converter would hand
   back a vocabulary it neither returns nor accepts. The codes belong to `compat`.
+- **A CRS on a geometry** — `Geometry.srs` and the in-place `transformTo(srs)` need
+  one, and a geometry here is a value that carries none: the CRS lives on the layer or
+  the dataset it was read from. `transform(from, to)` and
+  `CoordinateTransformation.transformGeometry(geometry)` name both ends instead, and
+  the adapter's `transformTo` refuses with that explanation rather than guessing.
+- **An independent `Feature.clone()`** — a feature here is a live handle on a row, so
+  `clone()` is a second handle, not a snapshot; `fields.toObject()` + `geometry` is
+  how to make a detached copy, and `layer.features.add(record)` writes one.
 
 ---
 
@@ -291,7 +299,20 @@ a bare `.name` cannot say which class it was reached on, so the suite's own help
 any gdal-ish local land in it too. It is still how a whole family of forgotten accessors
 shows up: `points` (359 uses), `rings` (59), `children` (20) and the
 `SpatialReference.from*` statics are all reachable in this binding and were missing from
-the adapter.
+the adapter. It is also a **union across classes**, so a name answered anywhere hides
+the same name missing elsewhere.
+
+That union blind spot has its own guard now: `ts-test/compat-reachability.spec.ts`
+builds real adapter objects and exercises the documented members **per class**. Its
+first run closed the holes the union count could not see: the band algebra and every
+`xxxAsync` getter on a compat band, `Dataset.getGCPs` / `setGCPs` and the async size
+and transform, the collections' `countAsync` / `getAsync` / async iterators,
+`pixels.clampBlock`, the geometry async predicate twins with `wkbSize` / `dimension` /
+`coordinateDimension` / `fromGeoJson`, `Feature.equals` / `setFrom`, `ColorTable.forEach`,
+the capitalised `EPSGTreatsAsLatLong` / `EPSGTreatsAsNorthingEasting` and
+`setPROJSearchPaths`. Two needed native additions beside the adapter:
+**`Dataset.createBand`** (GDAL's `GDALAddBand`, which `dataset.bands.create()` stands
+for) and **`SpatialRef.epsgTreatsAsNorthingEasting`** (`OSREPSGTreatsAsNorthingEasting`).
 
 ## 3. Conventions map (so a port knows what to change)
 

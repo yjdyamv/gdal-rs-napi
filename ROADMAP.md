@@ -1,8 +1,9 @@
 # gdal-rs-napi 项目规划
 
 > 本文是项目级路线图，覆盖定位、阶段目标、工程与质量、发布策略、风险。
-> 状态基线：v0.1.0（已打 tag），103 项测试全绿，静态 GDAL 3.12.1 + PROJ 9.6.2，
-> 148 个驱动，6 个平台产物。当前 `private: true`，**尚未发布到 npm**。
+> 状态基线：v0.1.0（已打 tag）之后的当前开发态：436 项测试全绿（含 compat 逐类可达性），
+> 静态 GDAL 3.12.1 + PROJ 9.6.2 + GEOS，148 个驱动，6 个平台产物。
+> 当前 `private: true`，**尚未发布到 npm**。
 
 ---
 
@@ -25,10 +26,10 @@
 ### 需要正视的问题
 
 1. **分发方式不是主流。** 用户必须 `npm install <github release url>`，无法 `npm install gdal-rs-napi`，也没有版本范围/镜像/审计链。
-2. ~~**文档与代码漂移。**~~ 已修：`CHANGELOG.md` 的 Known gaps 逐条对过代码，`transformGeometry` 等既已实现就从缺口里移出；`__test__/types.test.mjs` 也从"对照硬编码清单"改成真正拿 `binding.d.ts` 与运行时互校，让声明漂移在测试里就失败（见 Phase 3）。
+2. **文档与代码漂移。** 持续校准：`types.test.mjs` 用 `binding.d.ts` 与运行时互校，本轮又修掉 README/CHANGELOG/compat 注释中 GEOS、musl、兼容层覆盖面的陈旧描述（见 CHANGELOG 的 Testing 一节）。
 3. ~~**`open` 失败信息丢失。**~~ 已修：加 `GDAL_OF_VERBOSE_ERROR` 后，失败会带上 GDAL 的原始原因（见 Phase 0）。
 4. **代码集中。** `dataset.rs` 2108 行、`band.rs` 1573、`vector.rs` 1382，审阅与扩展成本在上升。
-5. **musl 两个 leg 仍是 `experimental`**，`all_drivers` 的 vendored HDF5/netCDF/curl/libpq 是脆弱点。
+5. **musl 两个 leg 已是普通 leg（红即失败）**，脆弱点仍是 `all_drivers` vendored 的 HDF5/netCDF/curl/libpq。
 6. ~~**异步错误无 `err.code`**。~~ 已解决：外壳把消息前缀提回 `err.code`，与同步路径一致（令牌仍留在消息里，两种匹配方式都成立）。
 7. **GEOS 缺席是刻意的许可证决策** —— 已定案改为**自行构建 + 静态链接**（与 GDAL/PROJ 同一条路，默认就有），分发仍是单个自包含产物；见 [`docs/GEOS.md`](./docs/GEOS.md)。
 
@@ -62,7 +63,7 @@
 - [x] **安装冒烟测试**：`npm run smoke` —— 在一个空目录里 `npm install <tarball>`，再跑一个消费者程序（`diagnostics()`、`drivers().length`、GEOS 谓词、栅格往返）。CI 每个平台都跑，而 CI runner 正是"干净机器"本身。
 - [ ] **审计 Known gaps**：逐条对代码核验，修掉文档漂移（`transformGeometry`、统计写回、批量读等）。
 - [x] **修 `open` 错误消息**：已修 —— 失败原因是漏了 `GDAL_OF_VERBOSE_ERROR`：不设这个标志时 GDAL 静默返回空句柄，last-error 里什么都没有。加上标志即可，消息走原有错误路径。
-- [x] **CI 策略定案**：**定为"尽力而为"，不转正** —— 两条 musl 腿保持 `experimental`，README 的两处（Prebuilt binaries 的矩阵、Targets）都写明"绿了算加分、红了不拦发布"，并指向 `docker/` 自行构建。转正的前提是有人真的把 vendored 的 HDF5/netCDF/curl/libpq 在 musl 上盯住，现在没有这个人也没有这条需求，所以写死比含糊更诚实。
+- [x] **CI 策略定案**：两条 musl 腿是**普通 leg** —— 在 musl-native Alpine 容器（`docker/musl.Dockerfile`）里构建与测试，红即失败；README 的 Prebuilt binaries 矩阵与 Targets 一节、以及 `docker/` 指引与此一致。脆弱点在 vendored 的 HDF5/netCDF/curl/libpq，而不是这个 crate。
 - [ ] 补 `SECURITY.md` / issue 模板 / 贡献指南。
 
 **验收**：`npm view gdal-rs-napi version` 有值；全新机器 `npm i` 后第一次调用 `gdal.version()` 成功。

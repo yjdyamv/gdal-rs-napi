@@ -1901,7 +1901,7 @@ machine. Ninja parallelises per translation unit.
 | GDAL | 3.12.1, static, `GDAL_USE_INTERNAL_LIBS=ON`, `GDAL_USE_EXTERNAL_LIBS=OFF` |
 | PROJ | 9.6.x, `bundled_proj`, static |
 | Drivers | `gdal-src/all_drivers` — 148 of them, see below |
-| GEOS | **not linked** — it is LGPL, and static linking would relicense the artifact |
+| GEOS | fetched, compiled and **statically linked** (`geos-src`); LGPL-2.1, see the licence section |
 
 Because `gdal-src` turns every driver off unless it is named, the Cargo `bundled`
 feature list *is* the shipped driver set — and it names `gdal-src/all_drivers`, so
@@ -1945,9 +1945,8 @@ switches it on where `gdal::ThreadSafeDataset` exists.
 
 CI builds six targets, the ones in the table under "Prebuilt binaries":
 `win32-x64-msvc`, `darwin-arm64`, `linux-x64-gnu`, `linux-arm64-gnu`, and the two
-musl ones. The musl legs are `continue-on-error` — they build in a musl-native
-Alpine container, which is the least certain link in the chain — so a release can
-ship without them. 32-bit targets are not built.
+musl ones. The musl legs are ordinary legs like the rest — a red one fails the run —
+and they build in a musl-native Alpine container. 32-bit targets are not built.
 
 Those two legs run their test suite in that same container rather than on the
 runner, because napi links musl dynamically (it adds
@@ -2014,14 +2013,15 @@ root.arrays.get('temperature').read()      // a typed array of the whole array
 `feature.geometry = gdal.fromWKT('POINT (9 9)')` replaces it. The blocking/async
 pair is `xxx()` / `xxxAsync()`, and `xxxAsync` also takes a node-style callback.
 
-What it does **not** cover, so a port does not find out the hard way: `calcAsync`, the
-VRT pixel functions, the command-line programs and their `translate`/`warp` family, and
-the two band extras this API spells its own way — `colorTable` and `mask` — whose shapes
-are on the main entry point and not on the wrapper. Raster streams are on the main entry
-point too, as `band.createReadStream()` / `createWriteStream()` — which `band.pixels`
-also carries, now that the collections are there. Everything else the native API can do,
-the adapter can — including the multidimensional model and the GEOS predicates, since
-they are in the same build.
+What it does **not** reshape, so a port does not find out the hard way: the mask band
+(`band.mask` is the main entry point's; the adapter's `getMaskBand()` /
+`createMaskBand()` forward to the same native band), and `gdal.algebra`, whose eager
+band methods live on the bands themselves (`band.add`, `band.mul`, … — the adapter
+carries those too). Everything else the native API can do, the adapter can:
+`calcAsync`, the VRT pixel functions, the command-line programs and their
+`translate`/`warp` family, the multidimensional model, and the GEOS predicates, since
+they are in the same build. Raster streams are on both — `band.pixels.createReadStream()`
+and the main entry point's `band.createReadStream()`.
 `PHASE1.md` (WS-7) is the full list.
 
 ## Licence
