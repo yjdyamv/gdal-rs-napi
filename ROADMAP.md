@@ -127,7 +127,7 @@ Phase 1 的主线（详见 `PHASE1.md`）：先做 **几何对象模型**（杠�
 
 ### Phase 3 — 生态与 1.0（v0.4 → v1.0，3–6 个月）
 
-- [x] **能力边界与路线图**：[`docs/PARITY.md`](./docs/PARITY.md) —— 对照 `gdal-async` 3.13 的分区矩阵（`parity` / `gap` / `non-goal`）、非目标及其理由、约定对照表，以及分级路线图（Tier 1 已落地：GCP、`getSpatialFilter`、`hasArbitraryOverviews`、几何 `makeValid`/`boundary`/`simplifyPreserveTopology`/`isRing`/`toGML`/`toKML`、`gdal.bundled`；Tier 2 见该文档）。
+- [x] **能力边界与路线图**：[`docs/PARITY.md`](./docs/PARITY.md) —— 对照 `gdal-async` 的分区矩阵（`parity` / `gap` / `non-goal`）、非目标及其理由、约定对照表，以及分级路线图（Tier 1 已落地：GCP、`getSpatialFilter`、`hasArbitraryOverviews`、几何 `makeValid`/`boundary`/`simplifyPreserveTopology`/`isRing`/`toGML`/`toKML`、`gdal.bundled`；Tier 2 见该文档）。
 - [ ] **文档站**：typedoc 生成 API reference；README 拆分（快速开始 / 迁移 / FAQ）。
 - [x] 教程（3/4）：COG 生成流水线（`examples/to-cog.mjs`）、并行瓦片读取（`examples/parallel-tiles.mjs`）、坐标系踩坑（README），索引见 `docs/TUTORIALS.md`。
 - [ ] 教程：Serverless 冷启动实测。

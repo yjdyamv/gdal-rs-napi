@@ -1,6 +1,7 @@
 # Where this binding stands against `gdal-async`
 
-The reference is **`node-gdal-async` 3.13** (<https://mmomtchev.github.io/node-gdal-async/>),
+The reference is **`node-gdal-async` 3.12.3** (<https://mmomtchev.github.io/node-gdal-async/>; its
+`3.13` line is the current `next` prerelease),
 an N-API addon over the GDAL C++ API. This is the synthesis: what is the same, where the
 two still differ, and — the part `PARITY.md` deliberately leaves out — which one is the
 better tool for what.

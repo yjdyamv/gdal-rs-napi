@@ -1,8 +1,9 @@
 # Capability boundary and roadmap, against `gdal-async`
 
 This is the answer to "how far are we from `gdal-async`, and what are we *not*
-going to build". The reference is **`node-gdal-async` 3.13** (<https://mmomtchev.github.io/node-gdal-async/>),
-read item by item against its own API listing.
+going to build". The reference is **`node-gdal-async` 3.12.3**
+(<https://mmomtchev.github.io/node-gdal-async/>; its `3.13` line is the current `next`
+prerelease), read item by item against its own API listing.
 
 [`COMPARISON.md`](./COMPARISON.md) is the synthesis on top of it: the differences that
 remain, the two implementations' strengths and weaknesses, and which one to pick.
