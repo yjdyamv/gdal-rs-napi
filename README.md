@@ -1944,10 +1944,8 @@ What is deliberately *not* there:
 All of it is statically linked, so an installed package still needs nothing on the
 host. The price is size — the `.node` is about 40 MB (a 131-driver build was 28 MB)
 and a tarball about 17 MB compressed, plus a few minutes of extra build time. To trim it, swap `gdal-src/all_drivers` for the individual
-`gdal-src/driver_*` features you actually want — or build the curated
-`bundled-lean` set (`--no-default-features --features bundled-lean`), which drops
-the vendored HDF5/netCDF/curl/PostgreSQL drivers and keeps the internal formats
-plus SQLite/GPKG and GEOS. See [`docs/MUSL-LEAN.md`](./docs/MUSL-LEAN.md).
+`gdal-src/driver_*` features you actually want; the released build keeps the full
+set.
 
 `openThreadSafe()` needs GDAL ≥ 3.10, which the bundled build satisfies. Linking a
 system GDAL older than that (`--no-default-features`) still compiles — the method

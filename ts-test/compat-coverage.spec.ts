@@ -3,7 +3,7 @@ import { join } from 'node:path'
 import { beforeAll, describe, expect, it } from 'vitest'
 
 import gdal from '../compat/index.js'
-import { hasDriver, mdScratch, native, sampleRaster, sampleVector, tmp } from './helpers.js'
+import { mdScratch, native, sampleRaster, sampleVector, tmp } from './helpers.js'
 
 // The getters, error branches and callback forms the area suites do not reach. The
 // subject is the `npm run test:coverage` number: a member that exists on only one
@@ -568,7 +568,7 @@ describe('module odds and ends', () => {
   })
 })
 
-describe.skipIf(!hasDriver('netCDF'))('multidimensional getters', () => {
+describe('multidimensional getters', () => {
   let netcdf = ''
   beforeAll(async () => {
     netcdf = join(mdScratch, 'ts-cov-md.nc')

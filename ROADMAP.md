@@ -135,7 +135,7 @@ Phase 1 的主线（详见 `PHASE1.md`）：先做 **几何对象模型**（杠�
 - [ ] **API 冻结**：确定稳定面，写弃用策略与 `CHANGELOG` 规范（Keep a Changelog + semver）。
 - [ ] **可选平台**：Intel macOS（`macos-13` leg）、Windows arm64；明确 32 位不支持。
 - [x] **供应链清单**：`scripts/sbom.mjs` 生成 CycloneDX 清单、`scripts/check-licenses.mjs` 做许可证白名单门禁，均已进 CI；`provenance` 随 npm 发布，暂缓。
-- [x] **按需裁剪驱动集**：新增 `bundled-lean` feature（internal + sqlite/gpkg/vfk，去掉 HDF5/netCDF/curl/libpq），并配套 `npm run lean`、`vitest.lean.config.mts`（门控式缩减套件）与手动 `lean.yml`（产实测体积/驱动数）；方案与取舍见 `docs/MUSL-LEAN.md`。
+- [x] **驱动集决策**：发布物固定 `gdal-src/all_drivers`（148 驱动）；需要瘦身时按 README 把 `all_drivers` 换成具名 `gdal-src/driver_*`，不额外维护预设变体。曾试过的 `bundled-lean` 已移除：脆弱的其实是 vendored C 库（gnu 与 musl 同样），预设既没解决 musl 的 static-OpenSSL，又带来额外维护面。
 
 ---
 
@@ -156,7 +156,7 @@ Phase 1 的主线（详见 `PHASE1.md`）：先做 **几何对象模型**（杠�
 | 风险 | 影响 | 应对 |
 |---|---|---|
 | GEOS | OGR 空间谓词此前不可用；现改为链入，但它是 LGPL-2.1 | **已定案**：`geos-src` 自行构建 + **静态链接**，与 GDAL/PROJ 同路，分发仍是单个自包含产物；发布需附 §6 材料（`docs/GEOS.md`） |
-| musl + all_drivers | 构建脆弱、易碎 leg | 容器原生构建已见效；考虑拆出精简 musl 变体 |
+| all_drivers 的 vendored HDF5/netCDF/curl/libpq | 冷构建长、体积大、configure 易碎（**gnu 与 musl 同样**，不是 musl 特有） | 容器原生构建已见效；发布用全量，需要时按 README 换成 `driver_*`；musl 另有 static-OpenSSL 与容器构建两处特有事 |
 | 上游 `gdal` 0.19 / `gdal-sys` 0.12 漂移 | API 破坏、GDAL 升级受限 | 锁定版本 + 定期跟进；抽象层隔离 |
 | 全局锁 | 并发上限、错误状态耦合 | Phase 2 的 PoC；实在不行明确写进文档 |
 | 包体与构建时长 | 用户体验、CI 成本 | 按需驱动、LTO 调优、缓存 |

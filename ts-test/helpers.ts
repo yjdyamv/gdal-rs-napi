@@ -15,14 +15,6 @@ export const native = require('..') as Record<string, any>
 /** The native binding, under the name the migrated suites import it by. */
 export const gdal = native
 
-/**
- * Whether this build registers `name`. A `bundled-lean` build leaves the
- * library-backed drivers (netCDF, HDF5, the curl family, PostgreSQL) out on
- * purpose, so a test that needs one asks instead of failing on a build that
- * never had it.
- */
-export const hasDriver = (name: string): boolean => native.driver(name) !== null
-
 /** A scratch directory unique to this test process. */
 export const workdir = mkdtempSync(join(tmpdir(), 'gdal-rs-napi-ts-'))
 

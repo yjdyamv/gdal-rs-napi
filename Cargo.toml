@@ -70,21 +70,6 @@ bundled = [
   # nothing on the host for it either.
   "geos",
 ]
-# A curated driver set instead of `all_drivers`: the internal raster/vector
-# drivers plus SQLite/GPKG/VFK, with GEOS. It drops the vendored HDF5, netCDF,
-# the curl-backed network drivers and PostgreSQL/PostGIS, which are the fragile
-# part of the musl build and a large part of the `.node`. It is opt-in — build
-# with `--no-default-features --features bundled-lean`; the default stays full.
-# See `docs/MUSL-LEAN.md` for what it keeps, drops, and why.
-bundled-lean = [
-  "dep:gdal-src",
-  "gdal-sys/bundled",
-  "gdal-src/internal_drivers",
-  "gdal-src/driver_sqlite",
-  "gdal-src/driver_gpkg",
-  "gdal-src/driver_vfk",
-  "geos",
-]
 # The GEOS build — GDAL's geometry predicates and algorithms (`intersects`,
 # `buffer`, `simplify`, …), which GDAL implements through GEOS.
 #

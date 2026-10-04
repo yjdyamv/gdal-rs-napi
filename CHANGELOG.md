@@ -1027,8 +1027,8 @@ First working cut — everything here is new.
   installed package still needs nothing on the host.
 - What that costs: the `.node` grew from 28 MB to about 40 MB and a tarball from
   12.7 MB to about 17 MB compressed, with a few minutes more build time and the C
-  surface of four more libraries. Trim it by swapping `all_drivers` for individual
-  `gdal-src/driver_*` features, or build the curated `bundled-lean` set.
+  surface of four more libraries. To trim it, swap `all_drivers` for the individual
+  `gdal-src/driver_*` features you want; the released build keeps the full set.
 - GEOS is fetched, compiled and statically linked (`geos-src`), like GDAL and PROJ, so
   the OGR geometry predicates it implements (`ST_Intersects`, `ST_Buffer`, `-simplify`)
   are available out of the box — it is LGPL-2.1, and the release carries the §6 relink
@@ -1169,9 +1169,6 @@ First working cut — everything here is new.
 - **`scripts/check-docs.mjs`** checks version parity, package contents, the
   CHANGELOG heading and the README's runtime claims (driver count, GDAL release,
   `apiVersion`, `features()` keys) against the built addon.
-- **`bundled-lean`**: an opt-in Cargo feature that selects a curated driver set
-  (internal + SQLite/GPKG/VFK + GEOS) instead of `all_drivers`, to shrink the
-  `.node` and the musl build. See `docs/MUSL-LEAN.md`.
 - **`docs/CONCURRENCY.md`** collects the lock model and its guardrails in one
   place; `ROADMAP.md`'s test description is corrected to the vitest suite that
   actually runs.
@@ -1179,11 +1176,6 @@ First working cut — everything here is new.
   reads-and-resets GDAL's error state; `cpl_result`, `cpl_failure`, `null_pointer`,
   the OGR status path and `ExecuteSQL` all build their error from it instead of
   each reading `CPLGetLastError*` by hand.
-- **The `bundled-lean` variant is measurable.** `npm run lean` builds it, prints
-  the `.node` size and driver count (`scripts/lean-report.mjs`) and runs
-  `vitest.lean.config.mts`, a suite whose driver-dependent tests gate on
-  `hasDriver` and skip rather than fail. `.github/workflows/lean.yml` is a manual
-  job that does the same in CI; it is not a push gate.
 - **Tutorials.** `docs/TUTORIALS.md` indexes four runnable flows, and
   `examples/parallel-tiles.mjs` is the new one: it builds its own tiled fixture
   and measures serial vs `openThreadSafe` parallel reads.

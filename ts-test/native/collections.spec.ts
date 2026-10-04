@@ -12,7 +12,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'vitest'
 
-import { gdal, hasDriver, ramp, tmp } from '../helpers.js'
+import { gdal, ramp, tmp } from '../helpers.js'
 
 const scratch = mkdtempSync(join(tmpdir(), 'gdal-rs-napi-collections-'))
 process.on('exit', () => {
@@ -166,7 +166,7 @@ test('drivers, overviews and pixels carry the reference names', async () => {
   await dataset.close()
 })
 
-test.skipIf(!hasDriver('netCDF'))('the multidimensional model answers both spellings too', async () => {
+test('the multidimensional model answers both spellings too', async () => {
   // A NetCDF file, which is the fixture the multidimensional tests use: it is kept
   // out of `workdir` because this build's netCDF writer holds the file open.
   const raster = tmp('collections-md.tif')

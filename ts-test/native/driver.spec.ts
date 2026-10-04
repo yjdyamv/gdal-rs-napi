@@ -66,10 +66,9 @@ test('a driver reports its metadata, extensions and creation options', () => {
   assert.match(options, /<Option name='TILED'/)
   assert.match(options, /COMPRESS/)
 
-  // A driver that creates nothing has no list rather than an empty document. The
-  // driver is library-backed, so a `bundled-lean` build does not have it.
+  // A driver that creates nothing has no list rather than an empty document.
   const netcdf = gdal.driver('netCDF')
-  if (netcdf) assert.equal(typeof netcdf.creationOptionList(), 'string')
+  assert.equal(typeof netcdf.creationOptionList(), 'string')
 })
 
 test('driver.openSync reads with that driver only', () => {

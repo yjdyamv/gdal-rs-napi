@@ -1623,7 +1623,7 @@ MapInfo、DXF、DGN、CAD、S57、VDV、VFK、CSV、GTFS、Selafin、KMLSUPEROVE
 以上全部静态链接，所以装好的包依然**不需要宿主机有任何 GDAL**。代价是体积：
 `.node` 约 40 MB（131 驱动时是 28 MB），tarball 压缩后约 17 MB，
 加上几分钟额外的构建时间。想瘦身，就把 `bundled` 里的 `gdal-src/all_drivers` 换成你真正需要的
-那些 `gdal-src/driver_*`，或改用精简的 `bundled-lean`（见 `docs/MUSL-LEAN.md`）。
+那些 `gdal-src/driver_*`；正式发布仍用全量。
 
 `openThreadSafe()` 需要 GDAL ≥ 3.10，bundled 构建满足。链接 3.10 以前的系统 GDAL
 （`--no-default-features`）**仍然能编译**，只是没有这个方法：`build.rs` 读取 `gdal-sys`
