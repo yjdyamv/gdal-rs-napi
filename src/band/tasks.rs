@@ -121,7 +121,7 @@ pub(crate) fn read_overview_bytes(band: &mut RasterBand<'_>, level: usize) -> Re
             0,
         )
     };
-    crate::raster_tools::cpl_result(class)?;
+    crate::error::cpl_result(class)?;
     Ok(bytes)
 }
 pub struct ReadBandTask {

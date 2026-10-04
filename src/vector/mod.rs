@@ -1245,15 +1245,15 @@ pub(crate) fn execute_sql(
     if layer.is_null() {
         let error_class = unsafe { gdal_sys::CPLGetLastErrorType() };
         if error_class != gdal_sys::CPLErr::CE_None {
-            let error = crate::error::gdal_error(gdal::errors::GdalError::CplError {
+            // The class has to be read before the store is drained; `take_last_error`
+            // then yields the number and message, so the failure becomes an exception
+            // and leaves `lastError()` for the errors that never did.
+            let (number, msg) = crate::error::take_last_error();
+            return Err(gdal_error(gdal::errors::GdalError::CplError {
                 class: error_class,
-                number: unsafe { gdal_sys::CPLGetLastErrorNo() },
-                msg: crate::runtime::c_string(unsafe { gdal_sys::CPLGetLastErrorMsg() }),
-            });
-            // The failure has become an exception, so take it out of the error state:
-            // `lastError()` is documented to report only what never became one.
-            unsafe { gdal_sys::CPLErrorReset() };
-            return Err(error);
+                number,
+                msg,
+            }));
         }
         // No layer and no error: nothing to copy out, so an empty array rather than
         // a failure.

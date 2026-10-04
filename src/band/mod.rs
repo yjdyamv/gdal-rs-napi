@@ -22,7 +22,8 @@ use crate::async_getter::{BandProperty, BandPropertyTask};
 use crate::dataset::{CreateOptions, DatasetRef, JsDataset, with_two};
 use crate::dtype::DataType;
 use crate::error::{
-    GdalErrorCode, IntoGdalResult, Result, bad_argument, cpl_failure, into_status_error, split,
+    GdalErrorCode, IntoGdalResult, Result, bad_argument, cpl_failure, cpl_result,
+    into_status_error, split,
 };
 use crate::raster_io::{
     ReadOptions, read_window, read_window_into, resample_alg, resolve_window, write_window,
@@ -30,8 +31,8 @@ use crate::raster_io::{
 use crate::raster_tools::{
     ContourGenerateOptions, ContourGenerateRequest, FillNoDataOptions, FillNoDataRequest,
     PolygonizeOptions, PolygonizeRequest, SieveFilterOptions, SieveFilterRequest, checksum_options,
-    contour_generate, contour_generate_request, cpl_result, fill_no_data, fill_nodata_request,
-    polygonize, polygonize_request, sieve_filter, sieve_filter_request,
+    contour_generate, contour_generate_request, fill_no_data, fill_nodata_request, polygonize,
+    polygonize_request, sieve_filter, sieve_filter_request,
 };
 use crate::runtime::ensure_initialized;
 use crate::vector::JsLayer;

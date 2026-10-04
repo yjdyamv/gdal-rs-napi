@@ -1172,6 +1172,10 @@ First working cut — everything here is new.
 - **`docs/CONCURRENCY.md`** collects the lock model and its guardrails in one
   place; `ROADMAP.md`'s test description is corrected to the vitest suite that
   actually runs.
+- **One error path.** `error.rs`'s `take_last_error` is now the only place that
+  reads-and-resets GDAL's error state; `cpl_result`, `cpl_failure`, `null_pointer`,
+  the OGR status path and `ExecuteSQL` all build their error from it instead of
+  each reading `CPLGetLastError*` by hand.
 
 ### Known gaps
 

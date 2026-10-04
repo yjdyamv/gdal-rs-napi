@@ -9,49 +9,14 @@ use std::ffi::{CString, c_int};
 
 use gdal::Dataset as GdalDataset;
 use gdal::cpl::CslStringList;
-use gdal::errors::GdalError;
 use gdal::raster::RasterBand;
 use gdal::vector::{FieldDefn, LayerAccess, OGRFieldType};
-use napi::bindgen_prelude::Error;
 use napi_derive::napi;
 use serde_json::Value;
 
-use crate::error::{GdalErrorCode, IntoGdalResult, Result, bad_argument, gdal_error};
+use crate::error::{IntoGdalResult, Result, bad_argument, cpl_result, null_pointer};
 use crate::json::option_pairs;
 use crate::raster_io::ReadOptions;
-use crate::runtime::c_string;
-
-/// Turn a `CPLErr` into this binding's error.
-///
-/// The `gdal` crate reads GDAL's last error and then resets it inside helpers that
-/// are not reachable from here, so this reads the class, number and message by hand
-/// and builds the same `GdalError` — which is what gives the sync surface its
-/// `err.code`. The reset is deliberate and matches the crate: it keeps the
-/// documented promise that a failure which *became* an exception is gone from
-/// `lastError()`, which is left for the errors that never did.
-pub fn cpl_result(class: gdal_sys::CPLErr::Type) -> Result<()> {
-    if class == gdal_sys::CPLErr::CE_None {
-        return Ok(());
-    }
-    let error = gdal_error(GdalError::CplError {
-        class,
-        number: unsafe { gdal_sys::CPLGetLastErrorNo() },
-        msg: c_string(unsafe { gdal_sys::CPLGetLastErrorMsg() }),
-    });
-    unsafe { gdal_sys::CPLErrorReset() };
-    Err(error)
-}
-
-/// The error GDAL leaves behind when it answers a failure with a null pointer
-/// instead of a `CPLErr`.
-fn null_pointer(method_name: &'static str) -> Error<GdalErrorCode> {
-    let error = gdal_error(GdalError::NullPointer {
-        method_name,
-        msg: c_string(unsafe { gdal_sys::CPLGetLastErrorMsg() }),
-    });
-    unsafe { gdal_sys::CPLErrorReset() };
-    error
-}
 
 /// A WKT string as something GDAL can be handed, or `None` for "leave it alone".
 fn optional_c_string(text: Option<&str>, what: &str) -> Result<Option<CString>> {

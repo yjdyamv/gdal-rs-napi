@@ -101,23 +101,55 @@ pub fn gdal_error(err: gdal::errors::GdalError) -> Error<GdalErrorCode> {
     }
 }
 
+/// GDAL's last error number and message, **taken out of the store**: the read is
+/// followed by a reset. That is the one discipline every failure path needs — a
+/// failure that became an exception is gone from `lastError()`, which is left for
+/// the errors that never did — so this is the only place that reads
+/// `CPLGetLastError*` for a thrown error. `cpl_result`, `cpl_failure`, `null_pointer`,
+/// the OGR status path and `ExecuteSQL` all go through it.
+pub(crate) fn take_last_error() -> (i32, String) {
+    let number = unsafe { gdal_sys::CPLGetLastErrorNo() };
+    let message = crate::runtime::c_string(unsafe { gdal_sys::CPLGetLastErrorMsg() });
+    unsafe { gdal_sys::CPLErrorReset() };
+    (number, message)
+}
+
 /// The error behind a GDAL call that answers with a `CPLErr`: last error message and
 /// number, with `fallback` standing in when the call failed leaving nothing behind —
 /// a missing directory, say. Resets GDAL's error state afterwards, which is what every
 /// caller here wants next.
 pub(crate) fn cpl_failure(fallback: String) -> Error<GdalErrorCode> {
-    let message = crate::runtime::c_string(unsafe { gdal_sys::CPLGetLastErrorMsg() });
-    let error = gdal_error(gdal::errors::GdalError::CplError {
+    let (number, message) = take_last_error();
+    gdal_error(gdal::errors::GdalError::CplError {
         class: gdal_sys::CPLErr::CE_Failure,
-        number: unsafe { gdal_sys::CPLGetLastErrorNo() },
+        number,
         msg: if message.is_empty() {
             fallback
         } else {
             message
         },
-    });
-    unsafe { gdal_sys::CPLErrorReset() };
-    error
+    })
+}
+
+/// A `CPLErr` as this binding's result: `CE_None` is `Ok`, anything else is the error
+/// GDAL left behind. The shared translator for every `GDAL*` call that returns a class.
+pub fn cpl_result(class: gdal_sys::CPLErr::Type) -> Result<()> {
+    if class == gdal_sys::CPLErr::CE_None {
+        return Ok(());
+    }
+    let (number, msg) = take_last_error();
+    Err(gdal_error(gdal::errors::GdalError::CplError {
+        class,
+        number,
+        msg,
+    }))
+}
+
+/// The error GDAL leaves behind when it answers a failure with a null pointer
+/// instead of a `CPLErr` — read and drained the same way as everything else.
+pub(crate) fn null_pointer(method_name: &'static str) -> Error<GdalErrorCode> {
+    let (_, msg) = take_last_error();
+    gdal_error(gdal::errors::GdalError::NullPointer { method_name, msg })
 }
 
 /// Shorthand so call sites read `.gdal()?` instead of a nested `map_err`.

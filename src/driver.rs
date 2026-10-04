@@ -214,7 +214,7 @@ impl JsDriver {
         let status = unsafe {
             gdal_sys::GDALCopyDatasetFiles(driver.c_driver(), new_name.as_ptr(), old_name.as_ptr())
         };
-        crate::raster_tools::cpl_result(status)
+        crate::error::cpl_result(status)
     }
 
     /// Open a dataset **with this driver only**, so a file another driver would

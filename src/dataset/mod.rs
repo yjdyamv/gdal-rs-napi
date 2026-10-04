@@ -31,7 +31,8 @@ use crate::band::JsRasterBand;
 use crate::driver::JsDriver;
 use crate::dtype::DataType;
 use crate::error::{
-    GdalErrorCode, IntoGdalResult, Result, bad_argument, cpl_failure, into_status_error, split,
+    GdalErrorCode, IntoGdalResult, Result, bad_argument, cpl_failure, cpl_result,
+    into_status_error, split,
 };
 use crate::geometry::{GeometryEnvelope, JsGeometry};
 use crate::programs;
@@ -41,7 +42,7 @@ use crate::raster_io::{
 };
 use crate::raster_tools::{
     RasterizeOptions, RasterizeRequest, ReprojectImageOptions, ReprojectImageRequest,
-    SuggestedWarpOptions, SuggestedWarpOutput, SuggestedWarpRequest, cpl_result,
+    SuggestedWarpOptions, SuggestedWarpOutput, SuggestedWarpRequest,
     rasterize as rasterize_geometries, rasterize_request, reproject_image, reproject_image_request,
     suggested_warp_output, suggested_warp_request,
 };
@@ -1181,7 +1182,7 @@ impl JsDataset {
                         .map_or(std::ptr::null(), |text| text.as_ptr()),
                 )
             };
-            crate::raster_tools::cpl_result(status)
+            cpl_result(status)
         })
     }
 

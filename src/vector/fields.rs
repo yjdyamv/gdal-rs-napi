@@ -86,7 +86,7 @@ pub(crate) fn add_field_to_layer(
 /// usually the useful half: an `ALTER TABLE` that failed says *why* it failed
 /// ("cannot drop UNIQUE column") while the status is a bare number.
 ///
-/// The read-then-reset is the same discipline [`crate::raster_tools::cpl_result`]
+/// The read-then-reset is the same discipline [`crate::error::cpl_result`]
 /// follows: a failure that became an exception is gone from `lastError()`, which is
 /// left for the errors that never did.
 pub(crate) fn ogr_result(status: gdal_sys::OGRErr::Type, what: &str) -> Result<()> {
@@ -94,9 +94,7 @@ pub(crate) fn ogr_result(status: gdal_sys::OGRErr::Type, what: &str) -> Result<(
         return Ok(());
     }
 
-    let number = unsafe { gdal_sys::CPLGetLastErrorNo() };
-    let detail = crate::runtime::c_string(unsafe { gdal_sys::CPLGetLastErrorMsg() });
-    unsafe { gdal_sys::CPLErrorReset() };
+    let (number, detail) = crate::error::take_last_error();
 
     let message = if detail.is_empty() {
         format!("the driver could not {what} (OGR error {status})")

@@ -142,7 +142,7 @@ Phase 1 的主线（详见 `PHASE1.md`）：先做 **几何对象模型**（杠�
 
 | 领域 | 动作 |
 |---|---|
-| 代码结构 | 已拆分 `dataset` / `band` / `vector` 为目录模块：napi 面留在 `mod.rs`，`napi::Task` worker 移入 `tasks.rs`（字段/要素助手移入 `vector/fields.rs`），单测移入 `tests.rs`；`binding.d.ts` 逐字节不变。`raster_tools.rs` 错误路径统一待办 |
+| 代码结构 | 已拆分 `dataset` / `band` / `vector` 为目录模块：napi 面留在 `mod.rs`，`napi::Task` worker 移入 `tasks.rs`（字段/要素助手移入 `vector/fields.rs`），单测移入 `tests.rs`；`binding.d.ts` 逐字节不变。错误路径统一到 `error.rs` 的 `take_last_error`，由 `cpl_result` / `cpl_failure` / `null_pointer` / OGR 状态 / `ExecuteSQL` 共用 |
 | 测试 | 真实数据 fixtures 版本化；补失败路径与边界；目标覆盖率 > 80% |
 | CI | 冷构建 180min 上限是隐患 → **缓存已做**；fmt/clippy/单测固定在 linux-x64 一条腿上，**锁基准也挂在那里**（都是同一个理由：为它们单开一条腿等于再花一整次 GDAL 构建）；顶层权限收窄到 `contents: read`、同 ref 的旧运行自动取消 —— 三项均已落地 |
 | 文档 | 每个公开 API 的 doc comment 即文档源；`scripts/check-docs.mjs` 在 CI 里核对版本、包内文件与 README 的运行时声明 |
