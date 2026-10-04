@@ -1295,11 +1295,13 @@ raster.band(0).readPixels({ width: 144, height: 73 })
 GDAL 的 last-error 状态了：它在 GDAL 3.10 变成了**线程局部**，这正是这个划分得以成立的前提。
 
 - **独占（写）侧**是进程级状态，也只管进程级状态：驱动注册与 `configureDataPaths()`、
-  `config.set`（以及 `config.get`，它读的是同一张表里的指针）、`gdal.fs` 的写，还有 programs
-  （`translate` / `warp` / `ogr2ogr` / `gdaldem` / `buildVrt`）连同旁边的 `create` / `createCopy`。
+  `config.set`（以及 `config.get`，它读的是同一张表里的指针）、programs
+  （`translate` / `warp` / `ogr2ogr` / `gdaldem` / `buildVrt`）以及模块级的 `create` / `createVector`。
   它们自建数据集、写文件，所以它们正在重写某个文件时，不许任何数据集操作跑。
+  `gdal.fs` 的**写不在这一侧**，已打开数据集上的 `createCopy` 也不在：两者都不碰进程级状态，
+  走的是共享侧——`gdal.fs` 里只有 `clearCurlCache` 是独占的。
 - **共享（读）侧**是其余的一切，而且是**真的并行**：一次 open、已打开数据集上的每一个操作、
-  CRS 与 `CoordinateTransform`、几何 / GEOS、`gdal.fs` 的读，以及模块级自省——`version()`、
+  CRS 与 `CoordinateTransform`、几何 / GEOS、`gdal.fs`（读**和写**），以及模块级自省——`version()`、
   `info()`、`diagnostics()`、`lastError()`、`epsgToWkt()`、`geometry*` 系列，还有注册表读取
   `drivers()` / `driver(name)`（对它们返回的 `Driver` 调方法同样是读注册表）。
 
@@ -1446,7 +1448,7 @@ try {
   await gdal.demProcess(dest, source, 'hillshade', [], undefined, () => false)
 } catch (error) {
   error.code              // 'GDAL_CANCELLED'
-  error.message           // '[GDAL_CANCELLED] cancelled by the progress callback'
+  error.message           // '[GDAL_CANCELLED] gdaldem was cancelled by the progress callback'
 }
 ```
 
