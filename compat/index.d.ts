@@ -212,6 +212,10 @@ declare namespace gdal {
     static fromWKBAsync(wkb: Uint8Array): Promise<Geometry>
     static fromGeoJsonAsync(json: any): Promise<Geometry>
     static fromGeoJsonBufferAsync(buffer: Uint8Array): Promise<Geometry>
+    /** An empty geometry from a WKB type code or a type name. */
+    static create(type: number | string): Geometry
+    /** The subclass name for a WKB type code. */
+    static getName(type: number): string | null
 
     toWKT(): string
     toWKB(): Uint8Array
@@ -253,6 +257,9 @@ declare namespace gdal {
     segmentize(maxLength: number): Geometry
     swapXY(): Geometry
     transform(from: SpatialReference, to: SpatialReference): Geometry
+    transform(transformation: CoordinateTransformation): Geometry
+    /** Refuses: a geometry here carries no source CRS — use `transform(from, to)`. */
+    transformTo(srs: SpatialReference): never
     isRing(): boolean
     isValid(): boolean
     isSimple(): boolean
@@ -287,6 +294,12 @@ declare namespace gdal {
     static getConstructor(wkbType: number): typeof Geometry | null
     /** This geometry's numeric `wkb*` type — `gdal.Point.wkbType`'s instance side. */
     readonly wkbType: number
+    /** The WKB serialization's size in bytes. */
+    readonly wkbSize: number
+    /** 2 or 3, according to whether the coordinates carry a Z. M does not count. */
+    readonly coordinateDimension: number
+    /** Topological dimension: 0 for a point, 1 for a line, 2 for a surface. */
+    readonly dimension: number
 
     // The reference's `…Async` spellings. They are shape, not concurrency: the native
     // call still blocks where it has to.
@@ -314,6 +327,21 @@ declare namespace gdal {
     simplifyAsync(tolerance: number): Promise<Geometry>
     simplifyPreserveTopologyAsync(tolerance: number): Promise<Geometry>
     flattenTo2DAsync(): Promise<Geometry>
+    transformAsync(transformation: CoordinateTransformation): Promise<Geometry>
+    transformAsync(from: SpatialReference, to: SpatialReference): Promise<Geometry>
+    transformToAsync(srs: SpatialReference): Promise<never>
+    closeRingsAsync(): Promise<void>
+    emptyAsync(): Promise<void>
+    intersectsAsync(other: Geometry): Promise<boolean>
+    containsAsync(other: Geometry): Promise<boolean>
+    withinAsync(other: Geometry): Promise<boolean>
+    crossesAsync(other: Geometry): Promise<boolean>
+    touchesAsync(other: Geometry): Promise<boolean>
+    equalsAsync(other: Geometry): Promise<boolean>
+    isEmptyAsync(): Promise<boolean>
+    isValidAsync(): Promise<boolean>
+    isSimpleAsync(): Promise<boolean>
+    isRingAsync(): Promise<boolean>
   }
 
   /** The base of the line-like shapes, in the reference's hierarchy. */
@@ -376,6 +404,8 @@ declare namespace gdal {
   class ColorTable {
     constructor(interpretation?: number | string, entries?: ColorTableEntry[])
     readonly interpretation: number
+    /** The band this table belongs to, or `null` for a standalone one. */
+    readonly band: RasterBand | null
     count(): number
     get(index: number): ColorTableEntry | undefined
     set(index: number, color: ColorTableEntry): void
@@ -383,6 +413,8 @@ declare namespace gdal {
     isSame(other: ColorTable): boolean
     ramp(start: number, startColor: ColorTableEntry, end: number, endColor: ColorTableEntry): void
     toArray(): ColorTableEntry[]
+    forEach(callback: (color: ColorTableEntry, index: number) => void): void
+    map<U>(callback: (color: ColorTableEntry, index: number) => U): U[]
     [Symbol.iterator](): Iterator<ColorTableEntry>
   }
 
@@ -464,6 +496,9 @@ declare namespace gdal {
     readonly isGeocentric: boolean
     readonly isLocal: boolean
     readonly epsgTreatsAsLatLong: boolean
+    /** The reference's capitalisation of the same question. */
+    readonly EPSGTreatsAsLatLong: boolean
+    readonly EPSGTreatsAsNorthingEasting: boolean
 
     clone(): SpatialReference
     toWKT(): string
@@ -517,6 +552,8 @@ declare namespace gdal {
 
   class Collection<T> {
     count(): number
+    countAsync(callback?: (error: Error | null, count?: number) => void): Promise<number> | undefined
+    getAsync(key?: any, callback?: (error: Error | null, item?: T | null) => void): Promise<T | null> | undefined
     forEach(callback: (item: T, index: number) => void): void
     map<U>(callback: (item: T, index: number) => U): U[]
     [Symbol.iterator](): Iterator<T>
@@ -531,14 +568,27 @@ declare namespace gdal {
   class DriverCollection extends GDALDrivers {}
 
   class DatasetBands extends Collection<RasterBand> {
+    readonly ds: Dataset
     get(index: number): RasterBand | null
+    /** The dataset's envelope, as the reference's `Envelope`. */
+    getEnvelope(): Envelope | null
+    /** Add a band — GDAL's `GDALAddBand`. */
+    create(dataType: number | string, options?: object): RasterBand
+    createAsync(dataType: number | string, options?: object): Promise<RasterBand>
   }
 
   class BandPixels {
     readonly xSize: number
     readonly ySize: number
+    /** The band this pixel view belongs to. */
+    readonly band: RasterBand
     get(x: number, y: number): number
     set(x: number, y: number, value: number): void
+    getAsync(x: number, y: number, callback?: (error: Error | null, value?: number) => void): Promise<number> | undefined
+    setAsync(x: number, y: number, value: number, callback?: (error: Error | null) => void): Promise<void> | undefined
+    /** The size of the block holding `(x, y)`, clipped to the band's edge. */
+    clampBlock(x: number, y: number): XYZ
+    clampBlockAsync(x: number, y: number, callback?: (error: Error | null, size?: XYZ) => void): Promise<XYZ> | undefined
     read(x: number, y: number, width: number, height: number, data?: ArrayBufferView, type?: number | string): any
     readAsync(
       x: number,
@@ -559,6 +609,7 @@ declare namespace gdal {
   class RasterBandOverviews extends Collection<unknown> {
     get(index: number): unknown | null
     getBySampleCount(samples: number): unknown | null
+    getBySampleCountAsync(samples: number): Promise<unknown | null>
   }
 
   interface BandStatistics {
@@ -570,10 +621,27 @@ declare namespace gdal {
 
   class RasterBand {
     readonly pixels: BandPixels
+    /** The dataset this band belongs to. */
+    readonly ds: Dataset | null
     readonly size: XYZ
     readonly blockSize: XYZ
+    readonly sizeAsync: Promise<XYZ>
+    readonly blockSizeAsync: Promise<XYZ>
     readonly dataType: number
+    readonly dataTypeAsync: Promise<number>
     readonly colorInterpretation: string
+    readonly colorInterpretationAsync: Promise<string>
+    readonly descriptionAsync: Promise<string | null>
+    readonly unitTypeAsync: Promise<string | null>
+    readonly noDataValueAsync: Promise<number | null>
+    readonly scaleAsync: Promise<number | null>
+    readonly offsetAsync: Promise<number | null>
+    readonly minimumAsync: Promise<number | null>
+    readonly maximumAsync: Promise<number | null>
+    readonly idAsync: Promise<number>
+    readonly readOnlyAsync: Promise<boolean>
+    readonly hasArbitraryOverviewsAsync: Promise<boolean>
+    readonly categoryNamesAsync: Promise<string[]>
     readonly overviews: RasterBandOverviews
     readonly categoryNames: string[]
     /** The palette, as a `ColorTable` object; assign one (or `null` to clear). */
@@ -609,9 +677,54 @@ declare namespace gdal {
     setMetadataAsync(values: Record<string, unknown> | string[], domain?: string): Promise<boolean>
     flush(): void
     flushAsync(callback?: (error: Error | null) => void): Promise<void> | undefined
+    /** Convert to another sample type, as a band of a new in-memory dataset. */
+    asType(dataType: number | string): RasterBand
+    asTypeAsync(dataType: number | string): Promise<RasterBand>
+    setStatistics(min: number, max: number, mean: number, stdDev: number): void
+    setStatistics(statistics: BandStatistics): void
+    add(other: RasterBand | number): RasterBand
+    sub(other: RasterBand | number): RasterBand
+    mul(other: RasterBand | number): RasterBand
+    div(other: RasterBand | number): RasterBand
+    pow(other: RasterBand | number): RasterBand
+    abs(): RasterBand
+    sqrt(): RasterBand
+    log(): RasterBand
+    log10(): RasterBand
+    eq(other: RasterBand | number): RasterBand
+    notEq(other: RasterBand | number): RasterBand
+    lt(other: RasterBand | number): RasterBand
+    lte(other: RasterBand | number): RasterBand
+    gt(other: RasterBand | number): RasterBand
+    gte(other: RasterBand | number): RasterBand
+    and(other: RasterBand | number): RasterBand
+    or(other: RasterBand | number): RasterBand
+    not(): RasterBand
+    ifThenElse(thenValue: RasterBand | number, elseValue: RasterBand | number): RasterBand
+    addAsync(other: RasterBand | number): Promise<RasterBand>
+    subAsync(other: RasterBand | number): Promise<RasterBand>
+    mulAsync(other: RasterBand | number): Promise<RasterBand>
+    divAsync(other: RasterBand | number): Promise<RasterBand>
+    powAsync(other: RasterBand | number): Promise<RasterBand>
+    absAsync(): Promise<RasterBand>
+    sqrtAsync(): Promise<RasterBand>
+    logAsync(): Promise<RasterBand>
+    log10Async(): Promise<RasterBand>
+    eqAsync(other: RasterBand | number): Promise<RasterBand>
+    notEqAsync(other: RasterBand | number): Promise<RasterBand>
+    ltAsync(other: RasterBand | number): Promise<RasterBand>
+    lteAsync(other: RasterBand | number): Promise<RasterBand>
+    gtAsync(other: RasterBand | number): Promise<RasterBand>
+    gteAsync(other: RasterBand | number): Promise<RasterBand>
+    andAsync(other: RasterBand | number): Promise<RasterBand>
+    orAsync(other: RasterBand | number): Promise<RasterBand>
+    notAsync(): Promise<RasterBand>
+    ifThenElseAsync(thenValue: RasterBand | number, elseValue: RasterBand | number): Promise<RasterBand>
   }
 
   class FeatureFields {
+    /** The feature this view belongs to. */
+    readonly feature: Feature
     readonly names: string[]
     readonly count: number
     getNames(): string[]
@@ -620,6 +733,10 @@ declare namespace gdal {
     has(name: string): boolean
     toObject(): Record<string, any>
     toArray(): any[]
+    indexOf(name: string): number
+    map<U>(callback: (value: any, name: string) => U): U[]
+    toJSON(): string
+    reset(values?: Record<string, any>): void
     forEach(callback: (value: any, name: string) => void): void
     [Symbol.iterator](): Iterator<string>
   }
@@ -634,6 +751,11 @@ declare namespace gdal {
     /** OGR's style string, or `null` — which drivers keep one is the driver's answer. */
     getStyleString(): string | null
     setStyleString(style: string | null): void
+    equals(other: Feature): boolean
+    /** A second handle on the same row — a feature here is live, not a copy. */
+    clone(): Feature
+    destroy(): void
+    setFrom(other: Feature | Record<string, any>, indexMap?: number[], forgiving?: boolean): void
   }
 
   class FeatureDefn {
@@ -642,6 +764,7 @@ declare namespace gdal {
     readonly geomIgnored: boolean
     readonly styleIgnored: boolean
     readonly fields: FieldCollection
+    clone(): FeatureDefn
   }
 
   /**
@@ -667,7 +790,11 @@ declare namespace gdal {
     readonly layer: Layer
     get(fid: number): Feature | null
     first(): Feature | null
+    last(): Feature | null
     next(): Feature | null
+    previous(): Feature | null
+    firstAsync(callback?: (error: Error | null, feature?: Feature | null) => void): Promise<Feature | null> | undefined
+    nextAsync(callback?: (error: Error | null, feature?: Feature | null) => void): Promise<Feature | null> | undefined
     add(feature: Feature | Geometry | any, properties?: Record<string, any>): Feature | null
     addAsync(feature: Feature | Geometry | any, properties?: Record<string, any>): Promise<Feature | null>
     set(fid: number, feature: Feature | Geometry | any): Feature | Geometry
@@ -678,7 +805,11 @@ declare namespace gdal {
   }
 
   class FieldCollection extends Collection<any> {
+    static fromJSON(object: Record<string, any>): FieldCollection
+    static fromObject(object: Record<string, any>): FieldCollection
     readonly layer: Layer
+    /** The `FeatureDefn` this collection is the field list of, when it is one. */
+    readonly featureDefn: FeatureDefn | null
     get(name: string): any | null
     get(index: number): any | null
     getNames(): string[]
@@ -691,6 +822,7 @@ declare namespace gdal {
   class LayerFields extends FieldCollection {}
 
   class DatasetLayers extends Collection<Layer> {
+    readonly ds: Dataset
     get(name: string): Layer | null
     get(index: number): Layer | null
     create(
@@ -741,6 +873,8 @@ declare namespace gdal {
     readonly description: string
     readonly driver: Driver
     readonly rasterSize: XYZ
+    readonly rasterSizeAsync: Promise<XYZ>
+    readonly geoTransformAsync: Promise<number[] | null>
     readonly threadSafe: boolean
     readonly root: Group | null
     /** Assignment, where the native binding has `setProjection`. */
@@ -750,6 +884,13 @@ declare namespace gdal {
     geoTransform: number[] | null
     getFileList(): string[]
     getGCPProjection(): string | null
+    /** The dataset's bounding box as the reference's `Envelope`, or `null`. */
+    getEnvelope(): Envelope | null
+    getGCPs(): Array<{ id: string; info: string; pixel: number; line: number; x: number; y: number; z: number }>
+    setGCPs(
+      gcps: Array<{ id: string; info?: string; pixel: number; line: number; x: number; y: number; z?: number }>,
+      projection?: string | null,
+    ): void
     getMetadata(domain?: string): Record<string, string>
     getMetadataAsync(domain?: string): Promise<Record<string, string>>
     setMetadata(values: Record<string, unknown> | string[], domain?: string): boolean
@@ -1011,6 +1152,7 @@ declare namespace gdal {
   ): Promise<Dataset>
   function verbose(): void
   function quiet(): void
+  function setPROJSearchPaths(paths: string | string[]): void
   function decToDMS(angle: number, axis: string, precision?: number): string
   /** `gdalinfo`: the report for `dataset`, or the build info with no dataset. */
   function info(): any

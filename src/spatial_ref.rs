@@ -452,6 +452,16 @@ impl JsSpatialRef {
         Ok(unsafe { gdal_sys::OSREPSGTreatsAsLatLong(self.inner.to_c_hsrs()) } != 0)
     }
 
+    /// Whether the **EPSG authority** reads this CRS as northing,easting — the
+    /// projected counterpart of `epsgTreatsAsLatLong`, and already false for every
+    /// geographic CRS.
+    #[napi(catch_unwind, getter)]
+    pub fn epsg_treats_as_northing_easting(&self) -> Result<bool> {
+        ensure_initialized();
+        let _guard = lock_gdal_shared();
+        Ok(unsafe { gdal_sys::OSREPSGTreatsAsNorthingEasting(self.inner.to_c_hsrs()) } != 0)
+    }
+
     /// Whether the CRS is geocentric — an Earth-centred XYZ system rather than a
     /// projected or geographic one.
     #[napi(catch_unwind, getter)]

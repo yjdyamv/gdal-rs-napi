@@ -20,11 +20,14 @@
 //     = [...]`, `dataset.srs = srs`, where native spells them `setNoDataValue`,
 //     `setGeoTransform`, `setProjection`.
 //
-// Coverage is a subset, and honestly so — see `PHASE1.md` (WS-7) for what is in the
-// native binding but not reshaped here (the raster streams, `calcAsync`, the pixel
-// functions, and the command-line programs and their `translate`/`warp` family). The
-// typed suite in `ts-test/compat-*.spec.ts` (and `ts-test/native/compat*.spec.ts`)
-// is what claims what works.
+// Coverage is a subset, and honestly so. What is *not* reshaped: the mask band
+// (`band.mask` is the main entry point's; `getMaskBand()` / `createMaskBand()`
+// forward to the same native band) and `gdal.algebra`, whose eager methods live on
+// the bands themselves (`band.add`, `band.mul`, … — which this adapter carries too).
+// Everything else, including the raster streams, `calcAsync`, the pixel functions
+// and the command-line programs, is forwarded. The typed suite in
+// `ts-test/compat-*.spec.ts` (and `ts-test/native/compat*.spec.ts`) is what claims
+// what works; `ts-test/compat-reachability.spec.ts` is the per-class guard.
 
 const native = require('../index.js')
 
@@ -363,9 +366,8 @@ class MultiCurve extends GeometryCollection {
 // gdal-async reports a `LinearRing` through `Polygon.rings`, not as a type of its
 // own, so `LineString` is what a ring looks like from the outside. The curve types are
 // here so a `COMPOUNDCURVE (…)` / `MULTICURVE (…)` parsed from WKT is re-tagged as the
-// reference's class; what the binding does *not* carry is the reference's mutable
-// builder (`points.add`, `curves.add`, `addSubLineString`) — a geometry here is a
-// value, and those are recorded as out of reach rather than faked.
+// reference's class. The mutable builder is carried too — `points`, `rings`, `children`
+// and `curves` are the reference's editable collections, further down this file.
 const CLASS_BY_TYPE = {
   Point: Point,
   LineString: LineString,
@@ -449,6 +451,103 @@ Object.defineProperty(Geometry.prototype, 'wkbType', {
   configurable: true,
   get() {
     return WKB_TYPE_BY_NAME[this.type.replace(/ [ZM]+$/, '')] ?? 0
+  },
+})
+
+/** The WKB code back to the type name, for `Geometry.create` / `Geometry.getName`. */
+const WKB_TYPE_NAME_BY_CODE = Object.fromEntries(
+  Object.entries(WKB_TYPE_BY_NAME).map(([name, code]) => [code, name]),
+)
+
+/** Topological dimension by shape — what `OGR_G_GetDimension` reports. */
+const DIMENSION_BY_TYPE = {
+  Point: 0,
+  MultiPoint: 0,
+  LineString: 1,
+  LinearRing: 1,
+  MultiLineString: 1,
+  CircularString: 1,
+  CompoundCurve: 1,
+  MultiCurve: 1,
+  Polygon: 2,
+  MultiPolygon: 2,
+}
+
+Object.assign(Geometry, {
+  /** An empty geometry from a WKB type code or a type name — the reference's `create`. */
+  create(type) {
+    const name = typeof type === 'number' ? WKB_TYPE_NAME_BY_CODE[type] : type
+    if (!name) throw new TypeError(`no geometry type for ${type}`)
+    return wrapGeometry(native.Geometry.create(name))
+  },
+
+  /** The subclass name for a WKB type code — the reference's static `getName`. */
+  getName(type) {
+    return WKB_TYPE_NAME_BY_CODE[type] ?? null
+  },
+
+  /** A geometry from a GeoJSON object — the native door, under the reference's name. */
+  fromGeoJson(geojson) {
+    return wrapGeometry(native.Geometry.fromJson(geojson))
+  },
+
+  /** The same from a buffer holding UTF-8 GeoJSON. */
+  fromGeoJsonBuffer(buffer) {
+    return Geometry.fromGeoJson(JSON.parse(Buffer.isBuffer(buffer) ? buffer.toString('utf8') : String(buffer)))
+  },
+})
+
+Object.defineProperties(Geometry.prototype, {
+  /** The WKB serialization's size in bytes. */
+  wkbSize: {
+    configurable: true,
+    get() {
+      return this.toWkb().length
+    },
+  },
+  /** 2 or 3, according to whether the coordinates carry a Z. M does not count. */
+  coordinateDimension: {
+    configurable: true,
+    get() {
+      return this.type.includes(' Z') ? 3 : 2
+    },
+  },
+  /** Topological dimension: 0 for a point, 1 for a line, 2 for a surface. */
+  dimension: {
+    configurable: true,
+    get() {
+      const type = this.type.replace(/ [ZM]+$/, '')
+      if (type === 'GeometryCollection') {
+        let max = 0
+        for (const child of this.children()) max = Math.max(max, child.dimension)
+        return max
+      }
+      return DIMENSION_BY_TYPE[type] ?? 2
+    },
+  },
+})
+
+// `transformTo(srs)` transforms from the geometry's own CRS, which a geometry here
+// does not carry (it is a value, and the CRS comes from the dataset or layer it was
+// read from). Refusing is the honest answer; the source is always nameable.
+Object.defineProperty(Geometry.prototype, 'transformTo', {
+  configurable: true,
+  writable: true,
+  value() {
+    throw new Error(
+      'transformTo() needs the geometry’s own source CRS, which a geometry here does not carry — ' +
+        'use transform(from, to) or CoordinateTransformation.transformGeometry(geometry) instead',
+    )
+  },
+})
+
+// `isEmpty` is a property on this binding rather than a method, so the generic
+// `addAsyncTwins` cannot reach it — it gets its own promise-shaped twin.
+Object.defineProperty(Geometry.prototype, 'isEmptyAsync', {
+  configurable: true,
+  writable: true,
+  value(callback) {
+    return withCallback(Promise.resolve(this.isEmpty), callback)
   },
 })
 
@@ -562,6 +661,34 @@ class FeatureFields {
     for (const name of this.names) callback(this.get(name), name)
   }
 
+  /** The feature this view belongs to — the reference's back-reference. */
+  get feature() {
+    return this._feature
+  }
+
+  /** 1-based index of a field, or `-1` — the reference's `indexOf`. */
+  indexOf(name) {
+    const index = this.names.indexOf(name)
+    return index < 0 ? -1 : index + 1
+  }
+
+  /** `map` over the values, as the reference's collections do. */
+  map(callback) {
+    return this.names.map((name) => callback(this.get(name), name))
+  }
+
+  /** The fields as a serialized JSON string — the reference's `toJSON`. */
+  toJSON() {
+    return JSON.stringify(this.toObject())
+  }
+
+  /** Clear every field, then apply `values` where it names one. */
+  reset(values) {
+    for (const name of this.names) {
+      this.set(name, values && Object.prototype.hasOwnProperty.call(values, name) ? values[name] : null)
+    }
+  }
+
   [Symbol.iterator]() {
     return this.names[Symbol.iterator]()
   }
@@ -595,6 +722,64 @@ class Feature {
   set geometry(value) {
     this._layer._native.updateFeature(this._fid, value === null ? null : unwrapGeometry(value), null)
   }
+
+  /**
+   * Whether two features hold the same geometry and attributes. Two handles on
+   * the same row are equal without a read; otherwise the records are compared.
+   */
+  equals(other) {
+    if (!(other instanceof Feature)) return false
+    if (other._layer === this._layer && other._fid === this._fid) return true
+    const mine = this._record()
+    const theirs = other._record()
+    if (!mine || !theirs) return false
+    return (
+      JSON.stringify({ geometry: mine.geometry, properties: mine.properties }) ===
+      JSON.stringify({ geometry: theirs.geometry, properties: theirs.properties })
+    )
+  }
+
+  /**
+   * The reference's `clone()` — with one difference worth knowing: a feature is
+   * a **live handle** on a row here rather than an in-memory copy, so this is a
+   * second handle on the same row, not an independent duplicate. Writes through
+   * either are the same write; `fields.toObject()` / `geometry` are the snapshot
+   * to build a detached one from.
+   */
+  clone() {
+    return new Feature(this._layer, this._fid)
+  }
+
+  /** The reference frees its native handle here; this object owns none to free. */
+  destroy() {}
+
+  /**
+   * Copy `other`'s fields and geometry into this row. `index_map`, when given,
+   * maps each source field (positionally) to a destination field index, 1-based;
+   * `-1` ignores the source field, as the reference's does.
+   */
+  setFrom(other, index_map, forgiving = false) {
+    const source = other instanceof Feature ? other.fields.toObject() : other
+    if (!source || typeof source !== 'object') {
+      throw new TypeError('setFrom takes a Feature or a properties object')
+    }
+    const names = this.fields.names
+    Object.keys(source).forEach((name, position) => {
+      let target = name
+      if (Array.isArray(index_map)) {
+        if (index_map[position] === -1) return
+        target = names[index_map[position] - 1]
+      }
+      if (!names.includes(target)) {
+        if (forgiving) return
+        throw new Error(`no field ${target} on this feature`)
+      }
+      this.fields.set(target, source[name])
+    })
+    if (other instanceof Feature && other.geometry) {
+      this._layer._native.updateFeature(this._fid, unwrapGeometry(other.geometry), null)
+    }
+  }
 }
 
 function unwrapGeometry(geometry) {
@@ -613,6 +798,20 @@ class FeatureDefn {
     this.geomIgnored = defn.geometryType === 'None'
     this.styleIgnored = true
     this.fields = new FieldCollection(defn.fields, layer)
+    // The reverse link the reference's FeatureDefnFields carries.
+    this.fields._featureDefn = this
+  }
+
+  /** An independent copy of the definition, as the reference hands out. */
+  clone() {
+    return new FeatureDefn(
+      {
+        name: this.name,
+        geometryType: this.geomType,
+        fields: this.fields._items.map((field) => ({ ...field })),
+      },
+      this.fields.layer,
+    )
   }
 }
 
@@ -692,6 +891,26 @@ class Collection {
 
   [Symbol.iterator]() {
     return this._items[Symbol.iterator]()
+  }
+
+  /** The reference's asynchronous iterator — the same items, one per turn. */
+  async *[Symbol.asyncIterator]() {
+    for (const item of this._items) yield item
+  }
+
+  /**
+   * The reference's asynchronous pair. They read the snapshot this collection
+   * already holds — the shape, not concurrency, as the rest of these `…Async`
+   * pairs are.
+   */
+  countAsync(callback) {
+    return withCallback(Promise.resolve(this.count()), callback)
+  }
+
+  getAsync(indexOrName, callback) {
+    const cb = typeof indexOrName === 'function' ? indexOrName : callback
+    const key = typeof indexOrName === 'function' ? undefined : indexOrName
+    return withCallback(Promise.resolve(this.get(key)), cb)
   }
 }
 
@@ -804,8 +1023,39 @@ class DriverCollection extends Collection {
 }
 
 class RasterBandCollection extends Collection {
+  constructor(items, ds) {
+    super(items)
+    this.ds = ds
+  }
+
   get(index) {
     return this._items[index - 1] ?? null
+  }
+
+  /**
+   * The dataset's own envelope — the reference's `dataset.bands.getEnvelope()` takes
+   * it from the dataset, and its example calls `dataset.getEnvelope()` directly.
+   */
+  getEnvelope() {
+    const envelope = this.ds?._native?.getEnvelope()
+    return envelope ? new Envelope(envelope) : null
+  }
+
+  /**
+   * Add a band — GDAL's `GDALAddBand`, the reference's
+   * `dataset.bands.create(dataType, options)`. `dataType` is one of the `GDT_*`
+   * constants or this binding's own sample-type name.
+   */
+  create(dataType, options) {
+    const band = new RasterBand(this.ds._native.createBand(dataTypeName(dataType), options), this.ds)
+    this._items.push(band)
+    return band
+  }
+
+  createAsync(dataType, options, callback) {
+    const cb = typeof options === 'function' ? options : callback
+    const creation = typeof options === 'function' ? undefined : options
+    return withCallback(Promise.resolve().then(() => this.create(dataType, creation)), cb)
   }
 }
 
@@ -926,7 +1176,42 @@ class FieldCollection extends Collection {
     this.layer._native.reorderFields(names)
     this._items = names.map((name) => this._items.find((field) => field.name === name))
   }
+
+  /** The `FeatureDefn` this collection is the field list of, or `null`. */
+  get featureDefn() {
+    return this._featureDefn ?? null
+  }
 }
+
+/** The field type inference `createFeature` uses, for `LayerFields.fromObject`. */
+function inferFieldType(value) {
+  if (typeof value === 'boolean') return 'Integer'
+  if (typeof value === 'number') return Number.isInteger(value) ? 'Integer64' : 'Real'
+  // Arrays and everything else land on the portable String, as inference writes them.
+  return 'String'
+}
+
+/** One `FieldDefn` per key of `object`, typed from its value. */
+function fieldCollectionFromObject(object) {
+  const items = Object.entries(object ?? {}).map(([name, value]) => new FieldDefn(name, inferFieldType(value)))
+  return new FieldCollection(items, null)
+}
+
+/**
+ * The reference's `LayerFields.fromJSON(object, approx_ok)` / `fromObject`:
+ * "a LayerFields instance from an object of keys and values". The keys become
+ * field names and each value's type is inferred the way `createFeature` infers
+ * one; the collection is detached (no layer), so it is a schema to build with.
+ */
+Object.assign(FieldCollection, {
+  fromJSON(object) {
+    return fieldCollectionFromObject(object)
+  },
+
+  fromObject(object) {
+    return fieldCollectionFromObject(object)
+  },
+})
 
 class OverviewCollection extends Collection {
   get(index) {
@@ -936,6 +1221,10 @@ class OverviewCollection extends Collection {
   /** The first level at or below `samples` across, or the smallest one. */
   getBySampleCount(samples) {
     return this._items.find((overview) => overview.size[0] <= samples) ?? this._items.at(-1) ?? null
+  }
+
+  getBySampleCountAsync(samples, callback) {
+    return withCallback(Promise.resolve(this.getBySampleCount(samples)), callback)
   }
 }
 
@@ -1023,6 +1312,40 @@ class BandPixels {
   writeBlock(x, y, data) {
     this._band._native.writeBlock(x, y, data)
   }
+
+  /** The band this pixel view belongs to — the reference's back-reference. */
+  get band() {
+    return this._band
+  }
+
+  /** `get(x, y)` as a promise (or a node callback) — the shape, not new concurrency. */
+  getAsync(x, y, callback) {
+    return withCallback(Promise.resolve(this.get(x, y)), callback)
+  }
+
+  setAsync(x, y, value, callback) {
+    return withCallback(Promise.resolve(this.set(x, y, value)), callback)
+  }
+
+  /**
+   * The size of the block that holds `(x, y)`, clipped to the band's edge —
+   * GDAL's partial final block. The result is a size (`{ x, y }`), not an origin:
+   * the block starts at the multiple of `blockSize` at or below the point.
+   */
+  clampBlock(x, y) {
+    const size = this._band.size
+    if (x < 0 || y < 0 || x >= size.x || y >= size.y) {
+      throw new Error(`point (${x}, ${y}) is outside the ${size.x}x${size.y} band`)
+    }
+    const block = this._band.blockSize
+    const originX = Math.floor(x / block.x) * block.x
+    const originY = Math.floor(y / block.y) * block.y
+    return { x: Math.min(block.x, size.x - originX), y: Math.min(block.y, size.y - originY) }
+  }
+
+  clampBlockAsync(x, y, callback) {
+    return withCallback(Promise.resolve().then(() => this.clampBlock(x, y)), callback)
+  }
 }
 
 // The numeric `GPI_*` palette interpretations and this binding's strings are one
@@ -1041,13 +1364,19 @@ const PALETTE_GPI_BY_NAME = { Gray: 0, Rgba: 1, Cmyk: 2, Hls: 3 }
  * `new ColorTable(...)` or handed back by `clone()` is writable.
  */
 class ColorTable {
-  constructor(interpretation = PALETTE_GPI_BY_NAME.Rgba, entries, readOnly = false) {
+  constructor(interpretation = PALETTE_GPI_BY_NAME.Rgba, entries, readOnly = false, band = null) {
     this._interpretation =
       typeof interpretation === 'string'
         ? (PALETTE_GPI_BY_NAME[interpretation] ?? PALETTE_GPI_BY_NAME.Rgba)
         : interpretation
     this._entries = (entries ?? []).map((entry) => ({ c1: entry.c1, c2: entry.c2, c3: entry.c3, c4: entry.c4 }))
     this._readOnly = readOnly
+    this._band = band
+  }
+
+  /** The band this table belongs to, or `null` for a standalone one. */
+  get band() {
+    return this._band
   }
 
   get interpretation() {
@@ -1109,6 +1438,15 @@ class ColorTable {
     return this._entries.map((entry) => ({ ...entry }))
   }
 
+  /** Iterate the entries, as the reference's `forEach` does. */
+  forEach(callback) {
+    this.toArray().forEach((entry, index) => callback(entry, index))
+  }
+
+  map(callback) {
+    return this.toArray().map((entry, index) => callback(entry, index))
+  }
+
   [Symbol.iterator]() {
     return this.toArray()[Symbol.iterator]()
   }
@@ -1116,18 +1454,25 @@ class ColorTable {
 
 /** The `ColorTable` a band's native table becomes, or `undefined` when there is none. */
 function colorTableFromNative(band) {
-  const entries = band.colorTable
+  const entries = band._native.colorTable
   // `null` is "no table at all"; an **empty** array is a table with no entries, which
   // is what GDAL answers after an empty one is written — and what `isSame` compares.
   if (entries === null || entries === undefined) return undefined
-  const interpretation = PALETTE_GPI_BY_NAME[band.paletteInterpretation] ?? PALETTE_GPI_BY_NAME.Rgba
-  return new ColorTable(interpretation, entries, true)
+  const interpretation = PALETTE_GPI_BY_NAME[band._native.paletteInterpretation] ?? PALETTE_GPI_BY_NAME.Rgba
+  return new ColorTable(interpretation, entries, true, band)
 }
 
 class RasterBand {
-  constructor(nativeBand) {
+  constructor(nativeBand, ds) {
     this._native = nativeBand
+    this._ds = ds
     this.pixels = new BandPixels(this)
+  }
+
+  /** The dataset this band belongs to — the reference's `band.ds`. */
+  get ds() {
+    if (!this._ds && this._native.dataset) this._ds = new Dataset(this._native.dataset)
+    return this._ds ?? null
   }
 
   get size() {
@@ -1214,6 +1559,44 @@ class LayerFeatures {
     if (!record) return null
     this._cursor += 1
     return new Feature(this._layer, record.fid)
+  }
+
+  /** The feature behind the cursor, or `null` at the start. */
+  previous() {
+    const records = this._layer._native.featuresSync()
+    const record = records[this._cursor - 2]
+    if (!record) return null
+    this._cursor -= 1
+    return new Feature(this._layer, record.fid)
+  }
+
+  /** The last feature in the layer, or `null` when it is empty. */
+  last() {
+    const records = this._layer._native.featuresSync()
+    const record = records[records.length - 1]
+    return record ? new Feature(this._layer, record.fid) : null
+  }
+
+  firstAsync(callback) {
+    return withCallback(Promise.resolve().then(() => this.first()), callback)
+  }
+
+  nextAsync(callback) {
+    return withCallback(Promise.resolve().then(() => this.next()), callback)
+  }
+
+  map(callback) {
+    return this._layer._native
+      .featuresSync()
+      .map((record, index) => callback(new Feature(this._layer, record.fid), index + 1))
+  }
+
+  async *[Symbol.asyncIterator]() {
+    for (;;) {
+      const feature = await this.nextAsync()
+      if (!feature) return
+      yield feature
+    }
   }
 
   forEach(callback) {
@@ -1381,7 +1764,10 @@ class Layer {
 class Dataset {
   constructor(nativeDataset) {
     this._native = nativeDataset
-    this.bands = new RasterBandCollection(nativeDataset.bands().map((band) => new RasterBand(band)))
+    this.bands = new RasterBandCollection(
+      nativeDataset.bands().map((band) => new RasterBand(band, this)),
+      this,
+    )
     // A thread-safe dataset (`open(path, 'rs' | 'rt')`) is a read-only raster with no
     // vector side at all, and asking it for layers throws. It gets an empty collection
     // rather than taking the whole constructor down with it.
@@ -1817,6 +2203,22 @@ Object.assign(Dataset.prototype, {
     return this._native.gcpProjection
   },
 
+  /** The dataset's bounding box as the reference's `Envelope`, or `null`. */
+  getEnvelope() {
+    const envelope = this._native.getEnvelope()
+    return envelope ? new Envelope(envelope) : null
+  },
+
+  /** The dataset's ground control points — the reference reads the same array. */
+  getGCPs() {
+    return this._native.getGCPs()
+  },
+
+  /** Write them back, with the CRS they are in when `projection` is given. */
+  setGCPs(gcps, projection) {
+    return this._native.setGCPs(gcps, projection ?? null)
+  },
+
   /** `buildOverviews` blocks in the reference, so both names have to exist. */
   buildOverviews(options) {
     return this._native.buildOverviewsSync(options)
@@ -1824,6 +2226,23 @@ Object.assign(Dataset.prototype, {
 
   buildOverviewsAsync(options) {
     return this._native.buildOverviews(options)
+  },
+})
+
+// The dataset's async getters, under the reference's names. `rasterSize` is the
+// reference's `{ x, y }` while the native promise answers `{ width, height }`.
+Object.defineProperties(Dataset.prototype, {
+  rasterSizeAsync: {
+    configurable: true,
+    get() {
+      return this._native.rasterSizeAsync.then((size) => ({ x: size.width, y: size.height }))
+    },
+  },
+  geoTransformAsync: {
+    configurable: true,
+    get() {
+      return this._native.geoTransformAsync
+    },
   },
 })
 
@@ -1896,7 +2315,7 @@ Object.defineProperties(RasterBand.prototype, {
   colorTable: {
     configurable: true,
     get() {
-      return colorTableFromNative(this._native)
+      return colorTableFromNative(this)
     },
     set(value) {
       if (value === null || value === undefined) {
@@ -1914,7 +2333,7 @@ Object.defineProperties(RasterBand.prototype, {
   colorTableAsync: {
     configurable: true,
     get() {
-      return Promise.resolve(colorTableFromNative(this._native))
+      return Promise.resolve(colorTableFromNative(this))
     },
   },
 })
@@ -1927,12 +2346,114 @@ Object.assign(RasterBand.prototype, {
 
   /** Save this band's changes to disk. */
   flush() {
-    this._native.flushSync()
+    return this._native.flushSync()
   },
 
   flushAsync(callback) {
     return withCallback(this._native.flush(), callback)
   },
+})
+
+/** A band operand, unwrapped to what the native method takes. */
+function unwrapBand(value) {
+  return value instanceof RasterBand ? value._native : value
+}
+
+/** A native band the adapter hands back is wrapped again. */
+function wrapBand(band) {
+  return band ? new RasterBand(band) : null
+}
+
+// The reference's band algebra. The native result is one in-memory band — this
+// adapter's wrappers never reach the arithmetic, so a compat band in, a compat
+// band out is the whole translation. The async twins are the same shape as every
+// other `…Async` here: the promise is the reference's, the work is not moved.
+for (const name of [
+  'add', 'sub', 'mul', 'div', 'pow', 'eq', 'notEq', 'lt', 'lte', 'gt', 'gte',
+  'and', 'or', 'abs', 'sqrt', 'log', 'log10', 'not',
+]) {
+  Object.defineProperty(RasterBand.prototype, name, {
+    configurable: true,
+    writable: true,
+    value(...args) {
+      return wrapBand(this._native[name](...args.map(unwrapBand)))
+    },
+  })
+  Object.defineProperty(RasterBand.prototype, `${name}Async`, {
+    configurable: true,
+    writable: true,
+    value(...args) {
+      const callback = typeof args[args.length - 1] === 'function' ? args.pop() : undefined
+      return withCallback(Promise.resolve().then(() => this[name](...args)), callback)
+    },
+  })
+}
+
+Object.assign(RasterBand.prototype, {
+  /** `thenValue` where this band is non-zero, `elseValue` elsewhere. */
+  ifThenElse(thenValue, elseValue) {
+    return wrapBand(this._native.ifThenElse(unwrapBand(thenValue), unwrapBand(elseValue)))
+  },
+
+  ifThenElseAsync(thenValue, elseValue, callback) {
+    return withCallback(Promise.resolve().then(() => this.ifThenElse(thenValue, elseValue)), callback)
+  },
+
+  /** The band converted to another sample type, as a band of a new in-memory dataset. */
+  asType(dataType) {
+    return wrapBand(this._native.asType(dataTypeName(dataType)))
+  },
+
+  asTypeAsync(dataType, callback) {
+    return withCallback(Promise.resolve().then(() => this.asType(dataType)), callback)
+  },
+
+  /** The reference's positional `setStatistics(min, max, mean, stdDev)`. */
+  setStatistics(...args) {
+    const statistics =
+      args[0] && typeof args[0] === 'object'
+        ? args[0]
+        : { min: args[0], max: args[1], mean: args[2], stdDev: args[3] }
+    this._native.setStatistics(statistics)
+  },
+})
+
+// The read-only properties' async twins, which the reference carries as `xxxAsync`.
+// The native getters answer a promise; `size` and `blockSize` are reshaped from the
+// native pair to the reference's `{ x, y }`.
+Object.defineProperties(RasterBand.prototype, {
+  sizeAsync: {
+    configurable: true,
+    get() {
+      return this._native.sizeAsync.then(([x, y]) => ({ x, y }))
+    },
+  },
+  blockSizeAsync: {
+    configurable: true,
+    get() {
+      return this._native.blockSizeAsync.then(([x, y]) => ({ x, y }))
+    },
+  },
+  dataTypeAsync: {
+    configurable: true,
+    get() {
+      // The native async getter answers this binding's string name; the reference
+      // counts sample types numerically, as the synchronous `dataType` here does.
+      return this._native.dataTypeAsync.then((name) => CODE_BY_NAME[name] ?? GDT.GDT_Unknown)
+    },
+  },
+  colorInterpretationAsync: { configurable: true, get() { return this._native.colorInterpretationAsync } },
+  descriptionAsync: { configurable: true, get() { return this._native.descriptionAsync } },
+  unitTypeAsync: { configurable: true, get() { return this._native.unitTypeAsync } },
+  noDataValueAsync: { configurable: true, get() { return this._native.noDataValueAsync } },
+  scaleAsync: { configurable: true, get() { return this._native.scaleAsync } },
+  offsetAsync: { configurable: true, get() { return this._native.offsetAsync } },
+  minimumAsync: { configurable: true, get() { return this._native.minimumAsync } },
+  maximumAsync: { configurable: true, get() { return this._native.maximumAsync } },
+  idAsync: { configurable: true, get() { return this._native.idAsync } },
+  readOnlyAsync: { configurable: true, get() { return this._native.readOnlyAsync } },
+  hasArbitraryOverviewsAsync: { configurable: true, get() { return this._native.hasArbitraryOverviewsAsync } },
+  categoryNamesAsync: { configurable: true, get() { return this._native.categoryNamesAsync } },
 })
 
 Object.assign(Layer.prototype, {
@@ -2095,6 +2616,23 @@ for (const name of [
     },
   })
 }
+
+// The reference's capitalisation of the two EPSG axis-order questions. The first
+// forwards the native getter; the second is the native addition beside it.
+Object.defineProperties(SpatialReference.prototype, {
+  EPSGTreatsAsLatLong: {
+    configurable: true,
+    get() {
+      return this._srs.epsgTreatsAsLatLong
+    },
+  },
+  EPSGTreatsAsNorthingEasting: {
+    configurable: true,
+    get() {
+      return this._srs.epsgTreatsAsNorthingEasting
+    },
+  },
+})
 
 /** `/vsimem/name`, whether the caller passed a bare name or the whole path. */
 function vsimemPath(name) {
@@ -2375,11 +2913,15 @@ function unwrapSpatialRef(value) {
 
 // `transform` names two CRSs, and a caller hands it this adapter's
 // `SpatialReference` wrappers — the native method wants the native ones, so it is
-// unwrapped here rather than in the generic re-wrap loop above.
+// unwrapped here rather than in the generic re-wrap loop above. The reference's
+// single-argument form takes a `CoordinateTransformation`, which is routed through
+// the same reader its own `transformGeometry` uses. The result is a **new**
+// geometry either way: geometries are values here.
 Object.defineProperty(Geometry.prototype, 'transform', {
   configurable: true,
   writable: true,
   value(from, to) {
+    if (from instanceof CoordinateTransformation) return from.transformGeometry(this)
     return wrapGeometry(
       nativeGeometry.transform.call(this, unwrapSpatialRef(from), unwrapSpatialRef(to)),
     )
@@ -2649,6 +3191,14 @@ const Gdal = {
 
   quiet() {
     native.quiet()
+  },
+
+  /**
+   * The reference's `setPROJSearchPaths(path)` — one path or a list — over this
+   * binding's `configureDataPaths({ proj })`, which is the same `PROJ_DATA`.
+   */
+  setPROJSearchPaths(paths) {
+    native.configureDataPaths({ proj: Array.isArray(paths) ? paths.join(process.platform === 'win32' ? ';' : ':') : paths })
   },
 
   /** gdal-async's decimal-degrees-to-DMS helper, straight through to `CPLDecToDMS`. */
@@ -3142,6 +3692,9 @@ addAsyncTwins(Geometry.prototype, [
   'flattenTo2D', 'intersection', 'makeValid', 'normalize', 'overlaps',
   'pointOnSurface', 'setPrecision', 'simplify', 'simplifyPreserveTopology',
   'swapXY', 'symDifference', 'unaryUnion', 'union', 'distance',
+  'intersects', 'contains', 'crosses', 'touches', 'within', 'equals',
+  'isValid', 'isSimple', 'isRing', 'transform', 'transformTo',
+  'closeRings', 'empty',
 ])
 addAsyncTwins(RasterBand.prototype, ['getMetadata', 'setMetadata', 'fill'])
 addAsyncTwins(Dataset.prototype, ['getMetadata', 'setMetadata'])

@@ -41,7 +41,7 @@ use crate::raster_io::{
 };
 use crate::raster_tools::{
     RasterizeOptions, RasterizeRequest, ReprojectImageOptions, ReprojectImageRequest,
-    SuggestedWarpOptions, SuggestedWarpOutput, SuggestedWarpRequest,
+    SuggestedWarpOptions, SuggestedWarpOutput, SuggestedWarpRequest, cpl_result,
     rasterize as rasterize_geometries, rasterize_request, reproject_image, reproject_image_request,
     suggested_warp_output, suggested_warp_request,
 };
@@ -1217,6 +1217,29 @@ impl JsDataset {
         (0..band_count as u32)
             .map(|index| self.band(index))
             .collect()
+    }
+
+    /// Add a band to an existing dataset — GDAL's `GDALAddBand`, the reference's
+    /// `dataset.bands.create(dataType, options)`.
+    ///
+    /// The dataset has to be writable and its driver has to implement `AddBand`;
+    /// a driver that does not answers GDAL's own refusal. The new band is answered
+    /// back, and `dataType` takes the same names `band.dataType` reports.
+    #[napi(catch_unwind)]
+    pub fn create_band(&self, data_type: DataType, options: Option<Value>) -> Result<JsRasterBand> {
+        ensure_initialized();
+        let gdal_type = data_type
+            .to_gdal()
+            .ok_or_else(|| bad_argument("Unknown is not a band type that can be added"))?;
+        let options = build_creation_options(options.as_ref())?;
+        let index = self.dataset.with_mut(|dataset| {
+            let status = unsafe {
+                gdal_sys::GDALAddBand(dataset.c_dataset(), gdal_type as u32, options.as_ptr())
+            };
+            cpl_result(status)?;
+            Ok(dataset.raster_count() - 1)
+        })?;
+        self.band(index as u32)
     }
 
     /// Create a new vector layer, with `epsg` as its CRS. Lay the fields out by

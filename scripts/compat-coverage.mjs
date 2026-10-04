@@ -314,9 +314,11 @@ if (process.exitCode !== 2) {
 
   // Only the module-level names gate. The member list is a lead, not a measurement: a
   // bare `.<name>` cannot say which class it was reached on, so it mixes in the suite's
-  // own helpers and any local with a gdal-ish name. It is still the fastest way to find
-  // a whole family of accessors that an adapter forgot (`points`, `rings`, the
-  // `SpatialReference.from*` statics) — read it, do not gate on it.
+  // own helpers and any local with a gdal-ish name — and it is a **union across
+  // classes**, so a name answered on one class hides the same name missing on another.
+  // It is still the fastest way to find a whole family of accessors that an adapter
+  // forgot (`points`, `rings`, the `SpatialReference.from*` statics) — read it, do not
+  // gate on it. `ts-test/compat-reachability.spec.ts` is the per-class guard.
   if (missingModule.length > 0) {
     console.log(
       `\n[coverage] ${missingModule.length} module-level name(s) the reference's tests use ` +
